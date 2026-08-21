@@ -28,7 +28,7 @@
 <div id="root"></div>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script type="text/babel" data-type="module" data-presets="react">
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef, createContext, useContext } from "react";
 import ReactDOM from "react-dom/client";
 import {
   Users, CalendarCheck, Wallet, AlertTriangle, LayoutDashboard,
@@ -36,7 +36,7 @@ import {
   ChevronLeft, ChevronRight, FileText, Save, AlertCircle, TrendingDown,
   Loader2, Landmark, HandCoins, LogOut, ClipboardList, Star, Settings as SettingsIcon,
   Printer, Cake, ShieldAlert, Bell, Info, Upload, ArrowRight, ArrowLeft, FileSpreadsheet,
-  Network, Crown, ChevronDown, Lock, LogIn, ShieldCheck
+  Network, Crown, ChevronDown, Lock, LogIn, ShieldCheck, Languages
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { initializeApp, deleteApp } from "firebase/app";
@@ -73,6 +73,55 @@ const EMPLOYEE_AUTH_DOMAIN = "hzakzouk-hr.local";
 function employeeAuthEmail(employeeCode) {
   return `${String(employeeCode || "").trim().toLowerCase()}@${EMPLOYEE_AUTH_DOMAIN}`;
 }
+
+/* ================= i18n (Arabic/English toggle) ================= */
+// Deliberately keyed by the ARABIC text itself, not an invented id - every existing call
+// site already has that string sitting right there, so wrapping it as t("<the Arabic text>")
+// needs no separate key to invent or keep in sync. TRANSLATIONS is filled in further down
+// this file; a phrase that's missing from it (or a value string this app doesn't recognize,
+// e.g. an employee's own name) just falls back to the Arabic unchanged - t() never throws and
+// never renders "undefined", so a partially-translated screen still works.
+// For a phrase that needs inline variables and a different word order in English, pass a
+// `{token}`-style template as the key plus a `vars` object, e.g.
+// t("عقد {name} بينتهي في {date}", { name: e.name, date: e.contractEnd }).
+const LangContext = createContext({ lang: "ar", dir: "rtl", t: (s) => s, toggle: () => {} });
+function useLang() { return useContext(LangContext); }
+// Used by the shared low-level UI primitives below (Field, SectionTitle, Modal, etc.) so
+// every existing call site that passes a plain Arabic label/title/text prop gets translated
+// automatically, without having to touch each of the many call sites individually. Passing
+// actual JSX (an icon, a <span dir="ltr">, another component) instead of a plain string is
+// left completely alone.
+function autoT(t, v) { return typeof v === "string" ? t(v) : v; }
+function translate(lang, ar, vars) {
+  let s = lang === "en" ? (TRANSLATIONS[ar] ?? ar) : ar;
+  if (vars) Object.keys(vars).forEach((k) => { s = s.split(`{${k}}`).join(vars[k]); });
+  return s;
+}
+function useLangState() {
+  const [lang, setLang] = useState(() => {
+    try { return localStorage.getItem("hr_admin_lang") === "en" ? "en" : "ar"; } catch { return "ar"; }
+  });
+  useEffect(() => { try { localStorage.setItem("hr_admin_lang", lang); } catch {} }, [lang]);
+  const dir = lang === "en" ? "ltr" : "rtl";
+  const t = (ar, vars) => translate(lang, ar, vars);
+  const toggle = () => setLang((l) => (l === "ar" ? "en" : "ar"));
+  return { lang, dir, t, toggle };
+}
+// Small persistent switcher, dropped into every top-level screen (login, access-denied,
+// loading, and the main app's sidebar) so the language can be changed from anywhere,
+// including before signing in.
+function LangToggle({ className = "" }) {
+  const { lang, toggle } = useLang();
+  return (
+    <button onClick={toggle} className={`flex items-center gap-1.5 rounded-lg border border-stone-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-stone-50 ${className}`}>
+      <Languages size={13} /> {lang === "ar" ? "English" : "العربية"}
+    </button>
+  );
+}
+// TRANSLATIONS (Arabic -> English) lives at the very bottom of this file, right before the
+// root render call - it's a long flat dictionary and reads better out of the way of the
+// actual components. t()/translate() above only read from it at call time, so definition
+// order here doesn't matter.
 
 // Firestore write batches cap at 500 operations; chunk defensively well under that so a
 // large bulk-attendance import or bulk employee import never risks hitting the limit.
@@ -416,35 +465,42 @@ function advanceRemaining(adv) {
 }
 
 /* ---------- shared UI ---------- */
+// Note: every primitive below reads `useLang()` itself and auto-translates any plain-string
+// text prop it's handed (via autoT) - so most of the ~50 components further down that just
+// pass Arabic strings into these needed no change at all. Only inline text written directly
+// in a component's own JSX (outside these primitives) had to be wrapped by hand.
 function StampBadge({ tone = "teal", children }) {
+  const { t } = useLang();
   const tones = {
     teal: "border-teal-700 text-teal-800", amber: "border-amber-600 text-amber-700",
     rose: "border-rose-600 text-rose-700", slate: "border-slate-400 text-slate-500",
     emerald: "border-emerald-600 text-emerald-700",
   };
-  return <span className={`inline-flex items-center gap-1 rounded-full border-2 px-2.5 py-0.5 text-xs font-semibold tracking-wide ${tones[tone]}`}>{children}</span>;
+  return <span className={`inline-flex items-center gap-1 rounded-full border-2 px-2.5 py-0.5 text-xs font-semibold tracking-wide ${tones[tone]}`}>{autoT(t, children)}</span>;
 }
 function Card({ children, className = "" }) {
   return <div className={`rounded-2xl border border-stone-200 bg-white shadow-sm ${className}`}>{children}</div>;
 }
 function SectionTitle({ eyebrow, title, action }) {
+  const { t } = useLang();
   return (
     <div className="mb-5 flex items-end justify-between gap-4 border-b-2 border-amber-500/70 pb-3">
       <div>
-        {eyebrow && <div className="mb-1 text-xs font-semibold uppercase tracking-widest text-teal-700">{eyebrow}</div>}
-        <h2 className="text-xl font-bold text-slate-800">{title}</h2>
+        {eyebrow && <div className="mb-1 text-xs font-semibold uppercase tracking-widest text-teal-700">{autoT(t, eyebrow)}</div>}
+        <h2 className="text-xl font-bold text-slate-800">{autoT(t, title)}</h2>
       </div>
       {action}
     </div>
   );
 }
 function Modal({ open, onClose, title, children, wide }) {
+  const { t } = useLang();
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
       <div className={`max-h-[90vh] w-full ${wide ? "max-w-2xl" : "max-w-md"} overflow-y-auto rounded-2xl bg-white shadow-xl`}>
         <div className="flex items-center justify-between border-b border-stone-200 px-6 py-4">
-          <h3 className="text-lg font-bold text-slate-800">{title}</h3>
+          <h3 className="text-lg font-bold text-slate-800">{autoT(t, title)}</h3>
           <button onClick={onClose} className="rounded-full p-1.5 text-slate-400 hover:bg-stone-100 hover:text-slate-600"><X size={18} /></button>
         </div>
         <div className="p-6">{children}</div>
@@ -453,21 +509,23 @@ function Modal({ open, onClose, title, children, wide }) {
   );
 }
 function Field({ label, children }) {
-  return <label className="block"><span className="mb-1.5 block text-sm font-medium text-slate-600">{label}</span>{children}</label>;
+  const { t } = useLang();
+  return <label className="block"><span className="mb-1.5 block text-sm font-medium text-slate-600">{autoT(t, label)}</span>{children}</label>;
 }
 // Shared confirmation step for a hard employee delete (one or many) - used by both
 // EmployeesTab and FormerEmployeesTab. Deliberately spells out everything the delete cascades
 // into (see HRSystem.deleteEmployees), since it's irreversible and touches several
 // collections at once.
 function EmployeeDeleteConfirmModal({ employees, onConfirm, onCancel }) {
+  const { t } = useLang();
   if (!employees || employees.length === 0) return null;
   const many = employees.length > 1;
   return (
-    <Modal open title={many ? `حذف ${employees.length} موظفين نهائيًا` : "حذف موظف نهائيًا"} onClose={onCancel}>
+    <Modal open title={many ? t("حذف {n} موظفين نهائيًا", { n: employees.length }) : "حذف موظف نهائيًا"} onClose={onCancel}>
       <div className="space-y-4">
         <div className="flex items-start gap-2 rounded-lg bg-rose-50 px-3 py-2.5 text-sm text-rose-700">
           <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-          <span>الإجراء ده نهائي ومش هيتم التراجع عنه. هيتم حذف ملف الموظف كامل مع الحضور والجزاءات والسلف والمستندات والتقييمات وسجلات المرتب الخاصة بيه.</span>
+          <span>{t("الإجراء ده نهائي ومش هيتم التراجع عنه. هيتم حذف ملف الموظف كامل مع الحضور والجزاءات والسلف والمستندات والتقييمات وسجلات المرتب الخاصة بيه.")}</span>
         </div>
         <ul className="max-h-48 space-y-1 overflow-y-auto rounded-lg border border-stone-200 p-2 text-sm">
           {employees.map((e) => (
@@ -477,10 +535,10 @@ function EmployeeDeleteConfirmModal({ employees, onConfirm, onCancel }) {
             </li>
           ))}
         </ul>
-        <p className="text-xs text-slate-400">لو أي حد منهم فعّل بوابة الموظف بتاعته قبل كده، حساب الدخول (Firebase Auth) مش بيتحذف تلقائي من هنا - بس هيفضل عاجز يقرأ أي حاجة لأن ملفه اتحذف. لو عايز تقفل الحساب ده نهائي، احذفه يدويًا من Firebase Console.</p>
+        <p className="text-xs text-slate-400">{t("لو أي حد منهم فعّل بوابة الموظف بتاعته قبل كده، حساب الدخول (Firebase Auth) مش بيتحذف تلقائي من هنا - بس هيفضل عاجز يقرأ أي حاجة لأن ملفه اتحذف. لو عايز تقفل الحساب ده نهائي، احذفه يدويًا من Firebase Console.")}</p>
         <div className="flex justify-end gap-2 border-t border-stone-200 pt-4">
-          <button type="button" onClick={onCancel} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50">إلغاء</button>
-          <button type="button" onClick={onConfirm} className="flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700"><Trash2 size={15} /> {many ? `حذف ${employees.length} موظفين` : "حذف نهائيًا"}</button>
+          <button type="button" onClick={onCancel} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50">{t("إلغاء")}</button>
+          <button type="button" onClick={onConfirm} className="flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700"><Trash2 size={15} /> {many ? t("حذف {n} موظفين", { n: employees.length }) : t("حذف نهائيًا")}</button>
         </div>
       </div>
     </Modal>
@@ -488,28 +546,32 @@ function EmployeeDeleteConfirmModal({ employees, onConfirm, onCancel }) {
 }
 const inputCls = "w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-100";
 function EmptyState({ text }) {
-  return <div className="rounded-xl border border-dashed border-stone-300 py-10 text-center text-sm text-slate-400">{text}</div>;
+  const { t } = useLang();
+  return <div className="rounded-xl border border-dashed border-stone-300 py-10 text-center text-sm text-slate-400">{autoT(t, text)}</div>;
 }
 function NavItem({ icon, label, active, onClick }) {
+  const { t } = useLang();
   return (
     <button onClick={onClick} className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${active ? "bg-teal-800 text-white" : "text-slate-600 hover:bg-stone-100"}`}>
-      {icon}<span>{label}</span>
+      {icon}<span>{autoT(t, label)}</span>
     </button>
   );
 }
 function KpiCard({ label, value, icon, tone }) {
+  const { t } = useLang();
   const tones = { teal: "bg-teal-50 text-teal-700", emerald: "bg-emerald-50 text-emerald-700", rose: "bg-rose-50 text-rose-700", amber: "bg-amber-50 text-amber-700" };
   return (
     <Card className="p-4">
       <div className={`mb-3 inline-flex h-9 w-9 items-center justify-center rounded-lg ${tones[tone]}`}>{icon}</div>
       <div className="text-2xl font-bold text-slate-800 tabular-nums">{value}</div>
-      <div className="text-xs text-slate-400">{label}</div>
+      <div className="text-xs text-slate-400">{autoT(t, label)}</div>
     </Card>
   );
 }
 
 /* ================= MAIN APP ================= */
 function HRSystem({ adminUser }) {
+  const { t, dir } = useLang();
   const [tab, setTab] = useState("dashboard");
   const [openEmployeeId, setOpenEmployeeId] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -554,7 +616,7 @@ function HRSystem({ adminUser }) {
   // (most commonly a Security Rules rejection) instead of swallowing them silently.
   function track(promise) {
     setSaving(true);
-    promise.catch((err) => { console.error(err); alert("تعذّر حفظ التعديل — راجع صلاحيات الدخول أو الاتصال بالإنترنت."); })
+    promise.catch((err) => { console.error(err); alert(t("تعذّر حفظ التعديل — راجع صلاحيات الدخول أو الاتصال بالإنترنت.")); })
       .finally(() => setSaving(false));
   }
 
@@ -633,7 +695,7 @@ function HRSystem({ adminUser }) {
       <div className="flex h-[600px] w-full items-center justify-center bg-stone-50">
         <div className="flex flex-col items-center gap-3 text-teal-700">
           <Loader2 className="animate-spin" size={28} />
-          <span className="text-sm font-medium">جاري تحميل بيانات الموارد البشرية...</span>
+          <span className="text-sm font-medium">{t("جاري تحميل بيانات الموارد البشرية...")}</span>
         </div>
       </div>
     );
@@ -642,17 +704,18 @@ function HRSystem({ adminUser }) {
   const openEmployee = employees.find((e) => e.id === openEmployeeId);
 
   return (
-    <div dir="rtl" className="min-h-[700px] w-full bg-stone-50 font-sans text-slate-800 print:bg-white">
+    <div dir={dir} className="min-h-[700px] w-full bg-stone-50 font-sans text-slate-800 print:bg-white">
       <style>{`@media print { .no-print { display: none !important; } .print-area { display: block !important; } }`}</style>
       <div className="mx-auto flex max-w-7xl gap-6 p-6">
         <aside className="no-print sticky top-6 h-fit w-60 shrink-0 rounded-2xl border border-stone-200 bg-white p-4 shadow-sm">
           <div className="mb-6 flex items-center gap-2 px-2">
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-teal-800 text-white"><Users size={18} /></div>
             <div>
-              <div className="text-sm font-bold text-slate-800">شؤون الأفراد</div>
-              <div className="text-[11px] text-slate-400">إدارة الموظفين والمرتبات</div>
+              <div className="text-sm font-bold text-slate-800">{t("شؤون الأفراد")}</div>
+              <div className="text-[11px] text-slate-400">{t("إدارة الموظفين والمرتبات")}</div>
             </div>
           </div>
+          <LangToggle className="mb-4 w-full justify-center" />
           <nav className="flex flex-col gap-1">
             <NavItem icon={<LayoutDashboard size={17} />} label="لوحة المتابعة" active={tab === "dashboard"} onClick={() => setTab("dashboard")} />
             <NavItem icon={<Users size={17} />} label="الموظفون والعقود" active={tab === "employees"} onClick={() => setTab("employees")} />
@@ -665,11 +728,11 @@ function HRSystem({ adminUser }) {
             <NavItem icon={<SettingsIcon size={17} />} label="الإعدادات" active={tab === "settings"} onClick={() => setTab("settings")} />
           </nav>
           <div className="mt-6 flex items-center gap-1.5 rounded-lg bg-stone-50 px-2.5 py-2 text-[11px] text-slate-400">
-            {saving ? <><Loader2 className="animate-spin" size={12} /><span>جاري الحفظ...</span></> : <><Check size={12} className="text-emerald-600" /><span>متزامن مع قاعدة البيانات</span></>}
+            {saving ? <><Loader2 className="animate-spin" size={12} /><span>{t("جاري الحفظ...")}</span></> : <><Check size={12} className="text-emerald-600" /><span>{t("متزامن مع قاعدة البيانات")}</span></>}
           </div>
           <div className="mt-2 flex items-center justify-between gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] text-slate-400">
             <span className="truncate" title={adminUser?.email}>{adminUser?.email}</span>
-            <button onClick={() => signOut(auth)} className="shrink-0 font-medium text-slate-400 hover:text-rose-600">خروج</button>
+            <button onClick={() => signOut(auth)} className="shrink-0 font-medium text-slate-400 hover:text-rose-600">{t("خروج")}</button>
           </div>
         </aside>
 
@@ -723,6 +786,7 @@ function HRSystem({ adminUser }) {
 
 /* ================= DASHBOARD ================= */
 function Dashboard({ employees, attendance, penalties, advances, settings, documents }) {
+  const { t, lang } = useLang();
   const today = todayISO();
   const presentToday = employees.filter((e) => getAttEntry(attendance, today, e.id)?.status === "present").length;
   const absentToday = employees.filter((e) => getAttEntry(attendance, today, e.id)?.status === "absent").length;
@@ -736,23 +800,23 @@ function Dashboard({ employees, attendance, penalties, advances, settings, docum
   employees.forEach((e) => {
     if (e.contractEnd) {
       const end = new Date(e.contractEnd);
-      if (end >= new Date() && end <= in30) alerts.push({ tone: "amber", icon: <FileText size={14} />, text: `عقد ${e.name} بينتهي في ${e.contractEnd}` });
+      if (end >= new Date() && end <= in30) alerts.push({ tone: "amber", icon: <FileText size={14} />, text: t("عقد {name} بينتهي في {date}", { name: e.name, date: e.contractEnd }) });
     }
     const takenLeave = Object.keys(attendance).filter((d) => yearKey(d) === yearKey(today) && getAttEntry(attendance, d, e.id)?.status === "leave").length;
     const remaining = (e.leaveEntitlement ?? settings.leaveDefaultDays) - takenLeave;
-    if (remaining <= 2) alerts.push({ tone: "rose", icon: <CalendarCheck size={14} />, text: `رصيد إجازات ${e.name} باقيله ${remaining} يوم بس` });
+    if (remaining <= 2) alerts.push({ tone: "rose", icon: <CalendarCheck size={14} />, text: t("رصيد إجازات {name} باقيله {n} يوم بس", { name: e.name, n: remaining }) });
     if (e.birthDate) {
       const bd = new Date(e.birthDate);
       const thisYearBd = new Date(new Date().getFullYear(), bd.getMonth(), bd.getDate());
       const diffDays = Math.round((thisYearBd - new Date()) / 86400000);
-      if (diffDays >= 0 && diffDays <= 7) alerts.push({ tone: "teal", icon: <Cake size={14} />, text: `عيد ميلاد ${e.name} بعد ${diffDays === 0 ? "النهاردة" : diffDays + " يوم"}` });
+      if (diffDays >= 0 && diffDays <= 7) alerts.push({ tone: "teal", icon: <Cake size={14} />, text: t("عيد ميلاد {name} بعد {when}", { name: e.name, when: diffDays === 0 ? t("النهاردة") : t("{n} يوم", { n: diffDays }) }) });
     }
   });
   advances.forEach((a) => {
     const remaining = advanceRemaining(a);
     const emp = employees.find((e) => e.id === a.employeeId);
     if (remaining > 0 && remaining <= Math.round(a.totalAmount / a.installments)) {
-      alerts.push({ tone: "emerald", icon: <HandCoins size={14} />, text: `سلفة ${emp?.name || ""} هتخلص القسط الجاي` });
+      alerts.push({ tone: "emerald", icon: <HandCoins size={14} />, text: t("سلفة {name} هتخلص القسط الجاي", { name: emp?.name || "" }) });
     }
   });
   documents.forEach((d) => {
@@ -760,14 +824,14 @@ function Dashboard({ employees, attendance, penalties, advances, settings, docum
       const exp = new Date(d.expiryDate);
       if (exp >= new Date() && exp <= in30) {
         const emp = employees.find((e) => e.id === d.employeeId);
-        alerts.push({ tone: "amber", icon: <ShieldAlert size={14} />, text: `${d.name} بتاع ${emp?.name || ""} بينتهي في ${d.expiryDate}` });
+        alerts.push({ tone: "amber", icon: <ShieldAlert size={14} />, text: t("{doc} بتاع {name} بينتهي في {date}", { doc: d.name, name: emp?.name || "", date: d.expiryDate }) });
       }
     }
   });
 
   return (
     <div>
-      <SectionTitle eyebrow={new Date().toLocaleDateString("ar-EG", { weekday: "long", year: "numeric", month: "long", day: "numeric" })} title="لوحة المتابعة" />
+      <SectionTitle eyebrow={new Date().toLocaleDateString(lang === "en" ? "en-GB" : "ar-EG", { weekday: "long", year: "numeric", month: "long", day: "numeric" })} title="لوحة المتابعة" />
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         <KpiCard label="إجمالي الموظفين" value={employees.length} icon={<Users size={18} />} tone="teal" />
         <KpiCard label="حاضر النهاردة" value={presentToday} icon={<Check size={18} />} tone="emerald" />
@@ -778,7 +842,7 @@ function Dashboard({ employees, attendance, penalties, advances, settings, docum
       <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
         <Card className="p-5 lg:col-span-2">
           <div className="mb-4 flex items-center justify-between">
-            <h3 className="font-bold text-slate-800">حالة الحضور اليوم</h3>
+            <h3 className="font-bold text-slate-800">{t("حالة الحضور اليوم")}</h3>
           </div>
           {employees.length === 0 ? <EmptyState text="لسه معملتش أي موظف. ابدأ من تاب «الموظفون والعقود»." /> : (
             <div className="space-y-2">
@@ -787,8 +851,8 @@ function Dashboard({ employees, attendance, penalties, advances, settings, docum
                 return (
                   <div key={e.id} className="flex items-center justify-between rounded-lg border border-stone-100 px-3 py-2">
                     <div><div className="text-sm font-medium text-slate-700">{e.name}</div><div className="text-xs text-slate-400">{e.position || "—"}</div></div>
-                    {st ? <span className={`rounded-full border px-2.5 py-0.5 text-xs font-semibold ${STATUS_COLORS[st]}`}>{STATUS_LABELS[st]}</span>
-                      : <span className="rounded-full border border-stone-200 px-2.5 py-0.5 text-xs text-slate-400">لسه ما اتسجلش</span>}
+                    {st ? <span className={`rounded-full border px-2.5 py-0.5 text-xs font-semibold ${STATUS_COLORS[st]}`}>{t(STATUS_LABELS[st])}</span>
+                      : <span className="rounded-full border border-stone-200 px-2.5 py-0.5 text-xs text-slate-400">{t("لسه ما اتسجلش")}</span>}
                   </div>
                 );
               })}
@@ -798,8 +862,8 @@ function Dashboard({ employees, attendance, penalties, advances, settings, docum
 
         <div className="space-y-6">
           <Card className="p-5">
-            <div className="mb-3 flex items-center gap-2"><Bell size={16} className="text-amber-600" /><h3 className="font-bold text-slate-800">تنبيهات</h3></div>
-            {alerts.length === 0 ? <p className="text-sm text-slate-400">مفيش تنبيهات دلوقتي.</p> : (
+            <div className="mb-3 flex items-center gap-2"><Bell size={16} className="text-amber-600" /><h3 className="font-bold text-slate-800">{t("تنبيهات")}</h3></div>
+            {alerts.length === 0 ? <p className="text-sm text-slate-400">{t("مفيش تنبيهات دلوقتي.")}</p> : (
               <div className="space-y-2.5 max-h-64 overflow-y-auto">
                 {alerts.map((a, i) => (
                   <div key={i} className={`flex items-start gap-2 rounded-lg border px-2.5 py-2 text-xs ${a.tone === "rose" ? "border-rose-200 bg-rose-50 text-rose-700" : a.tone === "amber" ? "border-amber-200 bg-amber-50 text-amber-700" : a.tone === "emerald" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-teal-200 bg-teal-50 text-teal-700"}`}>
@@ -810,8 +874,8 @@ function Dashboard({ employees, attendance, penalties, advances, settings, docum
             )}
           </Card>
           <Card className="p-5">
-            <div className="mb-3 flex items-center gap-2"><TrendingDown size={16} className="text-rose-600" /><h3 className="font-bold text-slate-800">خصومات الجزاءات هذا الشهر</h3></div>
-            <div className="text-2xl font-bold text-slate-800 tabular-nums">{fmtMoney(penaltiesTotal)} <span className="text-sm font-normal text-slate-400">ج.م</span></div>
+            <div className="mb-3 flex items-center gap-2"><TrendingDown size={16} className="text-rose-600" /><h3 className="font-bold text-slate-800">{t("خصومات الجزاءات هذا الشهر")}</h3></div>
+            <div className="text-2xl font-bold text-slate-800 tabular-nums">{fmtMoney(penaltiesTotal)} <span className="text-sm font-normal text-slate-400">{t("ج.م")}</span></div>
           </Card>
         </div>
       </div>
@@ -821,6 +885,7 @@ function Dashboard({ employees, attendance, penalties, advances, settings, docum
 
 /* ================= EMPLOYEES ================= */
 function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, setAttendance, penalties, setPenalties, advances, setAdvances, documents, setDocuments, reviews, setReviews, payrollMeta, setPayrollMeta, onDelete }) {
+  const { t } = useLang();
   const [modalOpen, setModalOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [mergeOpen, setMergeOpen] = useState(false);
@@ -888,35 +953,35 @@ function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, s
 
     setEmployees(updated);
     setImportOpen(false);
-    alert(`تم التحديث: ${updatedCount} موظف موجود، وإضافة ${createdCount} موظف جديد.`);
+    alert(t("تم التحديث: {updated} موظف موجود، وإضافة {created} موظف جديد.", { updated: updatedCount, created: createdCount }));
   }
 
   return (
     <div>
-      <SectionTitle eyebrow={`${visible.length} موظف نشط`} title="الموظفون والعقود" action={
+      <SectionTitle eyebrow={t("{n} موظف نشط", { n: visible.length })} title="الموظفون والعقود" action={
         <div className="flex items-center gap-2">
           {selected.size > 0 && (
             <button onClick={() => setConfirmDelete(visible.filter((e) => selected.has(e.id)))} className="flex items-center gap-1.5 rounded-lg border border-rose-500 bg-rose-50 px-3.5 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100">
-              <Trash2 size={16} /> حذف المحدد ({selected.size})
+              <Trash2 size={16} /> {t("حذف المحدد ({n})", { n: selected.size })}
             </button>
           )}
           {dupGroups.length > 0 && (
             <button onClick={() => setMergeOpen(true)} className="flex items-center gap-1.5 rounded-lg border border-amber-500 bg-amber-50 px-3.5 py-2 text-sm font-semibold text-amber-700 hover:bg-amber-100">
-              <Users size={16} /> دمج المكررات ({dupGroups.length})
+              <Users size={16} /> {t("دمج المكررات ({n})", { n: dupGroups.length })}
             </button>
           )}
           <button onClick={() => setImportOpen(true)} className="flex items-center gap-1.5 rounded-lg border border-teal-700 px-3.5 py-2 text-sm font-semibold text-teal-800 hover:bg-teal-50">
-            <Upload size={16} /> استيراد جماعي
+            <Upload size={16} /> {t("استيراد جماعي")}
           </button>
           <button onClick={() => { setEditing(null); setModalOpen(true); }} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-900">
-            <Plus size={16} /> موظف جديد
+            <Plus size={16} /> {t("موظف جديد")}
           </button>
         </div>
       } />
 
       <div className="mb-4 flex items-center gap-2 rounded-lg border border-stone-300 bg-white px-3 py-2">
         <Search size={16} className="text-slate-400" />
-        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="دور بالاسم أو الوظيفة أو القسم..." className="w-full text-sm outline-none" />
+        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t("دور بالاسم أو الوظيفة أو القسم...")} className="w-full text-sm outline-none" />
       </div>
 
       {filtered.length === 0 ? <Card className="p-0"><EmptyState text={visible.length === 0 ? "لسه معملتش أي موظف." : "مفيش نتائج مطابقة."} /></Card> : (
@@ -927,8 +992,8 @@ function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, s
                 <th className="w-8 px-4 py-3">
                   <input type="checkbox" checked={allFilteredSelected} ref={(el) => { if (el) el.indeterminate = someFilteredSelected && !allFilteredSelected; }} onChange={toggleSelectAllFiltered} className="h-4 w-4 rounded border-stone-300" />
                 </th>
-                <th className="px-4 py-3">كود</th><th className="px-4 py-3">الاسم</th><th className="px-4 py-3">الوظيفة</th><th className="px-4 py-3">القسم</th>
-                <th className="px-4 py-3">نوع العقد</th><th className="px-4 py-3">نهاية العقد</th><th className="px-4 py-3">الراتب الأساسي</th><th className="px-4 py-3"></th>
+                <th className="px-4 py-3">{t("كود")}</th><th className="px-4 py-3">{t("الاسم")}</th><th className="px-4 py-3">{t("الوظيفة")}</th><th className="px-4 py-3">{t("القسم")}</th>
+                <th className="px-4 py-3">{t("نوع العقد")}</th><th className="px-4 py-3">{t("نهاية العقد")}</th><th className="px-4 py-3">{t("الراتب الأساسي")}</th><th className="px-4 py-3"></th>
               </tr>
             </thead>
             <tbody>
@@ -940,13 +1005,13 @@ function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, s
                   <td className="px-4 py-3 text-slate-600">{e.position || "—"}</td>
                   <td className="px-4 py-3 text-slate-600">{e.department || "—"}</td>
                   <td className="px-4 py-3"><StampBadge tone="teal">{e.contractType || "—"}</StampBadge></td>
-                  <td className="px-4 py-3 text-slate-600">{e.contractEnd || "غير محدد"}</td>
-                  <td className="px-4 py-3 tabular-nums text-slate-700">{fmtMoney(e.salary)} ج.م</td>
+                  <td className="px-4 py-3 text-slate-600">{e.contractEnd || t("غير محدد")}</td>
+                  <td className="px-4 py-3 tabular-nums text-slate-700">{fmtMoney(e.salary)} {t("ج.م")}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-1">
                       <button onClick={() => { setEditing(e); setModalOpen(true); }} className="rounded-md p-1.5 text-slate-400 hover:bg-stone-100 hover:text-teal-700"><Pencil size={15} /></button>
-                      <button onClick={() => markResigned(e)} title="نقل لموظفين سابقين" className="rounded-md p-1.5 text-slate-400 hover:bg-amber-50 hover:text-amber-600"><LogOut size={15} /></button>
-                      <button onClick={() => setConfirmDelete([e])} title="حذف نهائي" className="rounded-md p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 size={15} /></button>
+                      <button onClick={() => markResigned(e)} title={t("نقل لموظفين سابقين")} className="rounded-md p-1.5 text-slate-400 hover:bg-amber-50 hover:text-amber-600"><LogOut size={15} /></button>
+                      <button onClick={() => setConfirmDelete([e])} title={t("حذف نهائي")} className="rounded-md p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 size={15} /></button>
                     </div>
                   </td>
                 </tr>
@@ -1055,6 +1120,7 @@ function findDuplicateGroups(employees) {
 }
 
 function DuplicateMergeWizard({ groups, allEmployees, setEmployees, attendance, setAttendance, penalties, setPenalties, advances, setAdvances, documents, setDocuments, reviews, setReviews, payrollMeta, setPayrollMeta, onDone }) {
+  const { t } = useLang();
   const [keepChoice, setKeepChoice] = useState(() => {
     const init = {};
     groups.forEach((g, i) => { init[i] = g[0].id; });
@@ -1140,17 +1206,17 @@ function DuplicateMergeWizard({ groups, allEmployees, setEmployees, attendance, 
 
   return (
     <div className="space-y-5">
-      <p className="text-sm text-slate-500">لقينا <strong>{groups.length}</strong> مجموعة موظفين مكررين (بنفس الاسم أو نفس الكود). اختار مين يفضل من كل مجموعة — والبيانات (حضور، جزاءات، سلف...) هتتنقل تلقائي للي هيفضل.</p>
+      <p className="text-sm text-slate-500">{t("لقينا")} <strong>{groups.length}</strong> {t("مجموعة موظفين مكررين (بنفس الاسم أو نفس الكود). اختار مين يفضل من كل مجموعة — والبيانات (حضور، جزاءات، سلف...) هتتنقل تلقائي للي هيفضل.")}</p>
       <div className="max-h-96 space-y-4 overflow-y-auto">
         {groups.map((group, i) => (
           <div key={i} className="rounded-lg border border-amber-200 bg-amber-50/40 p-3">
-            <div className="mb-2 text-xs font-semibold text-amber-700">مجموعة {i + 1} — {group.length} نسخ</div>
+            <div className="mb-2 text-xs font-semibold text-amber-700">{t("مجموعة {n} — {count} نسخ", { n: i + 1, count: group.length })}</div>
             <div className="space-y-1.5">
               {group.map((e) => (
                 <label key={e.id} className="flex items-center gap-2 rounded-md border border-stone-200 bg-white px-2.5 py-1.5 text-sm">
                   <input type="radio" name={`grp-${i}`} checked={keepChoice[i] === e.id} onChange={() => setKeepChoice({ ...keepChoice, [i]: e.id })} />
                   <span className="font-medium text-slate-800">{e.name}</span>
-                  <span className="text-xs text-slate-400">{e.employeeCode ? `كود: ${e.employeeCode}` : ""} {e.position ? `· ${e.position}` : ""} {e.salary ? `· ${fmtMoney(e.salary)} ج.م` : ""}</span>
+                  <span className="text-xs text-slate-400">{e.employeeCode ? t("كود: {code}", { code: e.employeeCode }) : ""} {e.position ? `· ${e.position}` : ""} {e.salary ? `· ${fmtMoney(e.salary)} ${t("ج.م")}` : ""}</span>
                 </label>
               ))}
             </div>
@@ -1158,8 +1224,8 @@ function DuplicateMergeWizard({ groups, allEmployees, setEmployees, attendance, 
         ))}
       </div>
       <div className="flex justify-end gap-2 border-t border-stone-200 pt-4">
-        <button onClick={onDone} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50">إلغاء</button>
-        <button onClick={applyMerge} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Check size={15} /> تأكيد الدمج</button>
+        <button onClick={onDone} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50">{t("إلغاء")}</button>
+        <button onClick={applyMerge} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Check size={15} /> {t("تأكيد الدمج")}</button>
       </div>
     </div>
   );
@@ -1186,6 +1252,7 @@ function parseSpreadsheetFile(file) {
 }
 
 function FileDropZone({ onFile, fileName }) {
+  const { t } = useLang();
   const inputRef = useRef(null);
   return (
     <div
@@ -1195,7 +1262,7 @@ function FileDropZone({ onFile, fileName }) {
       className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-stone-300 bg-stone-50 py-10 text-center hover:border-teal-400 hover:bg-teal-50/40"
     >
       <FileSpreadsheet size={28} className="text-slate-400" />
-      <div className="text-sm font-medium text-slate-600">{fileName || "دوس هنا أو اسحب ملف Excel / CSV"}</div>
+      <div className="text-sm font-medium text-slate-600">{fileName || t("دوس هنا أو اسحب ملف Excel / CSV")}</div>
       <div className="text-xs text-slate-400">xlsx, xls, csv</div>
       <input ref={inputRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={(e) => e.target.files[0] && onFile(e.target.files[0])} />
     </div>
@@ -1216,6 +1283,7 @@ const EMPLOYEE_IMPORT_FIELDS = [
 ];
 
 function EmployeeImportWizard({ employees, onImport, onCancel }) {
+  const { t } = useLang();
   const [step, setStep] = useState(1);
   const [fileName, setFileName] = useState("");
   const [headers, setHeaders] = useState([]);
@@ -1276,50 +1344,50 @@ function EmployeeImportWizard({ employees, onImport, onCancel }) {
     <div>
       {step === 1 && (
         <div>
-          <p className="mb-3 text-sm text-slate-500">ارفع ملف فيه صف عناوين في الأول (الاسم، الوظيفة، الراتب...) وصف لكل موظف.</p>
+          <p className="mb-3 text-sm text-slate-500">{t("ارفع ملف فيه صف عناوين في الأول (الاسم، الوظيفة، الراتب...) وصف لكل موظف.")}</p>
           <FileDropZone onFile={handleFile} fileName={fileName} />
-          {error && <p className="mt-2 text-sm text-rose-600">{error}</p>}
+          {error && <p className="mt-2 text-sm text-rose-600">{t(error)}</p>}
         </div>
       )}
       {step === 2 && (
         <div>
-          <p className="mb-3 text-sm text-slate-500">حدد أي عمود من ملفك يقابل كل حقل (سيبها فاضية لو مش موجودة).</p>
+          <p className="mb-3 text-sm text-slate-500">{t("حدد أي عمود من ملفك يقابل كل حقل (سيبها فاضية لو مش موجودة).")}</p>
           <div className="max-h-96 space-y-2 overflow-y-auto">
             {EMPLOYEE_IMPORT_FIELDS.map((f) => (
               <div key={f.key} className="flex items-center gap-3">
-                <span className="w-56 shrink-0 text-sm text-slate-600">{f.label}{f.required && <span className="text-rose-500"> *</span>}</span>
+                <span className="w-56 shrink-0 text-sm text-slate-600">{t(f.label)}{f.required && <span className="text-rose-500"> *</span>}</span>
                 <select className={inputCls} value={mapping[f.key] ?? ""} onChange={(e) => setMapping({ ...mapping, [f.key]: e.target.value === "" ? undefined : Number(e.target.value) })}>
-                  <option value="">— تجاهل —</option>
+                  <option value="">{t("— تجاهل —")}</option>
                   {headers.map((h, i) => <option key={i} value={i}>{h}</option>)}
                 </select>
               </div>
             ))}
           </div>
-          <p className="mt-3 text-xs text-slate-400">{rows.length} صف اتقروا من الملف.</p>
+          <p className="mt-3 text-xs text-slate-400">{t("{n} صف اتقروا من الملف.", { n: rows.length })}</p>
           <div className="mt-4 flex justify-between border-t border-stone-200 pt-4">
-            <button onClick={() => setStep(1)} className="flex items-center gap-1 rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50"><ArrowRight size={14} /> رجوع</button>
-            <button disabled={mapping.name === undefined} onClick={() => setStep(3)} className="flex items-center gap-1 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900 disabled:opacity-40">معاينة <ArrowLeft size={14} /></button>
+            <button onClick={() => setStep(1)} className="flex items-center gap-1 rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50"><ArrowRight size={14} /> {t("رجوع")}</button>
+            <button disabled={mapping.name === undefined} onClick={() => setStep(3)} className="flex items-center gap-1 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900 disabled:opacity-40">{t("معاينة")} <ArrowLeft size={14} /></button>
           </div>
         </div>
       )}
       {step === 3 && (
         <div>
-          <p className="mb-3 text-sm text-slate-500">هيتم معالجة <strong>{preview.length}</strong> صف — المطابقة بتتم بكود الموظف أو الاسم:</p>
+          <p className="mb-3 text-sm text-slate-500">{t("هيتم معالجة")} <strong>{preview.length}</strong> {t("صف — المطابقة بتتم بكود الموظف أو الاسم:")}</p>
           <div className="mb-3 flex gap-3">
-            <div className="rounded-lg bg-sky-50 px-3 py-2 text-sm text-sky-700"><strong>{matchStats.updated}</strong> هيتحدّث (موجود بالفعل)</div>
-            <div className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700"><strong>{matchStats.created}</strong> هيتضاف كموظف جديد</div>
+            <div className="rounded-lg bg-sky-50 px-3 py-2 text-sm text-sky-700"><strong>{matchStats.updated}</strong> {t("هيتحدّث (موجود بالفعل)")}</div>
+            <div className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700"><strong>{matchStats.created}</strong> {t("هيتضاف كموظف جديد")}</div>
           </div>
           <div className="max-h-72 overflow-auto rounded-lg border border-stone-200">
             <table className="w-full text-xs">
-              <thead><tr className="bg-stone-50"><th className="px-2 py-1.5 text-right">الاسم</th><th className="px-2 py-1.5 text-right">الوظيفة</th><th className="px-2 py-1.5 text-right">الراتب</th></tr></thead>
+              <thead><tr className="bg-stone-50"><th className="px-2 py-1.5 text-right">{t("الاسم")}</th><th className="px-2 py-1.5 text-right">{t("الوظيفة")}</th><th className="px-2 py-1.5 text-right">{t("الراتب")}</th></tr></thead>
               <tbody>{preview.slice(0, 8).map((r, i) => (
                 <tr key={i} className="border-t border-stone-100"><td className="px-2 py-1.5">{r.name}</td><td className="px-2 py-1.5">{r.position || "—"}</td><td className="px-2 py-1.5 tabular-nums">{fmtMoney(r.salary)}</td></tr>
               ))}</tbody>
             </table>
           </div>
           <div className="mt-4 flex justify-between border-t border-stone-200 pt-4">
-            <button onClick={() => setStep(2)} className="flex items-center gap-1 rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50"><ArrowRight size={14} /> رجوع</button>
-            <button onClick={() => onImport(preview)} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Check size={15} /> تأكيد ({matchStats.updated} تحديث + {matchStats.created} جديد)</button>
+            <button onClick={() => setStep(2)} className="flex items-center gap-1 rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50"><ArrowRight size={14} /> {t("رجوع")}</button>
+            <button onClick={() => onImport(preview)} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Check size={15} /> {t("تأكيد ({u} تحديث + {c} جديد)", { u: matchStats.updated, c: matchStats.created })}</button>
           </div>
         </div>
       )}
@@ -1328,6 +1396,7 @@ function EmployeeImportWizard({ employees, onImport, onCancel }) {
 }
 
 function EmployeeForm({ initial, settings, onSave, onCancel }) {
+  const { t } = useLang();
   const [form, setForm] = useState({
     employeeCode: initial?.employeeCode || "",
     name: initial?.name || "", position: initial?.position || "", department: initial?.department || "",
@@ -1363,24 +1432,24 @@ function EmployeeForm({ initial, settings, onSave, onCancel }) {
         <Field label="الراتب الأساسي الشهري"><input type="number" min="0" className={inputCls} value={form.salary} onChange={(e) => set("salary", e.target.value)} /></Field>
         <Field label="نوع العقد">
           <select className={inputCls} value={form.contractType} onChange={(e) => set("contractType", e.target.value)}>
-            {CONTRACT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+            {CONTRACT_TYPES.map((ct) => <option key={ct} value={ct}>{t(ct)}</option>)}
           </select>
         </Field>
         <Field label="بداية العقد"><input type="date" className={inputCls} value={form.contractStart} onChange={(e) => set("contractStart", e.target.value)} /></Field>
         <Field label="نهاية العقد (اختياري)"><input type="date" className={inputCls} value={form.contractEnd} onChange={(e) => set("contractEnd", e.target.value)} /></Field>
         <div className="col-span-2">
-          <span className="mb-1.5 block text-sm font-medium text-slate-600">أيام الإجازة الأسبوعية (اختر واحد أو أكتر)</span>
+          <span className="mb-1.5 block text-sm font-medium text-slate-600">{t("أيام الإجازة الأسبوعية (اختر واحد أو أكتر)")}</span>
           <div className="flex flex-wrap gap-1.5">
             {WEEKDAYS.map((d) => (
-              <button key={d} type="button" onClick={() => toggleOffDay(d)} className={`rounded-full border px-3 py-1 text-xs font-semibold ${form.weeklyOffDays.includes(d) ? "border-teal-700 bg-teal-800 text-white" : "border-stone-200 text-slate-500 hover:border-stone-300"}`}>{d}</button>
+              <button key={d} type="button" onClick={() => toggleOffDay(d)} className={`rounded-full border px-3 py-1 text-xs font-semibold ${form.weeklyOffDays.includes(d) ? "border-teal-700 bg-teal-800 text-white" : "border-stone-200 text-slate-500 hover:border-stone-300"}`}>{t(d)}</button>
             ))}
           </div>
         </div>
         <Field label="رصيد الإجازات السنوي (يوم)"><input type="number" min="0" className={inputCls} value={form.leaveEntitlement} onChange={(e) => set("leaveEntitlement", e.target.value)} /></Field>
       </div>
       <div className="flex justify-end gap-2 border-t border-stone-200 pt-4">
-        <button type="button" onClick={onCancel} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50">إلغاء</button>
-        <button type="submit" className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Save size={15} /> حفظ</button>
+        <button type="button" onClick={onCancel} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50">{t("إلغاء")}</button>
+        <button type="submit" className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Save size={15} /> {t("حفظ")}</button>
       </div>
     </form>
   );
@@ -1388,6 +1457,7 @@ function EmployeeForm({ initial, settings, onSave, onCancel }) {
 
 /* ---- Employee profile (leave / documents / reviews) ---- */
 function EmployeeProfileModal({ employee, onClose, attendance, documents, setDocuments, reviews, setReviews, settings, employees, setEmployees }) {
+  const { t } = useLang();
   const [sub, setSub] = useState("leave");
   const [pin, setPin] = useState("");
   const [portalBusy, setPortalBusy] = useState(false);
@@ -1439,40 +1509,40 @@ function EmployeeProfileModal({ employee, onClose, attendance, documents, setDoc
   function removeReview(id) { setReviews(reviews.filter((r) => r.id !== id)); }
 
   return (
-    <Modal open onClose={onClose} title={`ملف ${employee.name}`} wide>
+    <Modal open onClose={onClose} title={t("ملف {name}", { name: employee.name })} wide>
       <div className="mb-4 flex gap-2 border-b border-stone-200 pb-3">
         {[["leave", "الإجازات", <CalendarCheck size={14} />], ["documents", "المستندات", <FileText size={14} />], ["reviews", "التقييمات", <Star size={14} />], ["portal", "بوابة الموظف", <Lock size={14} />]].map(([k, l, icon]) => (
-          <button key={k} onClick={() => setSub(k)} className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium ${sub === k ? "bg-teal-800 text-white" : "text-slate-500 hover:bg-stone-100"}`}>{icon}{l}</button>
+          <button key={k} onClick={() => setSub(k)} className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium ${sub === k ? "bg-teal-800 text-white" : "text-slate-500 hover:bg-stone-100"}`}>{icon}{t(l)}</button>
         ))}
       </div>
 
       {sub === "leave" && (
         <div>
           <div className="mb-4 grid grid-cols-3 gap-3">
-            <div className="rounded-xl bg-stone-100 px-3 py-2.5 text-center"><div className="text-lg font-bold tabular-nums">{entitlement}</div><div className="text-[11px] text-slate-500">مستحق سنويًا</div></div>
-            <div className="rounded-xl bg-sky-50 px-3 py-2.5 text-center"><div className="text-lg font-bold tabular-nums text-sky-700">{takenLeave}</div><div className="text-[11px] text-sky-600">مأخوذ هذا العام</div></div>
-            <div className={`rounded-xl px-3 py-2.5 text-center ${remaining <= 2 ? "bg-rose-50" : "bg-emerald-50"}`}><div className={`text-lg font-bold tabular-nums ${remaining <= 2 ? "text-rose-700" : "text-emerald-700"}`}>{remaining}</div><div className={`text-[11px] ${remaining <= 2 ? "text-rose-600" : "text-emerald-600"}`}>الرصيد المتبقي</div></div>
+            <div className="rounded-xl bg-stone-100 px-3 py-2.5 text-center"><div className="text-lg font-bold tabular-nums">{entitlement}</div><div className="text-[11px] text-slate-500">{t("مستحق سنويًا")}</div></div>
+            <div className="rounded-xl bg-sky-50 px-3 py-2.5 text-center"><div className="text-lg font-bold tabular-nums text-sky-700">{takenLeave}</div><div className="text-[11px] text-sky-600">{t("مأخوذ هذا العام")}</div></div>
+            <div className={`rounded-xl px-3 py-2.5 text-center ${remaining <= 2 ? "bg-rose-50" : "bg-emerald-50"}`}><div className={`text-lg font-bold tabular-nums ${remaining <= 2 ? "text-rose-700" : "text-emerald-700"}`}>{remaining}</div><div className={`text-[11px] ${remaining <= 2 ? "text-rose-600" : "text-emerald-600"}`}>{t("الرصيد المتبقي")}</div></div>
           </div>
-          <p className="text-xs text-slate-400">الأيام المأخوذة بتتحسب تلقائي من أيام «إجازة» المسجلة في تاب الحضور والانصراف خلال السنة الحالية.</p>
+          <p className="text-xs text-slate-400">{t("الأيام المأخوذة بتتحسب تلقائي من أيام «إجازة» المسجلة في تاب الحضور والانصراف خلال السنة الحالية.")}</p>
         </div>
       )}
 
       {sub === "documents" && (
         <div>
-          <p className="mb-3 flex items-start gap-1.5 rounded-lg bg-stone-50 px-3 py-2 text-xs text-slate-500"><Info size={14} className="mt-0.5 shrink-0" />ده سجل متابعة بس (اسم المستند وحالته وتاريخ انتهائه لو موجود)، مش رفع ملفات فعلي.</p>
+          <p className="mb-3 flex items-start gap-1.5 rounded-lg bg-stone-50 px-3 py-2 text-xs text-slate-500"><Info size={14} className="mt-0.5 shrink-0" />{t("ده سجل متابعة بس (اسم المستند وحالته وتاريخ انتهائه لو موجود)، مش رفع ملفات فعلي.")}</p>
           <form onSubmit={addDoc} className="mb-4 grid grid-cols-4 gap-2">
-            <select className={inputCls} value={docForm.name} onChange={(e) => setDocForm({ ...docForm, name: e.target.value })}>{DOC_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}</select>
+            <select className={inputCls} value={docForm.name} onChange={(e) => setDocForm({ ...docForm, name: e.target.value })}>{DOC_TYPES.map((dt) => <option key={dt} value={dt}>{t(dt)}</option>)}</select>
             <select className={inputCls} value={docForm.status} onChange={(e) => setDocForm({ ...docForm, status: e.target.value })}>
-              <option value="متوفر">متوفر</option><option value="ناقص">ناقص</option>
+              <option value="متوفر">{t("متوفر")}</option><option value="ناقص">{t("ناقص")}</option>
             </select>
-            <input type="date" placeholder="تاريخ الانتهاء" className={inputCls} value={docForm.expiryDate} onChange={(e) => setDocForm({ ...docForm, expiryDate: e.target.value })} />
-            <button className="flex items-center justify-center gap-1 rounded-lg bg-teal-800 px-2 py-2 text-xs font-semibold text-white hover:bg-teal-900"><Plus size={14} /> إضافة</button>
+            <input type="date" placeholder={t("تاريخ الانتهاء")} className={inputCls} value={docForm.expiryDate} onChange={(e) => setDocForm({ ...docForm, expiryDate: e.target.value })} />
+            <button className="flex items-center justify-center gap-1 rounded-lg bg-teal-800 px-2 py-2 text-xs font-semibold text-white hover:bg-teal-900"><Plus size={14} /> {t("إضافة")}</button>
           </form>
           {empDocs.length === 0 ? <EmptyState text="مفيش مستندات مسجلة." /> : (
             <div className="space-y-1.5">
               {empDocs.map((d) => (
                 <div key={d.id} className="flex items-center justify-between rounded-lg border border-stone-100 px-3 py-2 text-sm">
-                  <div><span className="font-medium text-slate-700">{d.name}</span>{d.expiryDate && <span className="ms-2 text-xs text-slate-400">ينتهي {d.expiryDate}</span>}</div>
+                  <div><span className="font-medium text-slate-700">{t(d.name)}</span>{d.expiryDate && <span className="ms-2 text-xs text-slate-400">{t("ينتهي {date}", { date: d.expiryDate })}</span>}</div>
                   <div className="flex items-center gap-2">
                     <StampBadge tone={d.status === "متوفر" ? "emerald" : "rose"}>{d.status}</StampBadge>
                     <button onClick={() => removeDoc(d.id)} className="text-slate-300 hover:text-rose-600"><Trash2 size={14} /></button>
@@ -1492,10 +1562,10 @@ function EmployeeProfileModal({ employee, onClose, attendance, documents, setDoc
               <select className={inputCls} value={reviewForm.score} onChange={(e) => setReviewForm({ ...reviewForm, score: e.target.value })}>
                 {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n} / 5</option>)}
               </select>
-              <input placeholder="اسم المقيّم" className={inputCls} value={reviewForm.reviewer} onChange={(e) => setReviewForm({ ...reviewForm, reviewer: e.target.value })} />
+              <input placeholder={t("اسم المقيّم")} className={inputCls} value={reviewForm.reviewer} onChange={(e) => setReviewForm({ ...reviewForm, reviewer: e.target.value })} />
             </div>
-            <textarea placeholder="ملاحظات التقييم" rows={2} className={inputCls} value={reviewForm.notes} onChange={(e) => setReviewForm({ ...reviewForm, notes: e.target.value })} />
-            <button className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-900"><Plus size={14} /> تسجيل تقييم</button>
+            <textarea placeholder={t("ملاحظات التقييم")} rows={2} className={inputCls} value={reviewForm.notes} onChange={(e) => setReviewForm({ ...reviewForm, notes: e.target.value })} />
+            <button className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-900"><Plus size={14} /> {t("تسجيل تقييم")}</button>
           </form>
           {empReviews.length === 0 ? <EmptyState text="مفيش تقييمات مسجلة." /> : (
             <div className="space-y-2">
@@ -1505,7 +1575,7 @@ function EmployeeProfileModal({ employee, onClose, attendance, documents, setDoc
                     <div className="flex items-center gap-1.5 font-semibold text-amber-600">{Array.from({ length: r.score }).map((_, i) => <Star key={i} size={13} fill="currentColor" />)}</div>
                     <div className="flex items-center gap-2 text-xs text-slate-400"><span>{r.date}</span><button onClick={() => removeReview(r.id)} className="text-slate-300 hover:text-rose-600"><Trash2 size={13} /></button></div>
                   </div>
-                  {r.reviewer && <div className="text-xs text-slate-400">بمعرفة: {r.reviewer}</div>}
+                  {r.reviewer && <div className="text-xs text-slate-400">{t("بمعرفة: {name}", { name: r.reviewer })}</div>}
                   {r.notes && <p className="mt-1 text-slate-600">{r.notes}</p>}
                 </div>
               ))}
@@ -1518,24 +1588,24 @@ function EmployeeProfileModal({ employee, onClose, attendance, documents, setDoc
         <div>
           {employee.authUid ? (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-              <div className="mb-1 flex items-center gap-1.5 font-semibold text-emerald-700"><ShieldCheck size={16} /> بوابة الموظف مفعّلة</div>
-              <p className="text-sm text-emerald-700">الموظف يقدر يدخل بوابته بكود الموظف <strong>{employee.employeeCode}</strong> والرقم السري اللي حددته له وقت التفعيل.</p>
-              <p className="mt-2 text-xs text-emerald-600">ناسي الرقم السري؟ مفيش استرجاع مباشر — لازم تمسح حساب الدخول بتاعه من Firebase Console (Authentication → Users، ابحث عن <code dir="ltr">{employeeAuthEmail(employee.employeeCode)}</code>)، وبعدها ارجع هنا وفعّل الدخول تاني برقم سري جديد.</p>
+              <div className="mb-1 flex items-center gap-1.5 font-semibold text-emerald-700"><ShieldCheck size={16} /> {t("بوابة الموظف مفعّلة")}</div>
+              <p className="text-sm text-emerald-700">{t("الموظف يقدر يدخل بوابته بكود الموظف")} <strong>{employee.employeeCode}</strong> {t("والرقم السري اللي حددته له وقت التفعيل.")}</p>
+              <p className="mt-2 text-xs text-emerald-600">{t("ناسي الرقم السري؟ مفيش استرجاع مباشر — لازم تمسح حساب الدخول بتاعه من Firebase Console (Authentication → Users، ابحث عن")} <code dir="ltr">{employeeAuthEmail(employee.employeeCode)}</code>{t(")، وبعدها ارجع هنا وفعّل الدخول تاني برقم سري جديد.")}</p>
             </div>
           ) : (
             <div>
-              <p className="mb-3 flex items-start gap-1.5 rounded-lg bg-stone-50 px-3 py-2 text-xs text-slate-500"><Info size={14} className="mt-0.5 shrink-0" />بعد التفعيل، الموظف هيقدر يدخل بوابته الخاصة ويشوف رصيد إجازاته وسجل حضوره وجزاءاته بس — من غير أي صلاحية تعديل أو رؤية بيانات زمايله.</p>
+              <p className="mb-3 flex items-start gap-1.5 rounded-lg bg-stone-50 px-3 py-2 text-xs text-slate-500"><Info size={14} className="mt-0.5 shrink-0" />{t("بعد التفعيل، الموظف هيقدر يدخل بوابته الخاصة ويشوف رصيد إجازاته وسجل حضوره وجزاءاته بس — من غير أي صلاحية تعديل أو رؤية بيانات زمايله.")}</p>
               <form onSubmit={enablePortal} className="flex items-end gap-2">
                 <Field label="رقم سري للموظف (6-8 أرقام)">
-                  <input type="text" inputMode="numeric" maxLength={8} className={inputCls} value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))} placeholder="مثلًا 123456" />
+                  <input type="text" inputMode="numeric" maxLength={8} className={inputCls} value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))} placeholder={t("مثلًا 123456")} />
                 </Field>
                 <button disabled={portalBusy} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-900 disabled:opacity-50">
-                  {portalBusy ? <Loader2 size={14} className="animate-spin" /> : <LogIn size={14} />} تفعيل الدخول
+                  {portalBusy ? <Loader2 size={14} className="animate-spin" /> : <LogIn size={14} />} {t("تفعيل الدخول")}
                 </button>
               </form>
             </div>
           )}
-          {portalMsg && <p className={`mt-3 text-xs font-medium ${portalMsg.tone === "rose" ? "text-rose-600" : "text-teal-700"}`}>{portalMsg.text}</p>}
+          {portalMsg && <p className={`mt-3 text-xs font-medium ${portalMsg.tone === "rose" ? "text-rose-600" : "text-teal-700"}`}>{t(portalMsg.text)}</p>}
         </div>
       )}
     </Modal>
@@ -1544,6 +1614,7 @@ function EmployeeProfileModal({ employee, onClose, attendance, documents, setDoc
 
 /* ================= ATTENDANCE ================= */
 function AttendanceTab({ employees, attendance, setAttendance, settings }) {
+  const { t } = useLang();
   const [date, setDate] = useState(todayISO());
   const [importOpen, setImportOpen] = useState(false);
   const dayRecord = attendance[date] || {};
@@ -1595,7 +1666,7 @@ function AttendanceTab({ employees, attendance, setAttendance, settings }) {
       <SectionTitle eyebrow="سجل يومي" title="الحضور والانصراف" action={
         <div className="flex items-center gap-2">
           <button onClick={() => setImportOpen(true)} className="flex items-center gap-1.5 rounded-lg border border-teal-700 px-3 py-2 text-sm font-semibold text-teal-800 hover:bg-teal-50">
-            <Upload size={15} /> استيراد من ملف
+            <Upload size={15} /> {t("استيراد من ملف")}
           </button>
           <button onClick={() => shiftDay(-1)} className="rounded-lg border border-stone-300 p-2 hover:bg-stone-50"><ChevronRight size={16} /></button>
           <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={`${inputCls} w-auto`} />
@@ -1604,10 +1675,10 @@ function AttendanceTab({ employees, attendance, setAttendance, settings }) {
       } />
 
       <div className="mb-5 grid grid-cols-4 gap-3">
-        <div className="rounded-xl bg-emerald-50 px-4 py-3 text-emerald-700"><div className="text-xl font-bold tabular-nums">{counts.present}</div><div className="text-xs font-medium">حاضر</div></div>
-        <div className="rounded-xl bg-rose-50 px-4 py-3 text-rose-700"><div className="text-xl font-bold tabular-nums">{counts.absent}</div><div className="text-xs font-medium">غايب</div></div>
-        <div className="rounded-xl bg-amber-50 px-4 py-3 text-amber-700"><div className="text-xl font-bold tabular-nums">{counts.late}</div><div className="text-xs font-medium">متأخر</div></div>
-        <div className="rounded-xl bg-sky-50 px-4 py-3 text-sky-700"><div className="text-xl font-bold tabular-nums">{counts.leave}</div><div className="text-xs font-medium">إجازة</div></div>
+        <div className="rounded-xl bg-emerald-50 px-4 py-3 text-emerald-700"><div className="text-xl font-bold tabular-nums">{counts.present}</div><div className="text-xs font-medium">{t("حاضر")}</div></div>
+        <div className="rounded-xl bg-rose-50 px-4 py-3 text-rose-700"><div className="text-xl font-bold tabular-nums">{counts.absent}</div><div className="text-xs font-medium">{t("غايب")}</div></div>
+        <div className="rounded-xl bg-amber-50 px-4 py-3 text-amber-700"><div className="text-xl font-bold tabular-nums">{counts.late}</div><div className="text-xs font-medium">{t("متأخر")}</div></div>
+        <div className="rounded-xl bg-sky-50 px-4 py-3 text-sky-700"><div className="text-xl font-bold tabular-nums">{counts.leave}</div><div className="text-xs font-medium">{t("إجازة")}</div></div>
       </div>
 
       {employees.length === 0 ? <Card className="p-0"><EmptyState text="لسه معملتش أي موظف نشط." /></Card> : (
@@ -1615,7 +1686,7 @@ function AttendanceTab({ employees, attendance, setAttendance, settings }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-                <th className="px-4 py-3">الموظف</th><th className="px-4 py-3">الحالة</th><th className="px-4 py-3">ساعات إضافي</th>
+                <th className="px-4 py-3">{t("الموظف")}</th><th className="px-4 py-3">{t("الحالة")}</th><th className="px-4 py-3">{t("ساعات إضافي")}</th>
               </tr>
             </thead>
             <tbody>
@@ -1629,7 +1700,7 @@ function AttendanceTab({ employees, attendance, setAttendance, settings }) {
                       {nonWorkReason ? <StampBadge tone="slate">{nonWorkReason}</StampBadge> : (
                         <div className="flex gap-1.5">
                           {Object.keys(STATUS_LABELS).map((st) => (
-                            <button key={st} onClick={() => setStatus(e.id, st)} className={`rounded-full border px-2.5 py-1 text-xs font-semibold transition-colors ${entry?.status === st ? STATUS_COLORS[st] : "border-stone-200 text-slate-400 hover:border-stone-300"}`}>{STATUS_LABELS[st]}</button>
+                            <button key={st} onClick={() => setStatus(e.id, st)} className={`rounded-full border px-2.5 py-1 text-xs font-semibold transition-colors ${entry?.status === st ? STATUS_COLORS[st] : "border-stone-200 text-slate-400 hover:border-stone-300"}`}>{t(STATUS_LABELS[st])}</button>
                           ))}
                         </div>
                       )}
@@ -1662,6 +1733,7 @@ const ATTENDANCE_IMPORT_FIELDS = [
 ];
 
 function AttendanceImportWizard({ employees, settings, onImport, onCancel }) {
+  const { t } = useLang();
   const [step, setStep] = useState(1);
   const [fileName, setFileName] = useState("");
   const [headers, setHeaders] = useState([]);
@@ -1762,44 +1834,44 @@ function AttendanceImportWizard({ employees, settings, onImport, onCancel }) {
     <div>
       {step === 1 && (
         <div>
-          <p className="mb-3 text-sm text-slate-500">يشتغل مع أي مصدر: تقرير جهاز البصمة (وقت حضور/انصراف)، أو ملف يدوي فيه عمود "الحالة" جاهز.</p>
+          <p className="mb-3 text-sm text-slate-500">{t("يشتغل مع أي مصدر: تقرير جهاز البصمة (وقت حضور/انصراف)، أو ملف يدوي فيه عمود \"الحالة\" جاهز.")}</p>
           <FileDropZone onFile={handleFile} fileName={fileName} />
-          {error && <p className="mt-2 text-sm text-rose-600">{error}</p>}
+          {error && <p className="mt-2 text-sm text-rose-600">{t(error)}</p>}
         </div>
       )}
       {step === 2 && (
         <div>
-          <p className="mb-3 text-sm text-slate-500">حدد الأعمدة. لازم التاريخ + (كود الموظف أو اسمه على الأقل) — بعد كده إما "الحالة الجاهزة" أو "وقت الحضور" (عشان نحسب متأخر تلقائي).</p>
+          <p className="mb-3 text-sm text-slate-500">{t("حدد الأعمدة. لازم التاريخ + (كود الموظف أو اسمه على الأقل) — بعد كده إما \"الحالة الجاهزة\" أو \"وقت الحضور\" (عشان نحسب متأخر تلقائي).")}</p>
           <div className="space-y-2">
             {ATTENDANCE_IMPORT_FIELDS.map((f) => (
               <div key={f.key} className="flex items-center gap-3">
-                <span className="w-64 shrink-0 text-sm text-slate-600">{f.label}{f.required && <span className="text-rose-500"> *</span>}</span>
+                <span className="w-64 shrink-0 text-sm text-slate-600">{t(f.label)}{f.required && <span className="text-rose-500"> *</span>}</span>
                 <select className={inputCls} value={mapping[f.key] ?? ""} onChange={(e) => setMapping({ ...mapping, [f.key]: e.target.value === "" ? undefined : Number(e.target.value) })}>
-                  <option value="">— تجاهل —</option>
+                  <option value="">{t("— تجاهل —")}</option>
                   {headers.map((h, i) => <option key={i} value={i}>{h}</option>)}
                 </select>
               </div>
             ))}
           </div>
-          <p className="mt-3 text-xs text-slate-400">{rows.length} صف اتقروا من الملف. الموظف بيتطابق بالاسم بالظبط مع اللي مسجل في تاب الموظفين.</p>
+          <p className="mt-3 text-xs text-slate-400">{t("{n} صف اتقروا من الملف. الموظف بيتطابق بالاسم بالظبط مع اللي مسجل في تاب الموظفين.", { n: rows.length })}</p>
           <div className="mt-4 flex justify-between border-t border-stone-200 pt-4">
-            <button onClick={() => setStep(1)} className="flex items-center gap-1 rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50"><ArrowRight size={14} /> رجوع</button>
-            <button disabled={(mapping.employeeCode === undefined && mapping.employeeName === undefined) || mapping.date === undefined} onClick={goPreview} className="flex items-center gap-1 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900 disabled:opacity-40">معاينة <ArrowLeft size={14} /></button>
+            <button onClick={() => setStep(1)} className="flex items-center gap-1 rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50"><ArrowRight size={14} /> {t("رجوع")}</button>
+            <button disabled={(mapping.employeeCode === undefined && mapping.employeeName === undefined) || mapping.date === undefined} onClick={goPreview} className="flex items-center gap-1 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900 disabled:opacity-40">{t("معاينة")} <ArrowLeft size={14} /></button>
           </div>
         </div>
       )}
       {step === 3 && (
         <div>
-          <p className="mb-2 text-sm text-slate-500">هيتسجل <strong>{built.results.length}</strong> سجل حضور.</p>
+          <p className="mb-2 text-sm text-slate-500">{t("هيتسجل")} <strong>{built.results.length}</strong> {t("سجل حضور.")}</p>
           {built.unmatchedNames.length > 0 && (
             <div className="mb-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
-              <strong>{built.unmatchedNames.length}</strong> اسم في الملف ملقيناش موظف مطابق له في النظام (اتجاهلوا): {built.unmatchedNames.slice(0, 6).join("، ")}{built.unmatchedNames.length > 6 ? "..." : ""}
+              <strong>{built.unmatchedNames.length}</strong> {t("اسم في الملف ملقيناش موظف مطابق له في النظام (اتجاهلوا):")} {built.unmatchedNames.slice(0, 6).join("، ")}{built.unmatchedNames.length > 6 ? "..." : ""}
             </div>
           )}
           <div className="mb-4 rounded-lg bg-stone-50 p-3">
             <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
               <input type="checkbox" checked={fillAbsence} onChange={(e) => setFillAbsence(e.target.checked)} />
-              علّم أي موظف نشط مالوش سجل في يوم شغل (خلال الفترة دي) كـ "غايب" تلقائيًا
+              {t("علّم أي موظف نشط مالوش سجل في يوم شغل (خلال الفترة دي) كـ \"غايب\" تلقائيًا")}
             </label>
             {fillAbsence && (
               <div className="mt-2 grid grid-cols-2 gap-3">
@@ -1809,8 +1881,8 @@ function AttendanceImportWizard({ employees, settings, onImport, onCancel }) {
             )}
           </div>
           <div className="mt-4 flex justify-between border-t border-stone-200 pt-4">
-            <button onClick={() => setStep(2)} className="flex items-center gap-1 rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50"><ArrowRight size={14} /> رجوع</button>
-            <button onClick={() => onImport(built.results, fillAbsence, range.from, range.to)} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Check size={15} /> تأكيد الاستيراد</button>
+            <button onClick={() => setStep(2)} className="flex items-center gap-1 rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50"><ArrowRight size={14} /> {t("رجوع")}</button>
+            <button onClick={() => onImport(built.results, fillAbsence, range.from, range.to)} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Check size={15} /> {t("تأكيد الاستيراد")}</button>
           </div>
         </div>
       )}
@@ -1820,25 +1892,26 @@ function AttendanceImportWizard({ employees, settings, onImport, onCancel }) {
 
 /* ================= PENALTIES (+ warnings) ================= */
 function PenaltiesTab({ employees, penalties, setPenalties }) {
+  const { t } = useLang();
   const [modalOpen, setModalOpen] = useState(false);
   function add(data) { setPenalties([{ id: uid("pen"), ...data }, ...penalties]); setModalOpen(false); }
   function remove(id) { setPenalties(penalties.filter((p) => p.id !== id)); }
-  function empName(id) { return employees.find((e) => e.id === id)?.name || "موظف سابق"; }
+  function empName(id) { return employees.find((e) => e.id === id)?.name || t("موظف سابق"); }
   const sorted = [...penalties].sort((a, b) => (a.date < b.date ? 1 : -1));
-  const toneFor = (t) => t === "خصم مالي" ? "rose" : t === "فصل" ? "rose" : t === "إنذار كتابي" ? "amber" : "slate";
+  const toneFor = (at) => at === "خصم مالي" ? "rose" : at === "فصل" ? "rose" : at === "إنذار كتابي" ? "amber" : "slate";
 
   return (
     <div>
-      <SectionTitle eyebrow={`${penalties.length} إجراء مسجل`} title="الجزاءات والإنذارات" action={
+      <SectionTitle eyebrow={t("{n} إجراء مسجل", { n: penalties.length })} title="الجزاءات والإنذارات" action={
         <button onClick={() => setModalOpen(true)} disabled={employees.length === 0} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-900 disabled:opacity-40">
-          <Plus size={16} /> تسجيل إجراء
+          <Plus size={16} /> {t("تسجيل إجراء")}
         </button>
       } />
       {sorted.length === 0 ? <Card className="p-0"><EmptyState text="مفيش إجراءات مسجلة." /></Card> : (
         <Card className="overflow-hidden p-0">
           <table className="w-full text-sm">
             <thead><tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-              <th className="px-4 py-3">الموظف</th><th className="px-4 py-3">التاريخ</th><th className="px-4 py-3">نوع الإجراء</th><th className="px-4 py-3">السبب</th><th className="px-4 py-3">الخصم</th><th className="px-4 py-3"></th>
+              <th className="px-4 py-3">{t("الموظف")}</th><th className="px-4 py-3">{t("التاريخ")}</th><th className="px-4 py-3">{t("نوع الإجراء")}</th><th className="px-4 py-3">{t("السبب")}</th><th className="px-4 py-3">{t("الخصم")}</th><th className="px-4 py-3"></th>
             </tr></thead>
             <tbody>
               {sorted.map((p) => (
@@ -1847,7 +1920,7 @@ function PenaltiesTab({ employees, penalties, setPenalties }) {
                   <td className="px-4 py-3 text-slate-500">{p.date}</td>
                   <td className="px-4 py-3"><StampBadge tone={toneFor(p.actionType)}>{p.actionType}</StampBadge></td>
                   <td className="px-4 py-3 text-slate-600">{p.reason}</td>
-                  <td className="px-4 py-3 tabular-nums font-semibold text-rose-600">{p.actionType === "خصم مالي" ? `-${fmtMoney(p.amount)} ج.م` : "—"}</td>
+                  <td className="px-4 py-3 tabular-nums font-semibold text-rose-600">{p.actionType === "خصم مالي" ? `-${fmtMoney(p.amount)} ${t("ج.م")}` : "—"}</td>
                   <td className="px-4 py-3"><button onClick={() => remove(p.id)} className="rounded-md p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 size={15} /></button></td>
                 </tr>
               ))}
@@ -1862,6 +1935,7 @@ function PenaltiesTab({ employees, penalties, setPenalties }) {
   );
 }
 function PenaltyForm({ employees, onSave, onCancel }) {
+  const { t } = useLang();
   const [form, setForm] = useState({ employeeId: employees[0]?.id || "", date: todayISO(), actionType: ACTION_TYPES[0], reason: "", amount: "", notes: "" });
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
   function submit(e) { e.preventDefault(); if (!form.employeeId || !form.reason.trim()) return; onSave({ ...form, amount: form.actionType === "خصم مالي" ? Number(form.amount) || 0 : 0 }); }
@@ -1870,14 +1944,14 @@ function PenaltyForm({ employees, onSave, onCancel }) {
       <Field label="الموظف"><select required className={inputCls} value={form.employeeId} onChange={(e) => set("employeeId", e.target.value)}>{employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</select></Field>
       <div className="grid grid-cols-2 gap-4">
         <Field label="التاريخ"><input type="date" className={inputCls} value={form.date} onChange={(e) => set("date", e.target.value)} /></Field>
-        <Field label="نوع الإجراء"><select className={inputCls} value={form.actionType} onChange={(e) => set("actionType", e.target.value)}>{ACTION_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}</select></Field>
+        <Field label="نوع الإجراء"><select className={inputCls} value={form.actionType} onChange={(e) => set("actionType", e.target.value)}>{ACTION_TYPES.map((at) => <option key={at} value={at}>{t(at)}</option>)}</select></Field>
       </div>
       {form.actionType === "خصم مالي" && <Field label="قيمة الخصم (ج.م)"><input type="number" min="0" className={inputCls} value={form.amount} onChange={(e) => set("amount", e.target.value)} /></Field>}
-      <Field label="السبب"><input required className={inputCls} value={form.reason} onChange={(e) => set("reason", e.target.value)} placeholder="مثلاً: تأخير متكرر، مخالفة سياسة..." /></Field>
+      <Field label="السبب"><input required className={inputCls} value={form.reason} onChange={(e) => set("reason", e.target.value)} placeholder={t("مثلاً: تأخير متكرر، مخالفة سياسة...")} /></Field>
       <Field label="ملاحظات (اختياري)"><textarea className={inputCls} rows={2} value={form.notes} onChange={(e) => set("notes", e.target.value)} /></Field>
       <div className="flex justify-end gap-2 border-t border-stone-200 pt-4">
-        <button type="button" onClick={onCancel} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50">إلغاء</button>
-        <button type="submit" className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Save size={15} /> حفظ</button>
+        <button type="button" onClick={onCancel} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50">{t("إلغاء")}</button>
+        <button type="submit" className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Save size={15} /> {t("حفظ")}</button>
       </div>
     </form>
   );
@@ -1885,31 +1959,32 @@ function PenaltyForm({ employees, onSave, onCancel }) {
 
 /* ================= ADVANCES ================= */
 function AdvancesTab({ employees, advances, setAdvances }) {
+  const { t } = useLang();
   const [modalOpen, setModalOpen] = useState(false);
   function add(data) { setAdvances([{ id: uid("adv"), ...data }, ...advances]); setModalOpen(false); }
   function remove(id) { setAdvances(advances.filter((a) => a.id !== id)); }
-  function empName(id) { return employees.find((e) => e.id === id)?.name || "موظف سابق"; }
+  function empName(id) { return employees.find((e) => e.id === id)?.name || t("موظف سابق"); }
 
   return (
     <div>
-      <SectionTitle eyebrow={`${advances.length} سلفة مسجلة`} title="السلف" action={
-        <button onClick={() => setModalOpen(true)} disabled={employees.length === 0} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-900 disabled:opacity-40"><Plus size={16} /> سلفة جديدة</button>
+      <SectionTitle eyebrow={t("{n} سلفة مسجلة", { n: advances.length })} title="السلف" action={
+        <button onClick={() => setModalOpen(true)} disabled={employees.length === 0} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-900 disabled:opacity-40"><Plus size={16} /> {t("سلفة جديدة")}</button>
       } />
       {advances.length === 0 ? <Card className="p-0"><EmptyState text="مفيش سلف مسجلة." /></Card> : (
         <Card className="overflow-hidden p-0">
           <table className="w-full text-sm">
             <thead><tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-              <th className="px-4 py-3">الموظف</th><th className="px-4 py-3">تاريخ الصرف</th><th className="px-4 py-3">القيمة</th><th className="px-4 py-3">عدد الأقساط</th><th className="px-4 py-3">القسط الشهري</th><th className="px-4 py-3">المتبقي</th><th className="px-4 py-3"></th>
+              <th className="px-4 py-3">{t("الموظف")}</th><th className="px-4 py-3">{t("تاريخ الصرف")}</th><th className="px-4 py-3">{t("القيمة")}</th><th className="px-4 py-3">{t("عدد الأقساط")}</th><th className="px-4 py-3">{t("القسط الشهري")}</th><th className="px-4 py-3">{t("المتبقي")}</th><th className="px-4 py-3"></th>
             </tr></thead>
             <tbody>
               {advances.map((a) => (
                 <tr key={a.id} className="border-b border-stone-100 last:border-0 hover:bg-stone-50">
                   <td className="px-4 py-3 font-medium text-slate-800">{empName(a.employeeId)}</td>
                   <td className="px-4 py-3 text-slate-500">{a.date}</td>
-                  <td className="px-4 py-3 tabular-nums text-slate-700">{fmtMoney(a.totalAmount)} ج.م</td>
+                  <td className="px-4 py-3 tabular-nums text-slate-700">{fmtMoney(a.totalAmount)} {t("ج.م")}</td>
                   <td className="px-4 py-3 tabular-nums text-slate-600">{a.installments}</td>
-                  <td className="px-4 py-3 tabular-nums text-slate-600">{fmtMoney(Math.round(a.totalAmount / a.installments))} ج.م</td>
-                  <td className="px-4 py-3 tabular-nums font-semibold">{advanceRemaining(a) === 0 ? <StampBadge tone="emerald">اتسددت</StampBadge> : `${fmtMoney(advanceRemaining(a))} ج.م`}</td>
+                  <td className="px-4 py-3 tabular-nums text-slate-600">{fmtMoney(Math.round(a.totalAmount / a.installments))} {t("ج.م")}</td>
+                  <td className="px-4 py-3 tabular-nums font-semibold">{advanceRemaining(a) === 0 ? <StampBadge tone="emerald">اتسددت</StampBadge> : `${fmtMoney(advanceRemaining(a))} ${t("ج.م")}`}</td>
                   <td className="px-4 py-3"><button onClick={() => remove(a.id)} className="rounded-md p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 size={15} /></button></td>
                 </tr>
               ))}
@@ -1924,6 +1999,7 @@ function AdvancesTab({ employees, advances, setAdvances }) {
   );
 }
 function AdvanceForm({ employees, onSave, onCancel }) {
+  const { t } = useLang();
   const [form, setForm] = useState({ employeeId: employees[0]?.id || "", date: todayISO(), totalAmount: "", installments: 1, notes: "" });
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
   function submit(e) { e.preventDefault(); if (!form.employeeId || !form.totalAmount) return; onSave({ ...form, totalAmount: Number(form.totalAmount) || 0, installments: Number(form.installments) || 1 }); }
@@ -1937,8 +2013,8 @@ function AdvanceForm({ employees, onSave, onCancel }) {
       </div>
       <Field label="ملاحظات (اختياري)"><textarea className={inputCls} rows={2} value={form.notes} onChange={(e) => set("notes", e.target.value)} /></Field>
       <div className="flex justify-end gap-2 border-t border-stone-200 pt-4">
-        <button type="button" onClick={onCancel} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50">إلغاء</button>
-        <button type="submit" className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Save size={15} /> حفظ</button>
+        <button type="button" onClick={onCancel} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50">{t("إلغاء")}</button>
+        <button type="submit" className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Save size={15} /> {t("حفظ")}</button>
       </div>
     </form>
   );
@@ -1946,6 +2022,7 @@ function AdvanceForm({ employees, onSave, onCancel }) {
 
 /* ================= FORMER EMPLOYEES ================= */
 function FormerEmployeesTab({ employees, setEmployees, allEmployees, onDelete }) {
+  const { t } = useLang();
   const [editing, setEditing] = useState(null);
   const [selected, setSelected] = useState(() => new Set());
   const [confirmDelete, setConfirmDelete] = useState(null);
@@ -1976,10 +2053,10 @@ function FormerEmployeesTab({ employees, setEmployees, allEmployees, onDelete })
   }
   return (
     <div>
-      <SectionTitle eyebrow={`${employees.length} موظف سابق`} title="موظفون سابقون" action={
+      <SectionTitle eyebrow={t("{n} موظف سابق", { n: employees.length })} title={t("موظفون سابقون")} action={
         selected.size > 0 && (
           <button onClick={() => setConfirmDelete(employees.filter((e) => selected.has(e.id)))} className="flex items-center gap-1.5 rounded-lg border border-rose-500 bg-rose-50 px-3.5 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100">
-            <Trash2 size={16} /> حذف المحدد ({selected.size})
+            <Trash2 size={16} /> {t("حذف المحدد ({n})", { n: selected.size })}
           </button>
         )
       } />
@@ -1990,7 +2067,7 @@ function FormerEmployeesTab({ employees, setEmployees, allEmployees, onDelete })
               <th className="w-8 px-4 py-3">
                 <input type="checkbox" checked={allSelected} ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }} onChange={toggleSelectAll} className="h-4 w-4 rounded border-stone-300" />
               </th>
-              <th className="px-4 py-3">الاسم</th><th className="px-4 py-3">تاريخ التعيين</th><th className="px-4 py-3">تاريخ الاستقالة</th><th className="px-4 py-3">تسوية نهاية الخدمة</th><th className="px-4 py-3"></th>
+              <th className="px-4 py-3">{t("الاسم")}</th><th className="px-4 py-3">{t("تاريخ التعيين")}</th><th className="px-4 py-3">{t("تاريخ الاستقالة")}</th><th className="px-4 py-3">{t("تسوية نهاية الخدمة")}</th><th className="px-4 py-3"></th>
             </tr></thead>
             <tbody>
               {employees.map((e) => (
@@ -1999,12 +2076,12 @@ function FormerEmployeesTab({ employees, setEmployees, allEmployees, onDelete })
                   <td className="px-4 py-3 font-medium text-slate-800">{e.name}</td>
                   <td className="px-4 py-3 text-slate-500">{e.hireDate}</td>
                   <td className="px-4 py-3 text-slate-500">{e.resignationDate}</td>
-                  <td className="px-4 py-3 tabular-nums text-slate-700">{e.settlementAmount ? `${fmtMoney(e.settlementAmount)} ج.م` : "—"}</td>
+                  <td className="px-4 py-3 tabular-nums text-slate-700">{e.settlementAmount ? `${fmtMoney(e.settlementAmount)} ${t("ج.م")}` : "—"}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-1">
                       <button onClick={() => setEditing(e)} className="rounded-md p-1.5 text-slate-400 hover:bg-stone-100 hover:text-teal-700"><Pencil size={15} /></button>
-                      <button onClick={() => reactivate(e.id)} title="إعادة تفعيل" className="rounded-md p-1.5 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600"><Check size={15} /></button>
-                      <button onClick={() => setConfirmDelete([e])} title="حذف نهائي" className="rounded-md p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 size={15} /></button>
+                      <button onClick={() => reactivate(e.id)} title={t("إعادة تفعيل")} className="rounded-md p-1.5 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600"><Check size={15} /></button>
+                      <button onClick={() => setConfirmDelete([e])} title={t("حذف نهائي")} className="rounded-md p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 size={15} /></button>
                     </div>
                   </td>
                 </tr>
@@ -2013,7 +2090,7 @@ function FormerEmployeesTab({ employees, setEmployees, allEmployees, onDelete })
           </table>
         </Card>
       )}
-      <Modal open={!!editing} onClose={() => setEditing(null)} title="تسوية نهاية الخدمة">
+      <Modal open={!!editing} onClose={() => setEditing(null)} title={t("تسوية نهاية الخدمة")}>
         {editing && <SettlementForm emp={editing} onSave={(d) => saveSettlement(editing.id, d)} onCancel={() => setEditing(null)} />}
       </Modal>
       {confirmDelete && (
@@ -2023,6 +2100,7 @@ function FormerEmployeesTab({ employees, setEmployees, allEmployees, onDelete })
   );
 }
 function SettlementForm({ emp, onSave, onCancel }) {
+  const { t } = useLang();
   const [form, setForm] = useState({ resignationDate: emp.resignationDate || todayISO(), lastWorkingDay: emp.lastWorkingDay || "", settlementAmount: emp.settlementAmount || "", settlementNotes: emp.settlementNotes || "" });
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
   function submit(e) { e.preventDefault(); onSave({ ...form, settlementAmount: Number(form.settlementAmount) || 0 }); }
@@ -2035,8 +2113,8 @@ function SettlementForm({ emp, onSave, onCancel }) {
       <Field label="قيمة تسوية نهاية الخدمة (ج.م)"><input type="number" min="0" className={inputCls} value={form.settlementAmount} onChange={(e) => set("settlementAmount", e.target.value)} /></Field>
       <Field label="ملاحظات"><textarea rows={2} className={inputCls} value={form.settlementNotes} onChange={(e) => set("settlementNotes", e.target.value)} /></Field>
       <div className="flex justify-end gap-2 border-t border-stone-200 pt-4">
-        <button type="button" onClick={onCancel} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50">إلغاء</button>
-        <button type="submit" className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Save size={15} /> حفظ</button>
+        <button type="button" onClick={onCancel} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50">{t("إلغاء")}</button>
+        <button type="submit" className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Save size={15} /> {t("حفظ")}</button>
       </div>
     </form>
   );
@@ -2044,6 +2122,7 @@ function SettlementForm({ emp, onSave, onCancel }) {
 
 /* ================= PAYROLL ================= */
 function PayrollTab({ employees, attendance, penalties, payrollMeta, setPayrollMeta, advances, settings, payslipDocs, onSyncPayslips }) {
+  const { t } = useLang();
   const [ym, setYm] = useState(todayISO().slice(0, 7));
   const [payslipEmp, setPayslipEmp] = useState(null);
   const meta = payrollMeta[ym] || {};
@@ -2097,7 +2176,7 @@ function PayrollTab({ employees, attendance, penalties, payrollMeta, setPayrollM
 
   return (
     <div>
-      <SectionTitle eyebrow="كشف رواتب شهري" title="المرتبات" action={
+      <SectionTitle eyebrow={t("كشف رواتب شهري")} title={t("المرتبات")} action={
         <div className="flex items-center gap-2">
           <button onClick={() => shiftMonth(-1)} className="rounded-lg border border-stone-300 p-2 hover:bg-stone-50"><ChevronRight size={16} /></button>
           <input type="month" value={ym} onChange={(e) => setYm(e.target.value)} className={`${inputCls} w-auto`} />
@@ -2105,23 +2184,23 @@ function PayrollTab({ employees, attendance, penalties, payrollMeta, setPayrollM
         </div>
       } />
 
-      <p className="mb-4 flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700"><Info size={14} className="mt-0.5 shrink-0" />خصومات التأمينات والضريبة تقديرية حسب النسب في تاب «الإعدادات» — راجعها مع محاسبك قبل الاعتماد عليها فعليًا.</p>
+      <p className="mb-4 flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700"><Info size={14} className="mt-0.5 shrink-0" />{t("خصومات التأمينات والضريبة تقديرية حسب النسب في تاب «الإعدادات» — راجعها مع محاسبك قبل الاعتماد عليها فعليًا.")}</p>
 
       <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-teal-200 bg-teal-50 px-3 py-2.5">
         <p className="text-xs text-teal-700">
-          {syncedCount === 0 ? "بوابة الموظفين لسه ما شافتش مرتب الشهر ده." : `متزامن مع بوابة الموظفين: ${syncedCount} من ${rows.length} موظف.`}
-          {" "}الموظفين مش هيشوفوا أي تعديل هنا غير بعد ما تدوس «مزامنة».
+          {syncedCount === 0 ? t("بوابة الموظفين لسه ما شافتش مرتب الشهر ده.") : t("متزامن مع بوابة الموظفين: {synced} من {total} موظف.", { synced: syncedCount, total: rows.length })}
+          {" "}{t("الموظفين مش هيشوفوا أي تعديل هنا غير بعد ما تدوس «مزامنة».")}
         </p>
         <button onClick={() => onSyncPayslips(ym, rows)} className="flex shrink-0 items-center gap-1.5 rounded-lg bg-teal-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-900">
-          <Upload size={13} /> مزامنة مع بوابة الموظفين
+          <Upload size={13} /> {t("مزامنة مع بوابة الموظفين")}
         </button>
       </div>
 
       <div className="mb-5 grid grid-cols-4 gap-3">
-        <div className="rounded-xl bg-stone-100 px-4 py-3"><div className="text-lg font-bold tabular-nums text-slate-800">{fmtMoney(totals.base)}</div><div className="text-xs font-medium text-slate-500">إجمالي الرواتب الأساسية</div></div>
-        <div className="rounded-xl bg-rose-50 px-4 py-3"><div className="text-lg font-bold tabular-nums text-rose-700">-{fmtMoney(totals.deductions)}</div><div className="text-xs font-medium text-rose-600">إجمالي الخصومات</div></div>
-        <div className="rounded-xl bg-emerald-50 px-4 py-3"><div className="text-lg font-bold tabular-nums text-emerald-700">+{fmtMoney(totals.additions)}</div><div className="text-xs font-medium text-emerald-600">إضافي ومكافآت</div></div>
-        <div className="rounded-xl bg-teal-800 px-4 py-3"><div className="text-lg font-bold tabular-nums text-white">{fmtMoney(totals.net)}</div><div className="text-xs font-medium text-teal-100">صافي المستحق</div></div>
+        <div className="rounded-xl bg-stone-100 px-4 py-3"><div className="text-lg font-bold tabular-nums text-slate-800">{fmtMoney(totals.base)}</div><div className="text-xs font-medium text-slate-500">{t("إجمالي الرواتب الأساسية")}</div></div>
+        <div className="rounded-xl bg-rose-50 px-4 py-3"><div className="text-lg font-bold tabular-nums text-rose-700">-{fmtMoney(totals.deductions)}</div><div className="text-xs font-medium text-rose-600">{t("إجمالي الخصومات")}</div></div>
+        <div className="rounded-xl bg-emerald-50 px-4 py-3"><div className="text-lg font-bold tabular-nums text-emerald-700">+{fmtMoney(totals.additions)}</div><div className="text-xs font-medium text-emerald-600">{t("إضافي ومكافآت")}</div></div>
+        <div className="rounded-xl bg-teal-800 px-4 py-3"><div className="text-lg font-bold tabular-nums text-white">{fmtMoney(totals.net)}</div><div className="text-xs font-medium text-teal-100">{t("صافي المستحق")}</div></div>
       </div>
 
       {rows.length === 0 ? <Card className="p-0"><EmptyState text="لسه معملتش أي موظف نشط." /></Card> : (
@@ -2129,9 +2208,9 @@ function PayrollTab({ employees, attendance, penalties, payrollMeta, setPayrollM
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-                <th className="px-3 py-3">الموظف</th><th className="px-3 py-3">الأساسي</th><th className="px-3 py-3">غياب</th><th className="px-3 py-3">جزاءات</th>
-                <th className="px-3 py-3">سلف</th><th className="px-3 py-3">تأمينات</th><th className="px-3 py-3">ضريبة</th><th className="px-3 py-3">إضافي</th>
-                <th className="px-3 py-3">مكافأة</th><th className="px-3 py-3">الصافي</th><th className="px-3 py-3">الحالة</th><th className="px-3 py-3"></th>
+                <th className="px-3 py-3">{t("الموظف")}</th><th className="px-3 py-3">{t("الأساسي")}</th><th className="px-3 py-3">{t("غياب")}</th><th className="px-3 py-3">{t("جزاءات")}</th>
+                <th className="px-3 py-3">{t("سلف")}</th><th className="px-3 py-3">{t("تأمينات")}</th><th className="px-3 py-3">{t("ضريبة")}</th><th className="px-3 py-3">{t("إضافي")}</th>
+                <th className="px-3 py-3">{t("مكافأة")}</th><th className="px-3 py-3">{t("الصافي")}</th><th className="px-3 py-3">{t("الحالة")}</th><th className="px-3 py-3"></th>
               </tr></thead>
               <tbody>
                 {rows.map((r) => (
@@ -2149,7 +2228,7 @@ function PayrollTab({ employees, attendance, penalties, payrollMeta, setPayrollM
                     </td>
                     <td className="px-3 py-3 tabular-nums font-bold text-slate-800 whitespace-nowrap">{fmtMoney(r.net)}</td>
                     <td className="px-3 py-3">
-                      <button onClick={() => setMetaFor(r.emp.id, { paid: !r.paid })} className={`whitespace-nowrap rounded-full border px-2.5 py-1 text-xs font-semibold ${r.paid ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-stone-200 text-slate-400"}`}>{r.paid ? "تم الصرف" : "لسه"}</button>
+                      <button onClick={() => setMetaFor(r.emp.id, { paid: !r.paid })} className={`whitespace-nowrap rounded-full border px-2.5 py-1 text-xs font-semibold ${r.paid ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-stone-200 text-slate-400"}`}>{r.paid ? t("تم الصرف") : t("لسه")}</button>
                     </td>
                     <td className="px-3 py-3"><button onClick={() => setPayslipEmp(r)} className="rounded-md p-1.5 text-slate-400 hover:bg-teal-50 hover:text-teal-700"><Printer size={15} /></button></td>
                   </tr>
@@ -2166,19 +2245,20 @@ function PayrollTab({ employees, attendance, penalties, payrollMeta, setPayrollM
 }
 
 function PayslipModal({ row, ym, onClose }) {
+  const { t } = useLang();
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
       <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl bg-white shadow-xl print-area">
         <div className="no-print flex items-center justify-between border-b border-stone-200 px-6 py-4">
-          <h3 className="text-lg font-bold text-slate-800">إيصال مرتب</h3>
+          <h3 className="text-lg font-bold text-slate-800">{t("إيصال مرتب")}</h3>
           <div className="flex items-center gap-2">
-            <button onClick={() => window.print()} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-900"><Printer size={14} /> طباعة</button>
+            <button onClick={() => window.print()} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-900"><Printer size={14} /> {t("طباعة")}</button>
             <button onClick={onClose} className="rounded-full p-1.5 text-slate-400 hover:bg-stone-100"><X size={18} /></button>
           </div>
         </div>
         <div className="p-6">
           <div className="mb-4 border-b-2 border-amber-500 pb-3 text-center">
-            <div className="text-lg font-bold text-slate-800">إيصال مرتب — {ym}</div>
+            <div className="text-lg font-bold text-slate-800">{t("إيصال مرتب")} — {ym}</div>
             <div className="text-sm text-slate-500">{row.emp.name} · {row.emp.position || "—"}</div>
           </div>
           <table className="w-full text-sm">
@@ -2192,8 +2272,8 @@ function PayslipModal({ row, ym, onClose }) {
               <Row label="مقابل الوقت الإضافي" value={row.overtimePay} />
               <Row label="مكافأة" value={row.bonus} />
               <tr className="border-t-2 border-teal-800">
-                <td className="py-3 font-bold text-slate-800">صافي المستحق</td>
-                <td className="py-3 text-left font-bold tabular-nums text-teal-800">{fmtMoney(row.net)} ج.م</td>
+                <td className="py-3 font-bold text-slate-800">{t("صافي المستحق")}</td>
+                <td className="py-3 text-left font-bold tabular-nums text-teal-800">{fmtMoney(row.net)} {t("ج.م")}</td>
               </tr>
             </tbody>
           </table>
@@ -2203,11 +2283,12 @@ function PayslipModal({ row, ym, onClose }) {
   );
 }
 function Row({ label, value }) {
+  const { t } = useLang();
   const neg = value < 0;
   return (
     <tr className="border-b border-stone-100">
-      <td className="py-2 text-slate-600">{label}</td>
-      <td className={`py-2 text-left tabular-nums font-medium ${neg ? "text-rose-600" : "text-slate-700"}`}>{neg ? "-" : value > 0 ? "+" : ""}{fmtMoney(Math.abs(value))} ج.م</td>
+      <td className="py-2 text-slate-600">{t(label)}</td>
+      <td className={`py-2 text-left tabular-nums font-medium ${neg ? "text-rose-600" : "text-slate-700"}`}>{neg ? "-" : value > 0 ? "+" : ""}{fmtMoney(Math.abs(value))} {t("ج.م")}</td>
     </tr>
   );
 }
@@ -2220,6 +2301,7 @@ function Row({ label, value }) {
 const BACKUP_KEYS = ["hr_employees", "hr_attendance", "hr_penalties", "hr_payroll", "hr_advances", "hr_documents", "hr_reviews", "hr_settings", "hr_orgchart"];
 
 function BackupSection({ employees, attendance, penalties, payrollMeta, advances, documents, reviews, settings, orgChart, upd }) {
+  const { t } = useLang();
   const fileRef = useRef(null);
   const [msg, setMsg] = useState(null); // { tone: "teal" | "rose", text }
   const [busy, setBusy] = useState(false);
@@ -2242,7 +2324,7 @@ function BackupSection({ employees, attendance, penalties, payrollMeta, advances
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    setMsg({ tone: "teal", text: "تم تحميل نسخة احتياطية من قاعدة البيانات الحالية." });
+    setMsg({ tone: "teal", text: t("تم تحميل نسخة احتياطية من قاعدة البيانات الحالية.") });
   }
 
   async function handleImportFile(file) {
@@ -2262,10 +2344,10 @@ function BackupSection({ employees, attendance, penalties, payrollMeta, advances
       if (data.hr_reviews) { upd.reviews(data.hr_reviews); imported.push("التقييمات"); }
       if (data.hr_settings) { upd.settings({ ...DEFAULT_SETTINGS, ...data.hr_settings }); imported.push("الإعدادات"); }
       if (data.hr_orgchart) { upd.orgChart({ ...DEFAULT_ORG_CHART, ...data.hr_orgchart }); imported.push("الهيكل التنظيمي"); }
-      if (imported.length === 0) { setMsg({ tone: "rose", text: "الملف ده مش نسخة احتياطية من النظام ده — مفيش أي بيانات معروفة فيه." }); return; }
-      setMsg({ tone: "teal", text: `تم إرسال ${imported.length} من مجموعات البيانات لقاعدة البيانات — التحديث بيظهر تلقائي في الشاشة خلال ثواني.` });
+      if (imported.length === 0) { setMsg({ tone: "rose", text: t("الملف ده مش نسخة احتياطية من النظام ده — مفيش أي بيانات معروفة فيه.") }); return; }
+      setMsg({ tone: "teal", text: t("تم إرسال {n} من مجموعات البيانات لقاعدة البيانات — التحديث بيظهر تلقائي في الشاشة خلال ثواني.", { n: imported.length }) });
     } catch (err) {
-      setMsg({ tone: "rose", text: "تعذّر قراءة الملف — تأكد إنه ملف JSON صحيح من نسخة احتياطية سابقة." });
+      setMsg({ tone: "rose", text: t("تعذّر قراءة الملف — تأكد إنه ملف JSON صحيح من نسخة احتياطية سابقة.") });
     } finally {
       setBusy(false);
       if (fileRef.current) fileRef.current.value = "";
@@ -2274,16 +2356,16 @@ function BackupSection({ employees, attendance, penalties, payrollMeta, advances
 
   return (
     <Card className="mb-6 p-5">
-      <h3 className="mb-1 flex items-center gap-2 font-bold text-slate-800"><Save size={16} /> النسخ الاحتياطي والاستعادة</h3>
+      <h3 className="mb-1 flex items-center gap-2 font-bold text-slate-800"><Save size={16} /> {t("النسخ الاحتياطي والاستعادة")}</h3>
       <p className="mb-4 text-xs text-slate-500">
-        البيانات دلوقتي متخزنة في قاعدة بيانات Firestore المشتركة، مش في متصفحك بس. برضه خد نسخة احتياطية بانتظام واحفظها في مكان آمن — نفس الزرار بيستخدم كمان لاستيراد نسخة قديمة (حتى لو كانت من زمن التخزين المحلي) مباشرة في قاعدة البيانات.
+        {t("البيانات دلوقتي متخزنة في قاعدة بيانات Firestore المشتركة، مش في متصفحك بس. برضه خد نسخة احتياطية بانتظام واحفظها في مكان آمن — نفس الزرار بيستخدم كمان لاستيراد نسخة قديمة (حتى لو كانت من زمن التخزين المحلي) مباشرة في قاعدة البيانات.")}
       </p>
       <div className="flex flex-wrap items-center gap-2">
         <button onClick={exportBackup} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-900">
-          <Save size={15} /> تحميل نسخة احتياطية (JSON)
+          <Save size={15} /> {t("تحميل نسخة احتياطية (JSON)")}
         </button>
         <button onClick={() => fileRef.current?.click()} disabled={busy} className="flex items-center gap-1.5 rounded-lg border border-teal-700 px-3.5 py-2 text-sm font-semibold text-teal-800 hover:bg-teal-50 disabled:opacity-50">
-          {busy ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />} استيراد نسخة احتياطية
+          {busy ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />} {t("استيراد نسخة احتياطية")}
         </button>
         <input ref={fileRef} type="file" accept=".json,application/json" className="hidden" onChange={(e) => e.target.files[0] && handleImportFile(e.target.files[0])} />
       </div>
@@ -2293,6 +2375,7 @@ function BackupSection({ employees, attendance, penalties, payrollMeta, advances
 }
 
 function SettingsTab({ settings, setSettings, backupProps }) {
+  const { t } = useLang();
   const [form, setForm] = useState(settings);
   const [holidayForm, setHolidayForm] = useState({ date: "", name: "" });
 
@@ -2314,14 +2397,14 @@ function SettingsTab({ settings, setSettings, backupProps }) {
 
   return (
     <div>
-      <SectionTitle eyebrow="نسب وقيم قابلة للتعديل" title="الإعدادات" />
-      <p className="mb-5 flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700"><Info size={14} className="mt-0.5 shrink-0" />النسب دي تقديرية ومسؤوليتك تراجعها وتحدّثها مع محاسب أو مستشار قانوني، خصوصًا إن قوانين التأمينات والضرايب بتتغير كل فترة.</p>
+      <SectionTitle eyebrow={t("نسب وقيم قابلة للتعديل")} title={t("الإعدادات")} />
+      <p className="mb-5 flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700"><Info size={14} className="mt-0.5 shrink-0" />{t("النسب دي تقديرية ومسؤوليتك تراجعها وتحدّثها مع محاسب أو مستشار قانوني، خصوصًا إن قوانين التأمينات والضرايب بتتغير كل فترة.")}</p>
 
       <BackupSection {...backupProps} />
 
       <form onSubmit={save} className="space-y-6">
         <Card className="p-5">
-          <h3 className="mb-4 flex items-center gap-2 font-bold text-slate-800"><Landmark size={16} /> التأمينات والإجازات والإضافي</h3>
+          <h3 className="mb-4 flex items-center gap-2 font-bold text-slate-800"><Landmark size={16} /> {t("التأمينات والإجازات والإضافي")}</h3>
           <div className="grid grid-cols-3 gap-4">
             <Field label="نسبة التأمينات على الموظف (%)"><input type="number" step="0.1" className={inputCls} value={form.insuranceRate} onChange={(e) => setForm({ ...form, insuranceRate: Number(e.target.value) })} /></Field>
             <Field label="مضاعف أجر الوقت الإضافي"><input type="number" step="0.1" className={inputCls} value={form.overtimeMultiplier} onChange={(e) => setForm({ ...form, overtimeMultiplier: Number(e.target.value) })} /></Field>
@@ -2329,16 +2412,16 @@ function SettingsTab({ settings, setSettings, backupProps }) {
             <Field label="معاد بداية الدوام الرسمي"><input type="time" className={inputCls} value={form.workStartTime} onChange={(e) => setForm({ ...form, workStartTime: e.target.value })} /></Field>
             <Field label="فترة سماح قبل اعتباره متأخر (دقيقة)"><input type="number" className={inputCls} value={form.lateGraceMinutes} onChange={(e) => setForm({ ...form, lateGraceMinutes: Number(e.target.value) })} /></Field>
           </div>
-          <p className="mt-2 text-xs text-slate-400">دول بيتستخدموا لما تستورد بيانات حضور بوقت دخول بس (من جهاز البصمة) عشان نحدد تلقائي مين "متأخر".</p>
+          <p className="mt-2 text-xs text-slate-400">{t("دول بيتستخدموا لما تستورد بيانات حضور بوقت دخول بس (من جهاز البصمة) عشان نحدد تلقائي مين \"متأخر\".")}</p>
         </Card>
 
         <Card className="p-5">
-          <h3 className="mb-4 font-bold text-slate-800">شرائح ضريبة كسب العمل (سنويًا)</h3>
+          <h3 className="mb-4 font-bold text-slate-800">{t("شرائح ضريبة كسب العمل (سنويًا)")}</h3>
           <Field label="الإعفاء الشخصي السنوي (ج.م)"><input type="number" className={inputCls} value={form.personalExemptionAnnual} onChange={(e) => setForm({ ...form, personalExemptionAnnual: Number(e.target.value) })} /></Field>
           <div className="mt-4 space-y-2">
             {form.taxBrackets.map((b, i) => (
               <div key={i} className="grid grid-cols-2 gap-3">
-                <input type="number" placeholder="حتى (ج.م، فارغ = بلا حد)" className={inputCls} value={b.upTo ?? ""} onChange={(e) => updateBracket(i, { upTo: e.target.value === "" ? null : Number(e.target.value) })} />
+                <input type="number" placeholder={t("حتى (ج.م، فارغ = بلا حد)")} className={inputCls} value={b.upTo ?? ""} onChange={(e) => updateBracket(i, { upTo: e.target.value === "" ? null : Number(e.target.value) })} />
                 <div className="flex items-center gap-2">
                   <input type="number" step="0.5" className={inputCls} value={b.rate} onChange={(e) => updateBracket(i, { rate: Number(e.target.value) })} />
                   <span className="text-xs text-slate-400">%</span>
@@ -2348,21 +2431,21 @@ function SettingsTab({ settings, setSettings, backupProps }) {
           </div>
         </Card>
 
-        <button type="submit" className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Save size={15} /> حفظ الإعدادات</button>
+        <button type="submit" className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Save size={15} /> {t("حفظ الإعدادات")}</button>
       </form>
 
       <Card className="mt-6 p-5">
-        <h3 className="mb-4 font-bold text-slate-800">العطلات الرسمية</h3>
+        <h3 className="mb-4 font-bold text-slate-800">{t("العطلات الرسمية")}</h3>
         <form onSubmit={addHoliday} className="mb-4 grid grid-cols-3 gap-2">
           <input type="date" className={inputCls} value={holidayForm.date} onChange={(e) => setHolidayForm({ ...holidayForm, date: e.target.value })} />
-          <input placeholder="اسم المناسبة" className={inputCls} value={holidayForm.name} onChange={(e) => setHolidayForm({ ...holidayForm, name: e.target.value })} />
-          <button className="flex items-center justify-center gap-1 rounded-lg bg-teal-800 px-3 py-2 text-xs font-semibold text-white hover:bg-teal-900"><Plus size={14} /> إضافة</button>
+          <input placeholder={t("اسم المناسبة")} className={inputCls} value={holidayForm.name} onChange={(e) => setHolidayForm({ ...holidayForm, name: e.target.value })} />
+          <button className="flex items-center justify-center gap-1 rounded-lg bg-teal-800 px-3 py-2 text-xs font-semibold text-white hover:bg-teal-900"><Plus size={14} /> {t("إضافة")}</button>
         </form>
-        {form.publicHolidays.length === 0 ? <p className="text-sm text-slate-400">مفيش عطلات مسجلة.</p> : (
+        {form.publicHolidays.length === 0 ? <p className="text-sm text-slate-400">{t("مفيش عطلات مسجلة.")}</p> : (
           <div className="space-y-1.5">
             {form.publicHolidays.map((h) => (
               <div key={h.date} className="flex items-center justify-between rounded-lg border border-stone-100 px-3 py-2 text-sm">
-                <span className="text-slate-700">{h.name || "عطلة"} — {h.date}</span>
+                <span className="text-slate-700">{h.name || t("عطلة")} — {h.date}</span>
                 <button onClick={() => removeHoliday(h.date)} className="text-slate-300 hover:text-rose-600"><Trash2 size={14} /></button>
               </div>
             ))}
@@ -2404,6 +2487,7 @@ function buildOrgTree(employees, orgChart) {
 }
 
 function PersonBox({ person, role, tone = "teal", placeholder, subtitle, crown }) {
+  const { t } = useLang();
   const toneCls = {
     teal: "border-teal-700 bg-teal-50",
     amber: "border-amber-500 bg-amber-50",
@@ -2413,15 +2497,15 @@ function PersonBox({ person, role, tone = "teal", placeholder, subtitle, crown }
   if (!person) {
     return (
       <div className={`w-56 rounded-xl border-2 border-dashed ${placeholderBorder} bg-stone-50 p-3 text-center`}>
-        <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{role}</div>
-        <div className="mt-1.5 text-xs text-slate-400">{placeholder}</div>
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{t(role)}</div>
+        <div className="mt-1.5 text-xs text-slate-400">{t(placeholder)}</div>
       </div>
     );
   }
   return (
     <div className={`w-56 rounded-xl border-2 p-3 text-center shadow-sm ${toneCls}`}>
       <div className="flex items-center justify-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-        {crown && <Crown size={12} className="text-amber-600" />}{role}
+        {crown && <Crown size={12} className="text-amber-600" />}{t(role)}
       </div>
       <div className="mt-1 text-sm font-bold text-slate-800">{person.name}</div>
       <div className="text-xs text-slate-500">{person.position || "—"}</div>
@@ -2433,6 +2517,7 @@ function PersonBox({ person, role, tone = "teal", placeholder, subtitle, crown }
 // Shared between the interactive tab and the print view — `forceExpanded` skips the
 // show/hide toggle and just renders every department's members (used for printing).
 function OrgChartTree({ tree, expanded, onToggle, forceExpanded }) {
+  const { t } = useLang();
   const { ceo, departments } = tree;
 
   return (
@@ -2453,7 +2538,7 @@ function OrgChartTree({ tree, expanded, onToggle, forceExpanded }) {
                     role={d.dept}
                     tone="amber"
                     placeholder="لم يتم تحديد رئيس الإدارة"
-                    subtitle={`${d.total} ${d.total === 1 ? "موظف" : "موظفين"}`}
+                    subtitle={t("{n} " + (d.total === 1 ? "موظف" : "موظفين"), { n: d.total })}
                   />
                   {d.others.length > 0 && (
                     <>
@@ -2463,7 +2548,7 @@ function OrgChartTree({ tree, expanded, onToggle, forceExpanded }) {
                           className="mt-2 flex items-center gap-1 text-xs font-medium text-teal-700 hover:underline"
                         >
                           <ChevronDown size={13} className={`transition-transform ${isOpen ? "rotate-180" : ""}`} />
-                          {isOpen ? "إخفاء الموظفين" : `عرض الموظفين (${d.others.length})`}
+                          {isOpen ? t("إخفاء الموظفين") : t("عرض الموظفين ({n})", { n: d.others.length })}
                         </button>
                       )}
                       {isOpen && (
@@ -2492,6 +2577,7 @@ function OrgChartTree({ tree, expanded, onToggle, forceExpanded }) {
 }
 
 function OrgChartTab({ employees, orgChart, setOrgChart, onPrint }) {
+  const { t } = useLang();
   const [expanded, setExpanded] = useState({});
   function toggle(dept) { setExpanded((s) => ({ ...s, [dept]: !s[dept] })); }
 
@@ -2514,22 +2600,22 @@ function OrgChartTab({ employees, orgChart, setOrgChart, onPrint }) {
   return (
     <div>
       <SectionTitle
-        eyebrow={`${employees.length} موظف نشط`}
-        title="الهيكل التنظيمي"
+        eyebrow={t("{n} موظف نشط", { n: employees.length })}
+        title={t("الهيكل التنظيمي")}
         action={
           <button onClick={onPrint} className="flex items-center gap-1.5 rounded-lg border border-teal-700 px-3.5 py-2 text-sm font-semibold text-teal-800 hover:bg-teal-50">
-            <Printer size={16} /> طباعة الهيكل
+            <Printer size={16} /> {t("طباعة الهيكل")}
           </button>
         }
       />
 
       <Card className="mb-6 p-5">
-        <div className="mb-4 flex items-center gap-2"><Crown size={16} className="text-amber-600" /><h3 className="font-bold text-slate-800">تحديد المناصب القيادية</h3></div>
+        <div className="mb-4 flex items-center gap-2"><Crown size={16} className="text-amber-600" /><h3 className="font-bold text-slate-800">{t("تحديد المناصب القيادية")}</h3></div>
 
         <div className="max-w-sm">
           <Field label="الرئيس التنفيذي / صاحب الشركة">
             <select className={inputCls} value={orgChart.ceoEmployeeId || ""} onChange={(e) => setCeo(e.target.value)}>
-              <option value="">— لم يتم التحديد —</option>
+              <option value="">{t("— لم يتم التحديد —")}</option>
               {employees.map((e) => <option key={e.id} value={e.id}>{e.name}{e.position ? ` — ${e.position}` : ""}</option>)}
             </select>
           </Field>
@@ -2537,7 +2623,7 @@ function OrgChartTab({ employees, orgChart, setOrgChart, onPrint }) {
 
         {usedDepartments.length > 0 ? (
           <div className="mt-5 border-t border-stone-100 pt-4">
-            <div className="mb-2.5 text-sm font-medium text-slate-600">رئيس/مديرة كل إدارة</div>
+            <div className="mb-2.5 text-sm font-medium text-slate-600">{t("رئيس/مديرة كل إدارة")}</div>
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
               {usedDepartments.map((dept) => {
                 const candidates = employees.filter((e) => (e.department || "").trim() === dept && e.id !== orgChart.ceoEmployeeId);
@@ -2545,7 +2631,7 @@ function OrgChartTab({ employees, orgChart, setOrgChart, onPrint }) {
                   <label key={dept} className="block">
                     <span className="mb-1 block text-xs font-medium text-slate-500">{dept}</span>
                     <select className={`${inputCls} text-xs`} value={(orgChart.departmentHeads || {})[dept] || ""} onChange={(e) => setDeptHead(dept, e.target.value)}>
-                      <option value="">— بدون تحديد —</option>
+                      <option value="">{t("— بدون تحديد —")}</option>
                       {candidates.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
                     </select>
                   </label>
@@ -2554,10 +2640,10 @@ function OrgChartTab({ employees, orgChart, setOrgChart, onPrint }) {
             </div>
           </div>
         ) : (
-          <p className="mt-4 text-xs text-slate-400">مفيش أقسام متسجلة لسه — اكتب قسم كل موظف من تاب "الموظفون والعقود" الأول عشان الهيكل يتبني.</p>
+          <p className="mt-4 text-xs text-slate-400">{t("مفيش أقسام متسجلة لسه — اكتب قسم كل موظف من تاب \"الموظفون والعقود\" الأول عشان الهيكل يتبني.")}</p>
         )}
         {unassignedCount > 0 && (
-          <p className="mt-3 text-xs text-amber-600">{unassignedCount} موظف من غير قسم محدد — هيظهروا تحت مجموعة "بدون قسم" في الهيكل.</p>
+          <p className="mt-3 text-xs text-amber-600">{t("{n} موظف من غير قسم محدد — هيظهروا تحت مجموعة \"بدون قسم\" في الهيكل.", { n: unassignedCount })}</p>
         )}
       </Card>
 
@@ -2571,20 +2657,21 @@ function OrgChartTab({ employees, orgChart, setOrgChart, onPrint }) {
 }
 
 function OrgChartPrintView({ employees, orgChart, onClose }) {
+  const { t, lang } = useLang();
   const tree = useMemo(() => buildOrgTree(employees, orgChart), [employees, orgChart]);
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-white">
       <div className="no-print sticky top-0 z-10 flex items-center justify-between border-b border-stone-200 bg-white px-6 py-4 shadow-sm">
-        <h3 className="text-lg font-bold text-slate-800">معاينة طباعة الهيكل التنظيمي</h3>
+        <h3 className="text-lg font-bold text-slate-800">{t("معاينة طباعة الهيكل التنظيمي")}</h3>
         <div className="flex items-center gap-2">
-          <button onClick={() => window.print()} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Printer size={15} /> طباعة</button>
+          <button onClick={() => window.print()} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Printer size={15} /> {t("طباعة")}</button>
           <button onClick={onClose} className="rounded-full p-1.5 text-slate-400 hover:bg-stone-100"><X size={18} /></button>
         </div>
       </div>
       <div className="p-8">
         <div className="mb-8 text-center">
-          <div className="text-lg font-bold text-slate-800">الهيكل التنظيمي</div>
-          <div className="text-xs text-slate-400">{new Date().toLocaleDateString("ar-EG", { year: "numeric", month: "long", day: "numeric" })}</div>
+          <div className="text-lg font-bold text-slate-800">{t("الهيكل التنظيمي")}</div>
+          <div className="text-xs text-slate-400">{new Date().toLocaleDateString(lang === "en" ? "en-GB" : "ar-EG", { year: "numeric", month: "long", day: "numeric" })}</div>
         </div>
         {employees.length === 0 ? <EmptyState text="لسه معملتش أي موظف." /> : (
           <OrgChartTree tree={tree} expanded={{}} onToggle={() => {}} forceExpanded />
@@ -2603,32 +2690,36 @@ function OrgChartPrintView({ employees, orgChart, onClose }) {
 // alongside this file. `admins` documents are never client-writable (see firestore.rules),
 // so nobody can grant themselves access from the app itself.
 function FullScreenLoader({ text }) {
+  const { t } = useLang();
   return (
     <div className="flex min-h-[500px] w-full items-center justify-center bg-stone-50">
       <div className="flex flex-col items-center gap-3 text-teal-700">
         <Loader2 className="animate-spin" size={28} />
-        <span className="text-sm font-medium">{text}</span>
+        <span className="text-sm font-medium">{t(text)}</span>
       </div>
+      <LangToggle className="fixed top-4 right-4" />
     </div>
   );
 }
 
 function AdminLoginScreen({ onSubmit, busy, error }) {
+  const { t } = useLang();
   const [form, setForm] = useState({ email: "", password: "" });
   return (
-    <div dir="rtl" className="flex min-h-[600px] w-full items-center justify-center bg-stone-50 p-6 font-sans">
+    <div className="relative flex min-h-[600px] w-full items-center justify-center bg-stone-50 p-6 font-sans">
+      <LangToggle className="fixed top-4 right-4" />
       <div className="w-full max-w-sm rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
         <div className="mb-5 flex flex-col items-center text-center">
           <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-xl bg-teal-800 text-white"><Lock size={20} /></div>
-          <h1 className="text-lg font-bold text-slate-800">تسجيل دخول الأدمن</h1>
-          <p className="mt-1 text-xs text-slate-400">شؤون الأفراد — إدارة الموظفين والمرتبات</p>
+          <h1 className="text-lg font-bold text-slate-800">{t("تسجيل دخول الأدمن")}</h1>
+          <p className="mt-1 text-xs text-slate-400">{t("شؤون الأفراد — إدارة الموظفين والمرتبات")}</p>
         </div>
         <form onSubmit={(e) => { e.preventDefault(); onSubmit(form); }} className="space-y-3">
           <Field label="الإيميل"><input type="email" required autoFocus className={inputCls} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></Field>
           <Field label="كلمة المرور"><input type="password" required className={inputCls} value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></Field>
-          {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-600">{error}</p>}
+          {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-600">{t(error)}</p>}
           <button disabled={busy} className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-900 disabled:opacity-50">
-            {busy ? <Loader2 size={15} className="animate-spin" /> : <LogIn size={15} />} دخول
+            {busy ? <Loader2 size={15} className="animate-spin" /> : <LogIn size={15} />} {t("دخول")}
           </button>
         </form>
       </div>
@@ -2637,13 +2728,15 @@ function AdminLoginScreen({ onSubmit, busy, error }) {
 }
 
 function AccessDeniedScreen({ email }) {
+  const { t } = useLang();
   return (
-    <div dir="rtl" className="flex min-h-[500px] w-full items-center justify-center bg-stone-50 p-6 font-sans">
+    <div className="relative flex min-h-[500px] w-full items-center justify-center bg-stone-50 p-6 font-sans">
+      <LangToggle className="fixed top-4 right-4" />
       <div className="w-full max-w-sm rounded-2xl border border-rose-200 bg-white p-6 text-center shadow-sm">
         <div className="mb-3 flex justify-center text-rose-500"><ShieldAlert size={28} /></div>
-        <h1 className="mb-1 text-lg font-bold text-slate-800">الحساب ده مش مصرح له بدخول الأدمن</h1>
-        <p className="mb-4 text-xs text-slate-400">الحساب <span dir="ltr">{email}</span> اتسجل دخول صح، بس مش من ضمن حسابات الأدمن المسموح لها. لو ده حساب صح، أضف الـ UID بتاعه في مجموعة <code>admins</code> بقاعدة البيانات.</p>
-        <button onClick={() => signOut(auth)} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50">تسجيل خروج</button>
+        <h1 className="mb-1 text-lg font-bold text-slate-800">{t("الحساب ده مش مصرح له بدخول الأدمن")}</h1>
+        <p className="mb-4 text-xs text-slate-400">{t("الحساب")} <span dir="ltr">{email}</span> {t("اتسجل دخول صح، بس مش من ضمن حسابات الأدمن المسموح لها. لو ده حساب صح، أضف الـ UID بتاعه في مجموعة")} <code>admins</code> {t("بقاعدة البيانات.")}</p>
+        <button onClick={() => signOut(auth)} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50">{t("تسجيل خروج")}</button>
       </div>
     </div>
   );
@@ -2680,12 +2773,303 @@ function AdminAuthGate() {
     } finally { setBusy(false); }
   }
 
-  if (authState === "loading") return <FullScreenLoader text="جاري التحقق من الدخول..." />;
-  if (authState === "signedOut") return <AdminLoginScreen onSubmit={handleLogin} busy={busy} error={error} />;
-  if (authState === "checking") return <FullScreenLoader text="جاري التحقق من الصلاحيات..." />;
-  if (authState === "denied") return <AccessDeniedScreen email={user?.email} />;
-  return <HRSystem adminUser={user} />;
+  const langState = useLangState();
+
+  let content;
+  if (authState === "loading") content = <FullScreenLoader text="جاري التحقق من الدخول..." />;
+  else if (authState === "signedOut") content = <AdminLoginScreen onSubmit={handleLogin} busy={busy} error={error} />;
+  else if (authState === "checking") content = <FullScreenLoader text="جاري التحقق من الصلاحيات..." />;
+  else if (authState === "denied") content = <AccessDeniedScreen email={user?.email} />;
+  else content = <HRSystem adminUser={user} />;
+
+  return (
+    <LangContext.Provider value={langState}>
+      <div dir={langState.dir} className="font-sans">{content}</div>
+    </LangContext.Provider>
+  );
 }
+
+const TRANSLATIONS = {
+  ")، وبعدها ارجع هنا وفعّل الدخول تاني برقم سري جديد.": "), then come back here and activate access again with a new PIN.",
+  "{doc} بتاع {name} بينتهي في {date}": "{name}'s {doc} expires on {date}",
+  "{n} ": "{n} ",
+  "{n} إجراء مسجل": "{n} action(s) recorded",
+  "{n} سلفة مسجلة": "{n} advance(s) recorded",
+  "{n} صف اتقروا من الملف.": "{n} row(s) read from the file.",
+  "{n} صف اتقروا من الملف. الموظف بيتطابق بالاسم بالظبط مع اللي مسجل في تاب الموظفين.": "{n} row(s) read from the file. Employees are matched by exact name against the Employees tab.",
+  "{n} موظف سابق": "{n} former employee(s)",
+  "{n} موظف من غير قسم محدد — هيظهروا تحت مجموعة \"بدون قسم\" في الهيكل.": "{n} employee(s) have no department set — they'll appear under \"No Department\" in the chart.",
+  "{n} موظف نشط": "{n} active employee(s)",
+  "{n} يوم": "{n} day(s)",
+  "آخر يوم عمل": "Last working day",
+  "أخرى": "Other",
+  "أيام الإجازة الأسبوعية (اختر واحد أو أكتر)": "Weekly off days (choose one or more)",
+  "إجازة": "Leave",
+  "إجمالي الخصومات": "Total Deductions",
+  "إجمالي الرواتب الأساسية": "Total Base Salaries",
+  "إجمالي الموظفين": "Total Employees",
+  "إخفاء الموظفين": "Hide Employees",
+  "إدارة الموظفين والمرتبات": "Employee & Payroll Management",
+  "إضافة": "Add",
+  "إضافي": "Overtime",
+  "إضافي ومكافآت": "Overtime & Bonuses",
+  "إعادة تفعيل": "Reactivate",
+  "إلغاء": "Cancel",
+  "إلى تاريخ": "To date",
+  "إنذار كتابي": "Written Warning",
+  "إيصال مرتب": "Payslip",
+  "اتسجل دخول صح، بس مش من ضمن حسابات الأدمن المسموح لها. لو ده حساب صح، أضف الـ UID بتاعه في مجموعة": "Signed in successfully, but this account isn't among the allowed admin accounts. If this is a valid account, add its UID to the",
+  "ارفع ملف فيه صف عناوين في الأول (الاسم، الوظيفة، الراتب...) وصف لكل موظف.": "Upload a file with a header row first (name, position, salary...) and one row per employee.",
+  "استيراد الحضور والانصراف": "Import Attendance",
+  "استيراد جماعي": "Bulk Import",
+  "استيراد جماعي للموظفين": "Bulk Import Employees",
+  "استيراد من ملف": "Import from File",
+  "استيراد نسخة احتياطية": "Import Backup",
+  "اسم المقيّم": "Reviewer name",
+  "اسم المناسبة": "Occasion name",
+  "اسم في الملف ملقيناش موظف مطابق له في النظام (اتجاهلوا):": "Names in the file with no matching employee in the system (ignored):",
+  "الأحد": "Sunday",
+  "الأربعاء": "Wednesday",
+  "الأساسي": "Base",
+  "الأيام المأخوذة بتتحسب تلقائي من أيام «إجازة» المسجلة في تاب الحضور والانصراف خلال السنة الحالية.": "Days taken are calculated automatically from \"Leave\" days recorded in the Attendance tab during the current year.",
+  "الإثنين": "Monday",
+  "الإجازات": "Leave",
+  "الإجراء ده نهائي ومش هيتم التراجع عنه. هيتم حذف ملف الموظف كامل مع الحضور والجزاءات والسلف والمستندات والتقييمات وسجلات المرتب الخاصة بيه.": "This action is final and cannot be undone. The employee's entire file will be deleted along with their attendance, penalties, advances, documents, reviews, and payroll records.",
+  "الإعدادات": "Settings",
+  "الإعفاء الشخصي السنوي (ج.م)": "Annual Personal Exemption (EGP)",
+  "الإيميل": "Email",
+  "الاسم": "Name",
+  "الاسم بالكامل": "Full Name",
+  "البيانات دلوقتي متخزنة في قاعدة بيانات Firestore المشتركة، مش في متصفحك بس. برضه خد نسخة احتياطية بانتظام واحفظها في مكان آمن — نفس الزرار بيستخدم كمان لاستيراد نسخة قديمة (حتى لو كانت من زمن التخزين المحلي) مباشرة في قاعدة البيانات.": "Data now lives in the shared Firestore database, not just your browser. Still, take regular backups and keep them somewhere safe — the same button can also import an older backup (even from the local-storage era) straight into the database.",
+  "التأمينات الاجتماعية": "Social Insurance",
+  "التأمينات والإجازات والإضافي": "Insurance, Leave & Overtime",
+  "التاريخ": "Date",
+  "التقييمات": "Reviews",
+  "الثلاثاء": "Tuesday",
+  "الجزاءات والإنذارات": "Penalties & Warnings",
+  "الجمعة": "Friday",
+  "الحالة": "Status",
+  "الحساب": "The account",
+  "الحساب ده مش مصرح له بدخول الأدمن": "This account is not authorized for admin access",
+  "الحضور والانصراف": "Attendance",
+  "الخصم": "Deduction",
+  "الخميس": "Thursday",
+  "الرئيس التنفيذي": "CEO",
+  "الرئيس التنفيذي / صاحب الشركة": "CEO / Business Owner",
+  "بيانات الدخول غلط، أو الحساب ده مش موجود.": "Sign-in details are incorrect, or the account doesn't exist.",
+  "الراتب": "Salary",
+  "الراتب الأساسي": "Base Salary",
+  "الراتب الأساسي الشهري": "Monthly Base Salary",
+  "الرصيد المتبقي": "Remaining Balance",
+  "الرقم القومي": "National ID",
+  "السبب": "Reason",
+  "السبت": "Saturday",
+  "السلف": "Advances",
+  "الصافي": "Net",
+  "العطلات الرسمية": "Public Holidays",
+  "العقد الموقّع": "Signed Contract",
+  "الفيش الجنائي": "Criminal Record Check",
+  "القسط الشهري": "Monthly Installment",
+  "القسم": "Department",
+  "القيمة": "Amount",
+  "المؤهل الدراسي": "Educational Qualification",
+  "المتبقي": "Remaining",
+  "المرتبات": "Payroll",
+  "المستندات": "Documents",
+  "الملف ده مش نسخة احتياطية من النظام ده — مفيش أي بيانات معروفة فيه.": "This file isn't a backup from this system — no recognizable data was found in it.",
+  "الموظف": "Employee",
+  "الموظف يقدر يدخل بوابته بكود الموظف": "The employee can sign in to their portal with employee code",
+  "الموظفون والعقود": "Employees & Contracts",
+  "الموظفين مش هيشوفوا أي تعديل هنا غير بعد ما تدوس «مزامنة».": "Employees won't see any change here until you press \"Sync\".",
+  "النسب دي تقديرية ومسؤوليتك تراجعها وتحدّثها مع محاسب أو مستشار قانوني، خصوصًا إن قوانين التأمينات والضرايب بتتغير كل فترة.": "These rates are estimates — it's your responsibility to review and update them with an accountant or legal advisor, especially since insurance and tax laws change from time to time.",
+  "النسخ الاحتياطي والاستعادة": "Backup & Restore",
+  "النهاردة": "today",
+  "الهيكل التنظيمي": "Org Chart",
+  "الوظيفة": "Position",
+  "بداية العقد": "Contract Start",
+  "بدون قسم": "No Department",
+  "بعد التفعيل، الموظف هيقدر يدخل بوابته الخاصة ويشوف رصيد إجازاته وسجل حضوره وجزاءاته بس — من غير أي صلاحية تعديل أو رؤية بيانات زمايله.": "After activation, the employee can sign in to their own portal and see only their leave balance, attendance record, and penalties — with no permission to edit or view their colleagues' data.",
+  "بقاعدة البيانات.": "collection in the database.",
+  "بمعرفة: {name}": "By: {name}",
+  "بوابة الموظف": "Employee Portal",
+  "بوابة الموظف مفعّلة": "Employee Portal Activated",
+  "بوابة الموظفين لسه ما شافتش مرتب الشهر ده.": "The employee portal hasn't seen this month's payroll yet.",
+  "تأكيد ({u} تحديث + {c} جديد)": "Confirm ({u} updated + {c} new)",
+  "تأكيد الاستيراد": "Confirm Import",
+  "تأكيد الدمج": "Confirm Merge",
+  "تأمينات": "Insurance",
+  "تاريخ الاستقالة": "Resignation Date",
+  "تاريخ الانتهاء": "Expiry Date",
+  "تاريخ التعيين": "Hire Date",
+  "تاريخ الصرف": "Disbursement Date",
+  "تاريخ الميلاد": "Birth Date",
+  "تاريخ تقديم الاستقالة": "Resignation Submission Date",
+  "تحت التجربة": "Probation",
+  "تحديد المناصب القيادية": "Set Leadership Positions",
+  "تحميل نسخة احتياطية (JSON)": "Download Backup (JSON)",
+  "تسجيل إجراء": "Record Action",
+  "تسجيل إجراء جديد": "Record New Action",
+  "تسجيل تقييم": "Record Review",
+  "تسجيل خروج": "Sign Out",
+  "تسجيل دخول الأدمن": "Admin Sign In",
+  "تسجيل سلفة جديدة": "Record New Advance",
+  "تسوية نهاية الخدمة": "End-of-Service Settlement",
+  "تعذّر حفظ التعديل — راجع صلاحيات الدخول أو الاتصال بالإنترنت.": "Couldn't save the change — check your access permissions or internet connection.",
+  "تعذّر قراءة الملف — تأكد إنه ملف JSON صحيح من نسخة احتياطية سابقة.": "Couldn't read the file — make sure it's a valid JSON file from a previous backup.",
+  "تفعيل الدخول": "Activate Access",
+  "تم إرسال {n} من مجموعات البيانات لقاعدة البيانات — التحديث بيظهر تلقائي في الشاشة خلال ثواني.": "{n} data set(s) sent to the database — the update will appear on screen automatically within seconds.",
+  "تم التحديث: {updated} موظف موجود، وإضافة {created} موظف جديد.": "Updated: {updated} existing employee(s), and added {created} new employee(s).",
+  "تم الصرف": "Paid",
+  "تم تحميل نسخة احتياطية من قاعدة البيانات الحالية.": "A backup of the current database has been downloaded.",
+  "تنبيه شفهي": "Verbal Warning",
+  "تنبيهات": "Alerts",
+  "ج.م": "EGP",
+  "جاري التحقق من الدخول...": "Checking sign-in...",
+  "جاري التحقق من الصلاحيات...": "Checking permissions...",
+  "جاري الحفظ...": "Saving...",
+  "جاري تحميل بيانات الموارد البشرية...": "Loading HR data...",
+  "جزاءات": "Penalties",
+  "حاضر": "Present",
+  "حاضر النهاردة": "Present Today",
+  "حالة الحضور اليوم": "Today's Attendance Status",
+  "حتى (ج.م، فارغ = بلا حد)": "Up to (EGP, blank = no limit)",
+  "حدد أي عمود من ملفك يقابل كل حقل (سيبها فاضية لو مش موجودة).": "Choose which column in your file matches each field (leave blank if not present).",
+  "حدد الأعمدة. لازم التاريخ + (كود الموظف أو اسمه على الأقل) — بعد كده إما \"الحالة الجاهزة\" أو \"وقت الحضور\" (عشان نحسب متأخر تلقائي).": "Choose the columns. You need the date plus (at least the employee code or name) — then either \"ready-made status\" or \"time in\" (so we can calculate lateness automatically).",
+  "حذف {n} موظفين": "Delete {n} Employees",
+  "حذف {n} موظفين نهائيًا": "Permanently Delete {n} Employees",
+  "حذف المحدد ({n})": "Delete Selected ({n})",
+  "حذف نهائي": "Delete Permanently",
+  "حذف نهائيًا": "Delete Permanently",
+  "حفظ": "Save",
+  "حفظ الإعدادات": "Save Settings",
+  "خروج": "Sign Out",
+  "خصم أيام الغياب": "Absence Deduction",
+  "خصم الجزاءات": "Penalty Deduction",
+  "خصم قسط السلفة": "Advance Installment Deduction",
+  "خصم مالي": "Financial Deduction",
+  "خصومات التأمينات والضريبة تقديرية حسب النسب في تاب «الإعدادات» — راجعها مع محاسبك قبل الاعتماد عليها فعليًا.": "Insurance and tax deductions are estimated from the rates in the \"Settings\" tab — review them with your accountant before relying on them.",
+  "خصومات الجزاءات هذا الشهر": "This Month's Penalty Deductions",
+  "دائم": "Permanent",
+  "دخول": "Sign In",
+  "دمج المكررات ({n})": "Merge Duplicates ({n})",
+  "دمج الموظفين المكررين": "Merge Duplicate Employees",
+  "ده سجل متابعة بس (اسم المستند وحالته وتاريخ انتهائه لو موجود)، مش رفع ملفات فعلي.": "This is just a tracking record (document name, status, and expiry date if any) — not an actual file upload.",
+  "دوام جزئي": "Part-time",
+  "دور بالاسم أو الوظيفة أو القسم...": "Search by name, position, or department...",
+  "دوس هنا أو اسحب ملف Excel / CSV": "Click here or drag an Excel / CSV file",
+  "دول بيتستخدموا لما تستورد بيانات حضور بوقت دخول بس (من جهاز البصمة) عشان نحدد تلقائي مين \"متأخر\".": "These are used when you import attendance data with just a time-in (from a fingerprint device) so we can automatically determine who's \"late\".",
+  "رئيس/مديرة كل إدارة": "Head of Each Department",
+  "رجوع": "Back",
+  "رصيد إجازات {name} باقيله {n} يوم بس": "{name}'s leave balance has only {n} day(s) left",
+  "رصيد الإجازات السنوي (يوم)": "Annual Leave Balance (days)",
+  "رصيد الإجازة السنوي الافتراضي (يوم)": "Default Annual Leave Balance (days)",
+  "رقم الموبايل": "Mobile Number",
+  "رقم سري للموظف (6-8 أرقام)": "Employee PIN (6-8 digits)",
+  "ساعات إضافي": "Overtime Hours",
+  "سجل حضور.": "attendance record.",
+  "سجل يومي": "Daily Log",
+  "سلف": "Advances",
+  "سلفة {name} هتخلص القسط الجاي": "{name}'s advance will be paid off next installment",
+  "سلفة جديدة": "New Advance",
+  "شؤون الأفراد": "HR",
+  "شؤون الأفراد — إدارة الموظفين والمرتبات": "HR — Employee & Payroll Management",
+  "شرائح ضريبة كسب العمل (سنويًا)": "Income Tax Brackets (annual)",
+  "صافي المستحق": "Net Due",
+  "صف — المطابقة بتتم بكود الموظف أو الاسم:": "row(s) — matching is done by employee code or name:",
+  "صورة البطاقة": "ID Photo",
+  "صورة شخصية": "Personal Photo",
+  "ضريبة": "Tax",
+  "ضريبة كسب العمل": "Income Tax",
+  "طباعة": "Print",
+  "طباعة الهيكل": "Print Chart",
+  "عدد الأقساط": "Number of Installments",
+  "عدد الأقساط (شهور)": "Number of Installments (months)",
+  "عرض الموظفين ({n})": "Show Employees ({n})",
+  "عطلة": "Holiday",
+  "عقد {name} بينتهي في {date}": "{name}'s contract ends on {date}",
+  "علّم أي موظف نشط مالوش سجل في يوم شغل (خلال الفترة دي) كـ \"غايب\" تلقائيًا": "Automatically mark any active employee with no record on a workday (in this period) as \"absent\"",
+  "عيد ميلاد {name} بعد {when}": "{name}'s birthday in {when}",
+  "غائب": "Absent",
+  "غايب": "Absent",
+  "غايب النهاردة": "Absent Today",
+  "غياب": "Absence",
+  "غير محدد": "Not Set",
+  "فترة سماح قبل اعتباره متأخر (دقيقة)": "Grace Period Before Late (minutes)",
+  "فصل": "Termination",
+  "قيمة الخصم (ج.م)": "Deduction Amount (EGP)",
+  "قيمة السلفة": "Advance Amount",
+  "قيمة تسوية نهاية الخدمة (ج.م)": "End-of-Service Settlement Amount (EGP)",
+  "كشف رواتب شهري": "Monthly Payroll Sheet",
+  "كلمة المرور": "Password",
+  "كود": "Code",
+  "كود الموظف (زي كود جهاز البصمة، اختياري)": "Employee Code (e.g. fingerprint device code, optional)",
+  "كود: {code}": "Code: {code}",
+  "لسه": "Not Yet",
+  "لسه ما اتسجلش": "Not recorded yet",
+  "لسه معملتش أي موظف نشط.": "You haven't added any active employees yet.",
+  "لسه معملتش أي موظف.": "You haven't added any employees yet.",
+  "لسه معملتش أي موظف. ابدأ من تاب «الموظفون والعقود».": "You haven't added any employees yet. Start from the \"Employees & Contracts\" tab.",
+  "لقينا": "Found",
+  "لم يتم تحديد الرئيس التنفيذي": "CEO not set",
+  "لم يتم تحديد رئيس الإدارة": "Department head not set",
+  "لو أي حد منهم فعّل بوابة الموظف بتاعته قبل كده، حساب الدخول (Firebase Auth) مش بيتحذف تلقائي من هنا - بس هيفضل عاجز يقرأ أي حاجة لأن ملفه اتحذف. لو عايز تقفل الحساب ده نهائي، احذفه يدويًا من Firebase Console.": "If any of them had activated their employee portal before, the sign-in account (Firebase Auth) is not automatically deleted from here — but it will remain unable to read anything since its record was deleted. To close that account permanently, delete it manually from the Firebase Console.",
+  "لوحة المتابعة": "Dashboard",
+  "مأخوذ هذا العام": "Taken This Year",
+  "مؤقت": "Temporary",
+  "متأخر": "Late",
+  "متأخر النهاردة": "Late Today",
+  "متزامن مع بوابة الموظفين: {synced} من {total} موظف.": "Synced with the employee portal: {synced} of {total} employee(s).",
+  "متزامن مع قاعدة البيانات": "Synced with the database",
+  "متوفر": "Available",
+  "مثلاً: تأخير متكرر، مخالفة سياسة...": "e.g.: repeated lateness, policy violation...",
+  "مثلًا 123456": "e.g. 123456",
+  "مجموعة {n} — {count} نسخ": "Group {n} — {count} copies",
+  "مجموعة موظفين مكررين (بنفس الاسم أو نفس الكود). اختار مين يفضل من كل مجموعة — والبيانات (حضور، جزاءات، سلف...) هتتنقل تلقائي للي هيفضل.": "A group of duplicate employees (same name or same code). Choose who stays from each group — data (attendance, penalties, advances...) will automatically transfer to the one who stays.",
+  "مزامنة مع بوابة الموظفين": "Sync with Employee Portal",
+  "مستحق سنويًا": "Due Annually",
+  "مضاعف أجر الوقت الإضافي": "Overtime Pay Multiplier",
+  "معاد بداية الدوام الرسمي": "Official Work Start Time",
+  "معاينة": "Preview",
+  "معاينة طباعة الهيكل التنظيمي": "Org Chart Print Preview",
+  "مفيش أقسام متسجلة لسه — اكتب قسم كل موظف من تاب \"الموظفون والعقود\" الأول عشان الهيكل يتبني.": "No departments recorded yet — set each employee's department from the \"Employees & Contracts\" tab first so the chart can be built.",
+  "مفيش إجراءات مسجلة.": "No actions recorded.",
+  "مفيش تقييمات مسجلة.": "No reviews recorded.",
+  "مفيش تكرارات دلوقتي.": "No duplicates right now.",
+  "مفيش تنبيهات دلوقتي.": "No alerts right now.",
+  "مفيش سلف مسجلة.": "No advances recorded.",
+  "مفيش عطلات مسجلة.": "No holidays recorded.",
+  "مفيش مستندات مسجلة.": "No documents recorded.",
+  "مفيش موظفين سابقين مسجلين.": "No former employees recorded.",
+  "مقابل الوقت الإضافي": "Overtime Pay",
+  "مكافأة": "Bonus",
+  "ملاحظات": "Notes",
+  "ملاحظات (اختياري)": "Notes (optional)",
+  "ملاحظات التقييم": "Review Notes",
+  "ملف {name}": "{name}'s File",
+  "من تاريخ": "From date",
+  "موظف جديد": "New Employee",
+  "موظف سابق": "Former Employee",
+  "موظفون سابقون": "Former Employees",
+  "ناسي الرقم السري؟ مفيش استرجاع مباشر — لازم تمسح حساب الدخول بتاعه من Firebase Console (Authentication → Users، ابحث عن": "Forgot the PIN? There's no direct recovery — you need to delete their sign-in account from the Firebase Console (Authentication → Users, search for",
+  "ناقص": "Missing",
+  "نسب وقيم قابلة للتعديل": "Editable Rates & Values",
+  "نسبة التأمينات على الموظف (%)": "Employee Insurance Rate (%)",
+  "نقل لموظفين سابقين": "Move to Former Employees",
+  "نهاية العقد": "Contract End",
+  "نهاية العقد (اختياري)": "Contract End (optional)",
+  "نوع الإجراء": "Action Type",
+  "نوع العقد": "Contract Type",
+  "هيتحدّث (موجود بالفعل)": "Will be updated (already exists)",
+  "هيتسجل": "Will be recorded",
+  "هيتضاف كموظف جديد": "Will be added as a new employee",
+  "هيتم معالجة": "Will process",
+  "والرقم السري اللي حددته له وقت التفعيل.": "and the PIN you set for them at activation.",
+  "يشتغل مع أي مصدر: تقرير جهاز البصمة (وقت حضور/انصراف)، أو ملف يدوي فيه عمود \"الحالة\" جاهز.": "Works with any source: a fingerprint device report (time in/out), or a manual file with a ready-made \"status\" column.",
+  "ينتهي {date}": "Expires {date}",
+  "— بدون تحديد —": "— Not set —",
+  "— تجاهل —": "— Ignore —",
+  "— لم يتم التحديد —": "— Not set —",
+};
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(<AdminAuthGate />);
