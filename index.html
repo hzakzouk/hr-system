@@ -512,13 +512,14 @@ function EmployeesTab({ employees, setEmployees, settings, onOpen }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-                <th className="px-4 py-3">الاسم</th><th className="px-4 py-3">الوظيفة</th><th className="px-4 py-3">القسم</th>
+                <th className="px-4 py-3">كود</th><th className="px-4 py-3">الاسم</th><th className="px-4 py-3">الوظيفة</th><th className="px-4 py-3">القسم</th>
                 <th className="px-4 py-3">نوع العقد</th><th className="px-4 py-3">نهاية العقد</th><th className="px-4 py-3">الراتب الأساسي</th><th className="px-4 py-3"></th>
               </tr>
             </thead>
             <tbody>
               {filtered.map((e) => (
                 <tr key={e.id} className="border-b border-stone-100 last:border-0 hover:bg-stone-50">
+                  <td className="px-4 py-3 text-slate-500 tabular-nums">{e.employeeCode || "—"}</td>
                   <td className="px-4 py-3 font-medium text-teal-800 cursor-pointer hover:underline" onClick={() => onOpen(e.id)}>{e.name}</td>
                   <td className="px-4 py-3 text-slate-600">{e.position || "—"}</td>
                   <td className="px-4 py-3 text-slate-600">{e.department || "—"}</td>
@@ -587,6 +588,7 @@ function FileDropZone({ onFile, fileName }) {
 }
 
 const EMPLOYEE_IMPORT_FIELDS = [
+  { key: "employeeCode", label: "كود الموظف" },
   { key: "name", label: "الاسم", required: true },
   { key: "position", label: "الوظيفة" },
   { key: "department", label: "القسم" },
@@ -694,6 +696,7 @@ function EmployeeImportWizard({ onImport, onCancel }) {
 
 function EmployeeForm({ initial, settings, onSave, onCancel }) {
   const [form, setForm] = useState({
+    employeeCode: initial?.employeeCode || "",
     name: initial?.name || "", position: initial?.position || "", department: initial?.department || "",
     phone: initial?.phone || "", nationalId: initial?.nationalId || "", hireDate: initial?.hireDate || todayISO(),
     salary: initial?.salary || "", contractType: initial?.contractType || CONTRACT_TYPES[0],
@@ -713,6 +716,7 @@ function EmployeeForm({ initial, settings, onSave, onCancel }) {
   return (
     <form onSubmit={submit} className="space-y-4">
       <div className="grid grid-cols-2 gap-4">
+        <Field label="كود الموظف (زي كود جهاز البصمة، اختياري)"><input className={inputCls} value={form.employeeCode} onChange={(e) => set("employeeCode", e.target.value)} /></Field>
         <Field label="الاسم بالكامل"><input required className={inputCls} value={form.name} onChange={(e) => set("name", e.target.value)} /></Field>
         <Field label="رقم الموبايل"><input className={inputCls} value={form.phone} onChange={(e) => set("phone", e.target.value)} /></Field>
         <Field label="الوظيفة"><input className={inputCls} value={form.position} onChange={(e) => set("position", e.target.value)} /></Field>
@@ -966,7 +970,8 @@ function AttendanceTab({ employees, attendance, setAttendance, settings }) {
 }
 
 const ATTENDANCE_IMPORT_FIELDS = [
-  { key: "employeeName", label: "اسم الموظف", required: true },
+  { key: "employeeCode", label: "كود الموظف (أدق لو متاح، زي كود جهاز البصمة)" },
+  { key: "employeeName", label: "اسم الموظف" },
   { key: "date", label: "التاريخ", required: true },
   { key: "timeIn", label: "وقت الحضور (لو متاح)" },
   { key: "timeOut", label: "وقت الانصراف (لو متاح، اختياري)" },
@@ -1011,22 +1016,37 @@ function AttendanceImportWizard({ employees, settings, onImport, onCancel }) {
   function buildResult() {
     const nameToId = {};
     employees.forEach((e) => { nameToId[e.name.trim().toLowerCase()] = e.id; });
+    const codeToId = {};
+    employees.forEach((e) => { if (e.employeeCode) codeToId[String(e.employeeCode).trim().toLowerCase()] = e.id; });
 
     const results = [];
     const unmatchedNames = new Set();
     let minDate = null, maxDate = null;
 
     rows.forEach((r) => {
+      const codeIdx = mapping.employeeCode;
       const nameIdx = mapping.employeeName;
       const dateIdx = mapping.date;
-      if (nameIdx === undefined || dateIdx === undefined) return;
-      const rawName = String(r[nameIdx] || "").trim();
-      const empId = nameToId[rawName.toLowerCase()];
+      if ((codeIdx === undefined && nameIdx === undefined) || dateIdx === undefined) return;
+
+      let empId = null;
+      let displayLabel = "";
+      if (codeIdx !== undefined) {
+        const rawCode = String(r[codeIdx] || "").trim();
+        displayLabel = rawCode;
+        empId = codeToId[rawCode.toLowerCase()];
+      }
+      if (!empId && nameIdx !== undefined) {
+        const rawName = String(r[nameIdx] || "").trim();
+        if (!displayLabel) displayLabel = rawName;
+        empId = nameToId[rawName.toLowerCase()];
+      }
+
       const isoDate = excelSerialToISODate(r[dateIdx]);
       if (!isoDate) return;
       if (!minDate || isoDate < minDate) minDate = isoDate;
       if (!maxDate || isoDate > maxDate) maxDate = isoDate;
-      if (!empId) { unmatchedNames.add(rawName); return; }
+      if (!empId) { unmatchedNames.add(displayLabel || "—"); return; }
 
       let status = null;
       if (mapping.statusText !== undefined) {
@@ -1066,7 +1086,7 @@ function AttendanceImportWizard({ employees, settings, onImport, onCancel }) {
       )}
       {step === 2 && (
         <div>
-          <p className="mb-3 text-sm text-slate-500">حدد الأعمدة. لازم اسم الموظف والتاريخ على الأقل — بعد كده إما "الحالة الجاهزة" أو "وقت الحضور" (عشان نحسب متأخر تلقائي).</p>
+          <p className="mb-3 text-sm text-slate-500">حدد الأعمدة. لازم التاريخ + (كود الموظف أو اسمه على الأقل) — بعد كده إما "الحالة الجاهزة" أو "وقت الحضور" (عشان نحسب متأخر تلقائي).</p>
           <div className="space-y-2">
             {ATTENDANCE_IMPORT_FIELDS.map((f) => (
               <div key={f.key} className="flex items-center gap-3">
@@ -1081,7 +1101,7 @@ function AttendanceImportWizard({ employees, settings, onImport, onCancel }) {
           <p className="mt-3 text-xs text-slate-400">{rows.length} صف اتقروا من الملف. الموظف بيتطابق بالاسم بالظبط مع اللي مسجل في تاب الموظفين.</p>
           <div className="mt-4 flex justify-between border-t border-stone-200 pt-4">
             <button onClick={() => setStep(1)} className="flex items-center gap-1 rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50"><ArrowRight size={14} /> رجوع</button>
-            <button disabled={mapping.employeeName === undefined || mapping.date === undefined} onClick={goPreview} className="flex items-center gap-1 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900 disabled:opacity-40">معاينة <ArrowLeft size={14} /></button>
+            <button disabled={(mapping.employeeCode === undefined && mapping.employeeName === undefined) || mapping.date === undefined} onClick={goPreview} className="flex items-center gap-1 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900 disabled:opacity-40">معاينة <ArrowLeft size={14} /></button>
           </div>
         </div>
       )}
