@@ -1,0 +1,1136 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>شؤون الأفراد | إدارة الموظفين والمرتبات</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18",
+    "react-dom/client": "https://esm.sh/react-dom@18/client",
+    "lucide-react": "https://esm.sh/lucide-react@0.383.0?external=react"
+  }
+}
+</script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Tahoma", "Cairo", sans-serif; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script type="text/babel" data-type="module" data-presets="react">
+import React, { useState, useEffect, useMemo } from "react";
+import ReactDOM from "react-dom/client";
+import {
+  Users, CalendarCheck, Wallet, AlertTriangle, LayoutDashboard,
+  Plus, X, Search, Pencil, Trash2, Check, Clock, UserX,
+  ChevronLeft, ChevronRight, FileText, Save, AlertCircle, TrendingDown,
+  Loader2, Landmark, HandCoins, LogOut, ClipboardList, Star, Settings as SettingsIcon,
+  Printer, Cake, ShieldAlert, Bell, Info
+} from "lucide-react";
+
+const STATUS_LABELS = { present: "حاضر", absent: "غائب", late: "متأخر", leave: "إجازة" };
+const STATUS_COLORS = {
+  present: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  absent: "bg-rose-50 text-rose-700 border-rose-200",
+  late: "bg-amber-50 text-amber-700 border-amber-200",
+  leave: "bg-sky-50 text-sky-700 border-sky-200",
+};
+const CONTRACT_TYPES = ["دائم", "مؤقت", "تحت التجربة", "دوام جزئي"];
+const DEPARTMENTS_DEFAULT = ["الإدارة", "المبيعات", "التشغيل", "المالية", "خدمة العملاء"];
+const WEEKDAYS = ["الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
+const ACTION_TYPES = ["تنبيه شفهي", "إنذار كتابي", "خصم مالي", "فصل"];
+const DOC_TYPES = ["صورة البطاقة", "المؤهل الدراسي", "العقد الموقّع", "الفيش الجنائي", "صورة شخصية", "أخرى"];
+
+const DEFAULT_SETTINGS = {
+  insuranceRate: 11,
+  overtimeMultiplier: 1.5,
+  leaveDefaultDays: 21,
+  personalExemptionAnnual: 20000,
+  taxBrackets: [
+    { upTo: 40000, rate: 0 },
+    { upTo: 55000, rate: 10 },
+    { upTo: 70000, rate: 15 },
+    { upTo: 200000, rate: 20 },
+    { upTo: 400000, rate: 22.5 },
+    { upTo: null, rate: 25 },
+  ],
+  publicHolidays: [],
+};
+
+function uid(p) { return `${p}_${Date.now()}_${Math.floor(Math.random() * 100000)}`; }
+function todayISO() { return new Date().toISOString().slice(0, 10); }
+function monthKey(d) { return d.slice(0, 7); }
+function yearKey(d) { return d.slice(0, 4); }
+function fmtMoney(n) { return (Number(n) || 0).toLocaleString("en-US", { maximumFractionDigits: 0 }); }
+function weekdayIndex(name) { return WEEKDAYS.indexOf(name); }
+
+function computeTax(annualTaxable, brackets) {
+  if (annualTaxable <= 0) return 0;
+  let tax = 0, lower = 0;
+  for (const b of brackets) {
+    const upper = b.upTo === null ? Infinity : b.upTo;
+    if (annualTaxable > lower) {
+      const slice = Math.min(annualTaxable, upper) - lower;
+      tax += slice * (b.rate / 100);
+      lower = upper;
+    }
+    if (annualTaxable <= upper) break;
+  }
+  return Math.round(tax);
+}
+
+function isNonWorkday(emp, dateStr, holidays) {
+  const dow = new Date(dateStr + "T00:00:00").getDay();
+  if (emp.weeklyOffDay && weekdayIndex(emp.weeklyOffDay) === dow) return "إجازة أسبوعية";
+  const h = (holidays || []).find((x) => x.date === dateStr);
+  if (h) return h.name || "عطلة رسمية";
+  return null;
+}
+
+function getAttEntry(attendance, date, empId) {
+  const raw = (attendance[date] || {})[empId];
+  if (!raw) return null;
+  if (typeof raw === "string") return { status: raw, overtimeHours: 0 };
+  return raw;
+}
+
+function advanceDeductionForMonth(adv, ym) {
+  const start = adv.date.slice(0, 7);
+  const [sy, sm] = start.split("-").map(Number);
+  const [cy, cm] = ym.split("-").map(Number);
+  const passed = (cy - sy) * 12 + (cm - sm);
+  if (passed < 0 || passed >= adv.installments) return 0;
+  return Math.round(adv.totalAmount / adv.installments);
+}
+
+function advanceRemaining(adv) {
+  const nowYm = todayISO().slice(0, 7);
+  let paidMonths = 0;
+  const start = adv.date.slice(0, 7);
+  const [sy, sm] = start.split("-").map(Number);
+  const [cy, cm] = nowYm.split("-").map(Number);
+  const passed = (cy - sy) * 12 + (cm - sm) + 1;
+  paidMonths = Math.max(0, Math.min(passed, adv.installments));
+  const paid = Math.round((adv.totalAmount / adv.installments) * paidMonths);
+  return Math.max(0, adv.totalAmount - paid);
+}
+
+/* ---------- shared UI ---------- */
+function StampBadge({ tone = "teal", children }) {
+  const tones = {
+    teal: "border-teal-700 text-teal-800", amber: "border-amber-600 text-amber-700",
+    rose: "border-rose-600 text-rose-700", slate: "border-slate-400 text-slate-500",
+    emerald: "border-emerald-600 text-emerald-700",
+  };
+  return <span className={`inline-flex items-center gap-1 rounded-full border-2 px-2.5 py-0.5 text-xs font-semibold tracking-wide ${tones[tone]}`}>{children}</span>;
+}
+function Card({ children, className = "" }) {
+  return <div className={`rounded-2xl border border-stone-200 bg-white shadow-sm ${className}`}>{children}</div>;
+}
+function SectionTitle({ eyebrow, title, action }) {
+  return (
+    <div className="mb-5 flex items-end justify-between gap-4 border-b-2 border-amber-500/70 pb-3">
+      <div>
+        {eyebrow && <div className="mb-1 text-xs font-semibold uppercase tracking-widest text-teal-700">{eyebrow}</div>}
+        <h2 className="text-xl font-bold text-slate-800">{title}</h2>
+      </div>
+      {action}
+    </div>
+  );
+}
+function Modal({ open, onClose, title, children, wide }) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+      <div className={`max-h-[90vh] w-full ${wide ? "max-w-2xl" : "max-w-md"} overflow-y-auto rounded-2xl bg-white shadow-xl`}>
+        <div className="flex items-center justify-between border-b border-stone-200 px-6 py-4">
+          <h3 className="text-lg font-bold text-slate-800">{title}</h3>
+          <button onClick={onClose} className="rounded-full p-1.5 text-slate-400 hover:bg-stone-100 hover:text-slate-600"><X size={18} /></button>
+        </div>
+        <div className="p-6">{children}</div>
+      </div>
+    </div>
+  );
+}
+function Field({ label, children }) {
+  return <label className="block"><span className="mb-1.5 block text-sm font-medium text-slate-600">{label}</span>{children}</label>;
+}
+const inputCls = "w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-100";
+function EmptyState({ text }) {
+  return <div className="rounded-xl border border-dashed border-stone-300 py-10 text-center text-sm text-slate-400">{text}</div>;
+}
+function NavItem({ icon, label, active, onClick }) {
+  return (
+    <button onClick={onClick} className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${active ? "bg-teal-800 text-white" : "text-slate-600 hover:bg-stone-100"}`}>
+      {icon}<span>{label}</span>
+    </button>
+  );
+}
+function KpiCard({ label, value, icon, tone }) {
+  const tones = { teal: "bg-teal-50 text-teal-700", emerald: "bg-emerald-50 text-emerald-700", rose: "bg-rose-50 text-rose-700", amber: "bg-amber-50 text-amber-700" };
+  return (
+    <Card className="p-4">
+      <div className={`mb-3 inline-flex h-9 w-9 items-center justify-center rounded-lg ${tones[tone]}`}>{icon}</div>
+      <div className="text-2xl font-bold text-slate-800 tabular-nums">{value}</div>
+      <div className="text-xs text-slate-400">{label}</div>
+    </Card>
+  );
+}
+
+/* ================= MAIN APP ================= */
+function HRSystem() {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [tab, setTab] = useState("dashboard");
+  const [openEmployeeId, setOpenEmployeeId] = useState(null);
+
+  const [employees, setEmployees] = useState([]);
+  const [attendance, setAttendance] = useState({});
+  const [penalties, setPenalties] = useState([]);
+  const [payrollMeta, setPayrollMeta] = useState({});
+  const [advances, setAdvances] = useState([]);
+  const [documents, setDocuments] = useState([]);
+  const [reviews, setReviews] = useState([]);
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+
+  useEffect(() => {
+    try {
+      const emp = localStorage.getItem("hr_employees");
+      const att = localStorage.getItem("hr_attendance");
+      const pen = localStorage.getItem("hr_penalties");
+      const pay = localStorage.getItem("hr_payroll");
+      const adv = localStorage.getItem("hr_advances");
+      const docs = localStorage.getItem("hr_documents");
+      const rev = localStorage.getItem("hr_reviews");
+      const sett = localStorage.getItem("hr_settings");
+      if (emp) setEmployees(JSON.parse(emp));
+      if (att) setAttendance(JSON.parse(att));
+      if (pen) setPenalties(JSON.parse(pen));
+      if (pay) setPayrollMeta(JSON.parse(pay));
+      if (adv) setAdvances(JSON.parse(adv));
+      if (docs) setDocuments(JSON.parse(docs));
+      if (rev) setReviews(JSON.parse(rev));
+      if (sett) setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(sett) });
+    } catch (e) { console.error(e); }
+    finally { setLoading(false); }
+  }, []);
+
+  function persist(key, value) {
+    setSaving(true);
+    try { localStorage.setItem(key, JSON.stringify(value)); }
+    catch (e) { console.error(e); }
+    finally { setTimeout(() => setSaving(false), 150); }
+  }
+
+  const upd = {
+    employees: (n) => { setEmployees(n); persist("hr_employees", n); },
+    attendance: (n) => { setAttendance(n); persist("hr_attendance", n); },
+    penalties: (n) => { setPenalties(n); persist("hr_penalties", n); },
+    payrollMeta: (n) => { setPayrollMeta(n); persist("hr_payroll", n); },
+    advances: (n) => { setAdvances(n); persist("hr_advances", n); },
+    documents: (n) => { setDocuments(n); persist("hr_documents", n); },
+    reviews: (n) => { setReviews(n); persist("hr_reviews", n); },
+    settings: (n) => { setSettings(n); persist("hr_settings", n); },
+  };
+
+  const activeEmployees = useMemo(() => employees.filter((e) => e.status === "active" || !e.status), [employees]);
+  const formerEmployees = useMemo(() => employees.filter((e) => e.status === "resigned" || e.status === "terminated"), [employees]);
+
+  if (loading) {
+    return (
+      <div className="flex h-[600px] w-full items-center justify-center bg-stone-50">
+        <div className="flex flex-col items-center gap-3 text-teal-700">
+          <Loader2 className="animate-spin" size={28} />
+          <span className="text-sm font-medium">جاري تحميل بيانات الموارد البشرية...</span>
+        </div>
+      </div>
+    );
+  }
+
+  const openEmployee = employees.find((e) => e.id === openEmployeeId);
+
+  return (
+    <div dir="rtl" className="min-h-[700px] w-full bg-stone-50 font-sans text-slate-800 print:bg-white">
+      <style>{`@media print { .no-print { display: none !important; } .print-area { display: block !important; } }`}</style>
+      <div className="mx-auto flex max-w-7xl gap-6 p-6">
+        <aside className="no-print sticky top-6 h-fit w-60 shrink-0 rounded-2xl border border-stone-200 bg-white p-4 shadow-sm">
+          <div className="mb-6 flex items-center gap-2 px-2">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-teal-800 text-white"><Users size={18} /></div>
+            <div>
+              <div className="text-sm font-bold text-slate-800">شؤون الأفراد</div>
+              <div className="text-[11px] text-slate-400">إدارة الموظفين والمرتبات</div>
+            </div>
+          </div>
+          <nav className="flex flex-col gap-1">
+            <NavItem icon={<LayoutDashboard size={17} />} label="لوحة المتابعة" active={tab === "dashboard"} onClick={() => setTab("dashboard")} />
+            <NavItem icon={<Users size={17} />} label="الموظفون والعقود" active={tab === "employees"} onClick={() => setTab("employees")} />
+            <NavItem icon={<CalendarCheck size={17} />} label="الحضور والانصراف" active={tab === "attendance"} onClick={() => setTab("attendance")} />
+            <NavItem icon={<Wallet size={17} />} label="المرتبات" active={tab === "payroll"} onClick={() => setTab("payroll")} />
+            <NavItem icon={<AlertTriangle size={17} />} label="الجزاءات والإنذارات" active={tab === "penalties"} onClick={() => setTab("penalties")} />
+            <NavItem icon={<HandCoins size={17} />} label="السلف" active={tab === "advances"} onClick={() => setTab("advances")} />
+            <NavItem icon={<LogOut size={17} />} label="موظفون سابقون" active={tab === "former"} onClick={() => setTab("former")} />
+            <NavItem icon={<SettingsIcon size={17} />} label="الإعدادات" active={tab === "settings"} onClick={() => setTab("settings")} />
+          </nav>
+          <div className="mt-6 flex items-center gap-1.5 rounded-lg bg-stone-50 px-2.5 py-2 text-[11px] text-slate-400">
+            {saving ? <><Loader2 className="animate-spin" size={12} /><span>جاري الحفظ...</span></> : <><Check size={12} className="text-emerald-600" /><span>كل التعديلات محفوظة</span></>}
+          </div>
+        </aside>
+
+        <main className="no-print min-w-0 flex-1">
+          {tab === "dashboard" && <Dashboard employees={activeEmployees} attendance={attendance} penalties={penalties} advances={advances} settings={settings} documents={documents} />}
+          {tab === "employees" && <EmployeesTab employees={employees} setEmployees={upd.employees} settings={settings} onOpen={setOpenEmployeeId} />}
+          {tab === "attendance" && <AttendanceTab employees={activeEmployees} attendance={attendance} setAttendance={upd.attendance} settings={settings} />}
+          {tab === "payroll" && <PayrollTab employees={activeEmployees} attendance={attendance} penalties={penalties} payrollMeta={payrollMeta} setPayrollMeta={upd.payrollMeta} advances={advances} settings={settings} />}
+          {tab === "penalties" && <PenaltiesTab employees={activeEmployees} penalties={penalties} setPenalties={upd.penalties} />}
+          {tab === "advances" && <AdvancesTab employees={activeEmployees} advances={advances} setAdvances={upd.advances} />}
+          {tab === "former" && <FormerEmployeesTab employees={formerEmployees} setEmployees={upd.employees} allEmployees={employees} />}
+          {tab === "settings" && <SettingsTab settings={settings} setSettings={upd.settings} />}
+        </main>
+      </div>
+
+      {openEmployee && (
+        <EmployeeProfileModal
+          employee={openEmployee}
+          onClose={() => setOpenEmployeeId(null)}
+          attendance={attendance}
+          documents={documents} setDocuments={upd.documents}
+          reviews={reviews} setReviews={upd.reviews}
+          settings={settings}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ================= DASHBOARD ================= */
+function Dashboard({ employees, attendance, penalties, advances, settings, documents }) {
+  const today = todayISO();
+  const presentToday = employees.filter((e) => getAttEntry(attendance, today, e.id)?.status === "present").length;
+  const absentToday = employees.filter((e) => getAttEntry(attendance, today, e.id)?.status === "absent").length;
+  const lateToday = employees.filter((e) => getAttEntry(attendance, today, e.id)?.status === "late").length;
+
+  const thisMonth = monthKey(today);
+  const penaltiesTotal = penalties.filter((p) => monthKey(p.date) === thisMonth && p.actionType === "خصم مالي").reduce((s, p) => s + (Number(p.amount) || 0), 0);
+
+  const alerts = [];
+  const in30 = new Date(); in30.setDate(in30.getDate() + 30);
+  employees.forEach((e) => {
+    if (e.contractEnd) {
+      const end = new Date(e.contractEnd);
+      if (end >= new Date() && end <= in30) alerts.push({ tone: "amber", icon: <FileText size={14} />, text: `عقد ${e.name} بينتهي في ${e.contractEnd}` });
+    }
+    const takenLeave = Object.keys(attendance).filter((d) => yearKey(d) === yearKey(today) && getAttEntry(attendance, d, e.id)?.status === "leave").length;
+    const remaining = (e.leaveEntitlement ?? settings.leaveDefaultDays) - takenLeave;
+    if (remaining <= 2) alerts.push({ tone: "rose", icon: <CalendarCheck size={14} />, text: `رصيد إجازات ${e.name} باقيله ${remaining} يوم بس` });
+    if (e.birthDate) {
+      const bd = new Date(e.birthDate);
+      const thisYearBd = new Date(new Date().getFullYear(), bd.getMonth(), bd.getDate());
+      const diffDays = Math.round((thisYearBd - new Date()) / 86400000);
+      if (diffDays >= 0 && diffDays <= 7) alerts.push({ tone: "teal", icon: <Cake size={14} />, text: `عيد ميلاد ${e.name} بعد ${diffDays === 0 ? "النهاردة" : diffDays + " يوم"}` });
+    }
+  });
+  advances.forEach((a) => {
+    const remaining = advanceRemaining(a);
+    const emp = employees.find((e) => e.id === a.employeeId);
+    if (remaining > 0 && remaining <= Math.round(a.totalAmount / a.installments)) {
+      alerts.push({ tone: "emerald", icon: <HandCoins size={14} />, text: `سلفة ${emp?.name || ""} هتخلص القسط الجاي` });
+    }
+  });
+  documents.forEach((d) => {
+    if (d.expiryDate) {
+      const exp = new Date(d.expiryDate);
+      if (exp >= new Date() && exp <= in30) {
+        const emp = employees.find((e) => e.id === d.employeeId);
+        alerts.push({ tone: "amber", icon: <ShieldAlert size={14} />, text: `${d.name} بتاع ${emp?.name || ""} بينتهي في ${d.expiryDate}` });
+      }
+    }
+  });
+
+  return (
+    <div>
+      <SectionTitle eyebrow={new Date().toLocaleDateString("ar-EG", { weekday: "long", year: "numeric", month: "long", day: "numeric" })} title="لوحة المتابعة" />
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+        <KpiCard label="إجمالي الموظفين" value={employees.length} icon={<Users size={18} />} tone="teal" />
+        <KpiCard label="حاضر النهاردة" value={presentToday} icon={<Check size={18} />} tone="emerald" />
+        <KpiCard label="غايب النهاردة" value={absentToday} icon={<UserX size={18} />} tone="rose" />
+        <KpiCard label="متأخر النهاردة" value={lateToday} icon={<Clock size={18} />} tone="amber" />
+      </div>
+
+      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <Card className="p-5 lg:col-span-2">
+          <div className="mb-4 flex items-center justify-between">
+            <h3 className="font-bold text-slate-800">حالة الحضور اليوم</h3>
+          </div>
+          {employees.length === 0 ? <EmptyState text="لسه معملتش أي موظف. ابدأ من تاب «الموظفون والعقود»." /> : (
+            <div className="space-y-2">
+              {employees.slice(0, 8).map((e) => {
+                const st = getAttEntry(attendance, today, e.id)?.status;
+                return (
+                  <div key={e.id} className="flex items-center justify-between rounded-lg border border-stone-100 px-3 py-2">
+                    <div><div className="text-sm font-medium text-slate-700">{e.name}</div><div className="text-xs text-slate-400">{e.position || "—"}</div></div>
+                    {st ? <span className={`rounded-full border px-2.5 py-0.5 text-xs font-semibold ${STATUS_COLORS[st]}`}>{STATUS_LABELS[st]}</span>
+                      : <span className="rounded-full border border-stone-200 px-2.5 py-0.5 text-xs text-slate-400">لسه ما اتسجلش</span>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Card>
+
+        <div className="space-y-6">
+          <Card className="p-5">
+            <div className="mb-3 flex items-center gap-2"><Bell size={16} className="text-amber-600" /><h3 className="font-bold text-slate-800">تنبيهات</h3></div>
+            {alerts.length === 0 ? <p className="text-sm text-slate-400">مفيش تنبيهات دلوقتي.</p> : (
+              <div className="space-y-2.5 max-h-64 overflow-y-auto">
+                {alerts.map((a, i) => (
+                  <div key={i} className={`flex items-start gap-2 rounded-lg border px-2.5 py-2 text-xs ${a.tone === "rose" ? "border-rose-200 bg-rose-50 text-rose-700" : a.tone === "amber" ? "border-amber-200 bg-amber-50 text-amber-700" : a.tone === "emerald" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-teal-200 bg-teal-50 text-teal-700"}`}>
+                    {a.icon}<span>{a.text}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+          <Card className="p-5">
+            <div className="mb-3 flex items-center gap-2"><TrendingDown size={16} className="text-rose-600" /><h3 className="font-bold text-slate-800">خصومات الجزاءات هذا الشهر</h3></div>
+            <div className="text-2xl font-bold text-slate-800 tabular-nums">{fmtMoney(penaltiesTotal)} <span className="text-sm font-normal text-slate-400">ج.م</span></div>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ================= EMPLOYEES ================= */
+function EmployeesTab({ employees, setEmployees, settings, onOpen }) {
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [query, setQuery] = useState("");
+  const visible = employees.filter((e) => e.status === "active" || !e.status);
+  const filtered = visible.filter((e) => e.name.includes(query) || (e.position || "").includes(query) || (e.department || "").includes(query));
+
+  function save(data) {
+    if (editing) setEmployees(employees.map((e) => (e.id === editing.id ? { ...editing, ...data } : e)));
+    else setEmployees([...employees, { id: uid("emp"), status: "active", leaveEntitlement: settings.leaveDefaultDays, ...data }]);
+    setModalOpen(false);
+  }
+  function markResigned(emp) {
+    setEmployees(employees.map((e) => (e.id === emp.id ? { ...e, status: "resigned", resignationDate: todayISO() } : e)));
+  }
+
+  return (
+    <div>
+      <SectionTitle eyebrow={`${visible.length} موظف نشط`} title="الموظفون والعقود" action={
+        <button onClick={() => { setEditing(null); setModalOpen(true); }} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-900">
+          <Plus size={16} /> موظف جديد
+        </button>
+      } />
+
+      <div className="mb-4 flex items-center gap-2 rounded-lg border border-stone-300 bg-white px-3 py-2">
+        <Search size={16} className="text-slate-400" />
+        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="دور بالاسم أو الوظيفة أو القسم..." className="w-full text-sm outline-none" />
+      </div>
+
+      {filtered.length === 0 ? <Card className="p-0"><EmptyState text={visible.length === 0 ? "لسه معملتش أي موظف." : "مفيش نتائج مطابقة."} /></Card> : (
+        <Card className="overflow-hidden p-0">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
+                <th className="px-4 py-3">الاسم</th><th className="px-4 py-3">الوظيفة</th><th className="px-4 py-3">القسم</th>
+                <th className="px-4 py-3">نوع العقد</th><th className="px-4 py-3">نهاية العقد</th><th className="px-4 py-3">الراتب الأساسي</th><th className="px-4 py-3"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((e) => (
+                <tr key={e.id} className="border-b border-stone-100 last:border-0 hover:bg-stone-50">
+                  <td className="px-4 py-3 font-medium text-teal-800 cursor-pointer hover:underline" onClick={() => onOpen(e.id)}>{e.name}</td>
+                  <td className="px-4 py-3 text-slate-600">{e.position || "—"}</td>
+                  <td className="px-4 py-3 text-slate-600">{e.department || "—"}</td>
+                  <td className="px-4 py-3"><StampBadge tone="teal">{e.contractType || "—"}</StampBadge></td>
+                  <td className="px-4 py-3 text-slate-600">{e.contractEnd || "غير محدد"}</td>
+                  <td className="px-4 py-3 tabular-nums text-slate-700">{fmtMoney(e.salary)} ج.م</td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => { setEditing(e); setModalOpen(true); }} className="rounded-md p-1.5 text-slate-400 hover:bg-stone-100 hover:text-teal-700"><Pencil size={15} /></button>
+                      <button onClick={() => markResigned(e)} title="نقل لموظفين سابقين" className="rounded-md p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><LogOut size={15} /></button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
+
+      <Modal open={modalOpen} onClose={() => setModalOpen(false)} title={editing ? "تعديل بيانات موظف" : "إضافة موظف جديد"} wide>
+        <EmployeeForm initial={editing} settings={settings} onSave={save} onCancel={() => setModalOpen(false)} />
+      </Modal>
+    </div>
+  );
+}
+
+function EmployeeForm({ initial, settings, onSave, onCancel }) {
+  const [form, setForm] = useState({
+    name: initial?.name || "", position: initial?.position || "", department: initial?.department || "",
+    phone: initial?.phone || "", nationalId: initial?.nationalId || "", hireDate: initial?.hireDate || todayISO(),
+    salary: initial?.salary || "", contractType: initial?.contractType || CONTRACT_TYPES[0],
+    contractStart: initial?.contractStart || todayISO(), contractEnd: initial?.contractEnd || "",
+    birthDate: initial?.birthDate || "", weeklyOffDay: initial?.weeklyOffDay || "الجمعة",
+    leaveEntitlement: initial?.leaveEntitlement ?? settings.leaveDefaultDays,
+  });
+  function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
+  function submit(e) { e.preventDefault(); if (!form.name.trim()) return; onSave({ ...form, salary: Number(form.salary) || 0, leaveEntitlement: Number(form.leaveEntitlement) || 0 }); }
+
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      <div className="grid grid-cols-2 gap-4">
+        <Field label="الاسم بالكامل"><input required className={inputCls} value={form.name} onChange={(e) => set("name", e.target.value)} /></Field>
+        <Field label="رقم الموبايل"><input className={inputCls} value={form.phone} onChange={(e) => set("phone", e.target.value)} /></Field>
+        <Field label="الوظيفة"><input className={inputCls} value={form.position} onChange={(e) => set("position", e.target.value)} /></Field>
+        <Field label="القسم">
+          <input list="departments" className={inputCls} value={form.department} onChange={(e) => set("department", e.target.value)} />
+          <datalist id="departments">{DEPARTMENTS_DEFAULT.map((d) => <option key={d} value={d} />)}</datalist>
+        </Field>
+        <Field label="الرقم القومي"><input className={inputCls} value={form.nationalId} onChange={(e) => set("nationalId", e.target.value)} /></Field>
+        <Field label="تاريخ الميلاد"><input type="date" className={inputCls} value={form.birthDate} onChange={(e) => set("birthDate", e.target.value)} /></Field>
+        <Field label="تاريخ التعيين"><input type="date" className={inputCls} value={form.hireDate} onChange={(e) => set("hireDate", e.target.value)} /></Field>
+        <Field label="الراتب الأساسي الشهري"><input type="number" min="0" className={inputCls} value={form.salary} onChange={(e) => set("salary", e.target.value)} /></Field>
+        <Field label="نوع العقد">
+          <select className={inputCls} value={form.contractType} onChange={(e) => set("contractType", e.target.value)}>
+            {CONTRACT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </Field>
+        <Field label="بداية العقد"><input type="date" className={inputCls} value={form.contractStart} onChange={(e) => set("contractStart", e.target.value)} /></Field>
+        <Field label="نهاية العقد (اختياري)"><input type="date" className={inputCls} value={form.contractEnd} onChange={(e) => set("contractEnd", e.target.value)} /></Field>
+        <Field label="يوم الإجازة الأسبوعية">
+          <select className={inputCls} value={form.weeklyOffDay} onChange={(e) => set("weeklyOffDay", e.target.value)}>
+            {WEEKDAYS.map((d) => <option key={d} value={d}>{d}</option>)}
+          </select>
+        </Field>
+        <Field label="رصيد الإجازات السنوي (يوم)"><input type="number" min="0" className={inputCls} value={form.leaveEntitlement} onChange={(e) => set("leaveEntitlement", e.target.value)} /></Field>
+      </div>
+      <div className="flex justify-end gap-2 border-t border-stone-200 pt-4">
+        <button type="button" onClick={onCancel} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50">إلغاء</button>
+        <button type="submit" className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Save size={15} /> حفظ</button>
+      </div>
+    </form>
+  );
+}
+
+/* ---- Employee profile (leave / documents / reviews) ---- */
+function EmployeeProfileModal({ employee, onClose, attendance, documents, setDocuments, reviews, setReviews, settings }) {
+  const [sub, setSub] = useState("leave");
+  const today = todayISO();
+  const takenLeave = Object.keys(attendance).filter((d) => yearKey(d) === yearKey(today) && getAttEntry(attendance, d, employee.id)?.status === "leave").length;
+  const entitlement = employee.leaveEntitlement ?? settings.leaveDefaultDays;
+  const remaining = entitlement - takenLeave;
+
+  const empDocs = documents.filter((d) => d.employeeId === employee.id);
+  const empReviews = reviews.filter((r) => r.employeeId === employee.id).sort((a, b) => (a.date < b.date ? 1 : -1));
+
+  const [docForm, setDocForm] = useState({ name: DOC_TYPES[0], expiryDate: "", status: "متوفر" });
+  const [reviewForm, setReviewForm] = useState({ date: today, score: 3, reviewer: "", notes: "" });
+
+  function addDoc(e) {
+    e.preventDefault();
+    setDocuments([...documents, { id: uid("doc"), employeeId: employee.id, ...docForm }]);
+    setDocForm({ name: DOC_TYPES[0], expiryDate: "", status: "متوفر" });
+  }
+  function removeDoc(id) { setDocuments(documents.filter((d) => d.id !== id)); }
+  function addReview(e) {
+    e.preventDefault();
+    setReviews([{ id: uid("rev"), employeeId: employee.id, ...reviewForm, score: Number(reviewForm.score) }, ...reviews]);
+    setReviewForm({ date: today, score: 3, reviewer: "", notes: "" });
+  }
+  function removeReview(id) { setReviews(reviews.filter((r) => r.id !== id)); }
+
+  return (
+    <Modal open onClose={onClose} title={`ملف ${employee.name}`} wide>
+      <div className="mb-4 flex gap-2 border-b border-stone-200 pb-3">
+        {[["leave", "الإجازات", <CalendarCheck size={14} />], ["documents", "المستندات", <FileText size={14} />], ["reviews", "التقييمات", <Star size={14} />]].map(([k, l, icon]) => (
+          <button key={k} onClick={() => setSub(k)} className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium ${sub === k ? "bg-teal-800 text-white" : "text-slate-500 hover:bg-stone-100"}`}>{icon}{l}</button>
+        ))}
+      </div>
+
+      {sub === "leave" && (
+        <div>
+          <div className="mb-4 grid grid-cols-3 gap-3">
+            <div className="rounded-xl bg-stone-100 px-3 py-2.5 text-center"><div className="text-lg font-bold tabular-nums">{entitlement}</div><div className="text-[11px] text-slate-500">مستحق سنويًا</div></div>
+            <div className="rounded-xl bg-sky-50 px-3 py-2.5 text-center"><div className="text-lg font-bold tabular-nums text-sky-700">{takenLeave}</div><div className="text-[11px] text-sky-600">مأخوذ هذا العام</div></div>
+            <div className={`rounded-xl px-3 py-2.5 text-center ${remaining <= 2 ? "bg-rose-50" : "bg-emerald-50"}`}><div className={`text-lg font-bold tabular-nums ${remaining <= 2 ? "text-rose-700" : "text-emerald-700"}`}>{remaining}</div><div className={`text-[11px] ${remaining <= 2 ? "text-rose-600" : "text-emerald-600"}`}>الرصيد المتبقي</div></div>
+          </div>
+          <p className="text-xs text-slate-400">الأيام المأخوذة بتتحسب تلقائي من أيام «إجازة» المسجلة في تاب الحضور والانصراف خلال السنة الحالية.</p>
+        </div>
+      )}
+
+      {sub === "documents" && (
+        <div>
+          <p className="mb-3 flex items-start gap-1.5 rounded-lg bg-stone-50 px-3 py-2 text-xs text-slate-500"><Info size={14} className="mt-0.5 shrink-0" />ده سجل متابعة بس (اسم المستند وحالته وتاريخ انتهائه لو موجود)، مش رفع ملفات فعلي.</p>
+          <form onSubmit={addDoc} className="mb-4 grid grid-cols-4 gap-2">
+            <select className={inputCls} value={docForm.name} onChange={(e) => setDocForm({ ...docForm, name: e.target.value })}>{DOC_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}</select>
+            <select className={inputCls} value={docForm.status} onChange={(e) => setDocForm({ ...docForm, status: e.target.value })}>
+              <option value="متوفر">متوفر</option><option value="ناقص">ناقص</option>
+            </select>
+            <input type="date" placeholder="تاريخ الانتهاء" className={inputCls} value={docForm.expiryDate} onChange={(e) => setDocForm({ ...docForm, expiryDate: e.target.value })} />
+            <button className="flex items-center justify-center gap-1 rounded-lg bg-teal-800 px-2 py-2 text-xs font-semibold text-white hover:bg-teal-900"><Plus size={14} /> إضافة</button>
+          </form>
+          {empDocs.length === 0 ? <EmptyState text="مفيش مستندات مسجلة." /> : (
+            <div className="space-y-1.5">
+              {empDocs.map((d) => (
+                <div key={d.id} className="flex items-center justify-between rounded-lg border border-stone-100 px-3 py-2 text-sm">
+                  <div><span className="font-medium text-slate-700">{d.name}</span>{d.expiryDate && <span className="ms-2 text-xs text-slate-400">ينتهي {d.expiryDate}</span>}</div>
+                  <div className="flex items-center gap-2">
+                    <StampBadge tone={d.status === "متوفر" ? "emerald" : "rose"}>{d.status}</StampBadge>
+                    <button onClick={() => removeDoc(d.id)} className="text-slate-300 hover:text-rose-600"><Trash2 size={14} /></button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {sub === "reviews" && (
+        <div>
+          <form onSubmit={addReview} className="mb-4 space-y-2 rounded-lg bg-stone-50 p-3">
+            <div className="grid grid-cols-3 gap-2">
+              <input type="date" className={inputCls} value={reviewForm.date} onChange={(e) => setReviewForm({ ...reviewForm, date: e.target.value })} />
+              <select className={inputCls} value={reviewForm.score} onChange={(e) => setReviewForm({ ...reviewForm, score: e.target.value })}>
+                {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n} / 5</option>)}
+              </select>
+              <input placeholder="اسم المقيّم" className={inputCls} value={reviewForm.reviewer} onChange={(e) => setReviewForm({ ...reviewForm, reviewer: e.target.value })} />
+            </div>
+            <textarea placeholder="ملاحظات التقييم" rows={2} className={inputCls} value={reviewForm.notes} onChange={(e) => setReviewForm({ ...reviewForm, notes: e.target.value })} />
+            <button className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-900"><Plus size={14} /> تسجيل تقييم</button>
+          </form>
+          {empReviews.length === 0 ? <EmptyState text="مفيش تقييمات مسجلة." /> : (
+            <div className="space-y-2">
+              {empReviews.map((r) => (
+                <div key={r.id} className="rounded-lg border border-stone-100 p-3 text-sm">
+                  <div className="mb-1 flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 font-semibold text-amber-600">{Array.from({ length: r.score }).map((_, i) => <Star key={i} size={13} fill="currentColor" />)}</div>
+                    <div className="flex items-center gap-2 text-xs text-slate-400"><span>{r.date}</span><button onClick={() => removeReview(r.id)} className="text-slate-300 hover:text-rose-600"><Trash2 size={13} /></button></div>
+                  </div>
+                  {r.reviewer && <div className="text-xs text-slate-400">بمعرفة: {r.reviewer}</div>}
+                  {r.notes && <p className="mt-1 text-slate-600">{r.notes}</p>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+/* ================= ATTENDANCE ================= */
+function AttendanceTab({ employees, attendance, setAttendance, settings }) {
+  const [date, setDate] = useState(todayISO());
+  const dayRecord = attendance[date] || {};
+
+  function setStatus(empId, status) {
+    const current = getAttEntry(attendance, date, empId) || { status: null, overtimeHours: 0 };
+    const nextDay = { ...dayRecord };
+    if (current.status === status) nextDay[empId] = { status: null, overtimeHours: current.overtimeHours };
+    else nextDay[empId] = { status, overtimeHours: current.overtimeHours };
+    setAttendance({ ...attendance, [date]: nextDay });
+  }
+  function setOvertime(empId, hours) {
+    const current = getAttEntry(attendance, date, empId) || { status: null, overtimeHours: 0 };
+    setAttendance({ ...attendance, [date]: { ...dayRecord, [empId]: { status: current.status, overtimeHours: Number(hours) || 0 } } });
+  }
+  function shiftDay(delta) { const d = new Date(date); d.setDate(d.getDate() + delta); setDate(d.toISOString().slice(0, 10)); }
+
+  const counts = employees.reduce((acc, e) => { const st = getAttEntry(attendance, date, e.id)?.status; if (st) acc[st] = (acc[st] || 0) + 1; return acc; }, { present: 0, absent: 0, late: 0, leave: 0 });
+
+  return (
+    <div>
+      <SectionTitle eyebrow="سجل يومي" title="الحضور والانصراف" action={
+        <div className="flex items-center gap-2">
+          <button onClick={() => shiftDay(-1)} className="rounded-lg border border-stone-300 p-2 hover:bg-stone-50"><ChevronRight size={16} /></button>
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={`${inputCls} w-auto`} />
+          <button onClick={() => shiftDay(1)} className="rounded-lg border border-stone-300 p-2 hover:bg-stone-50"><ChevronLeft size={16} /></button>
+        </div>
+      } />
+
+      <div className="mb-5 grid grid-cols-4 gap-3">
+        <div className="rounded-xl bg-emerald-50 px-4 py-3 text-emerald-700"><div className="text-xl font-bold tabular-nums">{counts.present}</div><div className="text-xs font-medium">حاضر</div></div>
+        <div className="rounded-xl bg-rose-50 px-4 py-3 text-rose-700"><div className="text-xl font-bold tabular-nums">{counts.absent}</div><div className="text-xs font-medium">غايب</div></div>
+        <div className="rounded-xl bg-amber-50 px-4 py-3 text-amber-700"><div className="text-xl font-bold tabular-nums">{counts.late}</div><div className="text-xs font-medium">متأخر</div></div>
+        <div className="rounded-xl bg-sky-50 px-4 py-3 text-sky-700"><div className="text-xl font-bold tabular-nums">{counts.leave}</div><div className="text-xs font-medium">إجازة</div></div>
+      </div>
+
+      {employees.length === 0 ? <Card className="p-0"><EmptyState text="لسه معملتش أي موظف نشط." /></Card> : (
+        <Card className="overflow-hidden p-0">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
+                <th className="px-4 py-3">الموظف</th><th className="px-4 py-3">الحالة</th><th className="px-4 py-3">ساعات إضافي</th>
+              </tr>
+            </thead>
+            <tbody>
+              {employees.map((e) => {
+                const nonWorkReason = isNonWorkday(e, date, settings.publicHolidays);
+                const entry = getAttEntry(attendance, date, e.id);
+                return (
+                  <tr key={e.id} className="border-b border-stone-100 last:border-0 hover:bg-stone-50">
+                    <td className="px-4 py-3 font-medium text-slate-800">{e.name}</td>
+                    <td className="px-4 py-3">
+                      {nonWorkReason ? <StampBadge tone="slate">{nonWorkReason}</StampBadge> : (
+                        <div className="flex gap-1.5">
+                          {Object.keys(STATUS_LABELS).map((st) => (
+                            <button key={st} onClick={() => setStatus(e.id, st)} className={`rounded-full border px-2.5 py-1 text-xs font-semibold transition-colors ${entry?.status === st ? STATUS_COLORS[st] : "border-stone-200 text-slate-400 hover:border-stone-300"}`}>{STATUS_LABELS[st]}</button>
+                          ))}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <input type="number" min="0" step="0.5" className="w-20 rounded-md border border-stone-200 px-2 py-1 text-xs tabular-nums outline-none focus:border-teal-500" value={entry?.overtimeHours || ""} onChange={(e2) => setOvertime(e.id, e2.target.value)} placeholder="0" />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+/* ================= PENALTIES (+ warnings) ================= */
+function PenaltiesTab({ employees, penalties, setPenalties }) {
+  const [modalOpen, setModalOpen] = useState(false);
+  function add(data) { setPenalties([{ id: uid("pen"), ...data }, ...penalties]); setModalOpen(false); }
+  function remove(id) { setPenalties(penalties.filter((p) => p.id !== id)); }
+  function empName(id) { return employees.find((e) => e.id === id)?.name || "موظف سابق"; }
+  const sorted = [...penalties].sort((a, b) => (a.date < b.date ? 1 : -1));
+  const toneFor = (t) => t === "خصم مالي" ? "rose" : t === "فصل" ? "rose" : t === "إنذار كتابي" ? "amber" : "slate";
+
+  return (
+    <div>
+      <SectionTitle eyebrow={`${penalties.length} إجراء مسجل`} title="الجزاءات والإنذارات" action={
+        <button onClick={() => setModalOpen(true)} disabled={employees.length === 0} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-900 disabled:opacity-40">
+          <Plus size={16} /> تسجيل إجراء
+        </button>
+      } />
+      {sorted.length === 0 ? <Card className="p-0"><EmptyState text="مفيش إجراءات مسجلة." /></Card> : (
+        <Card className="overflow-hidden p-0">
+          <table className="w-full text-sm">
+            <thead><tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
+              <th className="px-4 py-3">الموظف</th><th className="px-4 py-3">التاريخ</th><th className="px-4 py-3">نوع الإجراء</th><th className="px-4 py-3">السبب</th><th className="px-4 py-3">الخصم</th><th className="px-4 py-3"></th>
+            </tr></thead>
+            <tbody>
+              {sorted.map((p) => (
+                <tr key={p.id} className="border-b border-stone-100 last:border-0 hover:bg-stone-50">
+                  <td className="px-4 py-3 font-medium text-slate-800">{empName(p.employeeId)}</td>
+                  <td className="px-4 py-3 text-slate-500">{p.date}</td>
+                  <td className="px-4 py-3"><StampBadge tone={toneFor(p.actionType)}>{p.actionType}</StampBadge></td>
+                  <td className="px-4 py-3 text-slate-600">{p.reason}</td>
+                  <td className="px-4 py-3 tabular-nums font-semibold text-rose-600">{p.actionType === "خصم مالي" ? `-${fmtMoney(p.amount)} ج.م` : "—"}</td>
+                  <td className="px-4 py-3"><button onClick={() => remove(p.id)} className="rounded-md p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 size={15} /></button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
+      <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="تسجيل إجراء جديد">
+        <PenaltyForm employees={employees} onSave={add} onCancel={() => setModalOpen(false)} />
+      </Modal>
+    </div>
+  );
+}
+function PenaltyForm({ employees, onSave, onCancel }) {
+  const [form, setForm] = useState({ employeeId: employees[0]?.id || "", date: todayISO(), actionType: ACTION_TYPES[0], reason: "", amount: "", notes: "" });
+  function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
+  function submit(e) { e.preventDefault(); if (!form.employeeId || !form.reason.trim()) return; onSave({ ...form, amount: form.actionType === "خصم مالي" ? Number(form.amount) || 0 : 0 }); }
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      <Field label="الموظف"><select required className={inputCls} value={form.employeeId} onChange={(e) => set("employeeId", e.target.value)}>{employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</select></Field>
+      <div className="grid grid-cols-2 gap-4">
+        <Field label="التاريخ"><input type="date" className={inputCls} value={form.date} onChange={(e) => set("date", e.target.value)} /></Field>
+        <Field label="نوع الإجراء"><select className={inputCls} value={form.actionType} onChange={(e) => set("actionType", e.target.value)}>{ACTION_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}</select></Field>
+      </div>
+      {form.actionType === "خصم مالي" && <Field label="قيمة الخصم (ج.م)"><input type="number" min="0" className={inputCls} value={form.amount} onChange={(e) => set("amount", e.target.value)} /></Field>}
+      <Field label="السبب"><input required className={inputCls} value={form.reason} onChange={(e) => set("reason", e.target.value)} placeholder="مثلاً: تأخير متكرر، مخالفة سياسة..." /></Field>
+      <Field label="ملاحظات (اختياري)"><textarea className={inputCls} rows={2} value={form.notes} onChange={(e) => set("notes", e.target.value)} /></Field>
+      <div className="flex justify-end gap-2 border-t border-stone-200 pt-4">
+        <button type="button" onClick={onCancel} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50">إلغاء</button>
+        <button type="submit" className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Save size={15} /> حفظ</button>
+      </div>
+    </form>
+  );
+}
+
+/* ================= ADVANCES ================= */
+function AdvancesTab({ employees, advances, setAdvances }) {
+  const [modalOpen, setModalOpen] = useState(false);
+  function add(data) { setAdvances([{ id: uid("adv"), ...data }, ...advances]); setModalOpen(false); }
+  function remove(id) { setAdvances(advances.filter((a) => a.id !== id)); }
+  function empName(id) { return employees.find((e) => e.id === id)?.name || "موظف سابق"; }
+
+  return (
+    <div>
+      <SectionTitle eyebrow={`${advances.length} سلفة مسجلة`} title="السلف" action={
+        <button onClick={() => setModalOpen(true)} disabled={employees.length === 0} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-900 disabled:opacity-40"><Plus size={16} /> سلفة جديدة</button>
+      } />
+      {advances.length === 0 ? <Card className="p-0"><EmptyState text="مفيش سلف مسجلة." /></Card> : (
+        <Card className="overflow-hidden p-0">
+          <table className="w-full text-sm">
+            <thead><tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
+              <th className="px-4 py-3">الموظف</th><th className="px-4 py-3">تاريخ الصرف</th><th className="px-4 py-3">القيمة</th><th className="px-4 py-3">عدد الأقساط</th><th className="px-4 py-3">القسط الشهري</th><th className="px-4 py-3">المتبقي</th><th className="px-4 py-3"></th>
+            </tr></thead>
+            <tbody>
+              {advances.map((a) => (
+                <tr key={a.id} className="border-b border-stone-100 last:border-0 hover:bg-stone-50">
+                  <td className="px-4 py-3 font-medium text-slate-800">{empName(a.employeeId)}</td>
+                  <td className="px-4 py-3 text-slate-500">{a.date}</td>
+                  <td className="px-4 py-3 tabular-nums text-slate-700">{fmtMoney(a.totalAmount)} ج.م</td>
+                  <td className="px-4 py-3 tabular-nums text-slate-600">{a.installments}</td>
+                  <td className="px-4 py-3 tabular-nums text-slate-600">{fmtMoney(Math.round(a.totalAmount / a.installments))} ج.م</td>
+                  <td className="px-4 py-3 tabular-nums font-semibold">{advanceRemaining(a) === 0 ? <StampBadge tone="emerald">اتسددت</StampBadge> : `${fmtMoney(advanceRemaining(a))} ج.م`}</td>
+                  <td className="px-4 py-3"><button onClick={() => remove(a.id)} className="rounded-md p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 size={15} /></button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
+      <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="تسجيل سلفة جديدة">
+        <AdvanceForm employees={employees} onSave={add} onCancel={() => setModalOpen(false)} />
+      </Modal>
+    </div>
+  );
+}
+function AdvanceForm({ employees, onSave, onCancel }) {
+  const [form, setForm] = useState({ employeeId: employees[0]?.id || "", date: todayISO(), totalAmount: "", installments: 1, notes: "" });
+  function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
+  function submit(e) { e.preventDefault(); if (!form.employeeId || !form.totalAmount) return; onSave({ ...form, totalAmount: Number(form.totalAmount) || 0, installments: Number(form.installments) || 1 }); }
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      <Field label="الموظف"><select required className={inputCls} value={form.employeeId} onChange={(e) => set("employeeId", e.target.value)}>{employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</select></Field>
+      <div className="grid grid-cols-3 gap-4">
+        <Field label="تاريخ الصرف"><input type="date" className={inputCls} value={form.date} onChange={(e) => set("date", e.target.value)} /></Field>
+        <Field label="قيمة السلفة"><input type="number" min="0" className={inputCls} value={form.totalAmount} onChange={(e) => set("totalAmount", e.target.value)} /></Field>
+        <Field label="عدد الأقساط (شهور)"><input type="number" min="1" className={inputCls} value={form.installments} onChange={(e) => set("installments", e.target.value)} /></Field>
+      </div>
+      <Field label="ملاحظات (اختياري)"><textarea className={inputCls} rows={2} value={form.notes} onChange={(e) => set("notes", e.target.value)} /></Field>
+      <div className="flex justify-end gap-2 border-t border-stone-200 pt-4">
+        <button type="button" onClick={onCancel} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50">إلغاء</button>
+        <button type="submit" className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Save size={15} /> حفظ</button>
+      </div>
+    </form>
+  );
+}
+
+/* ================= FORMER EMPLOYEES ================= */
+function FormerEmployeesTab({ employees, setEmployees, allEmployees }) {
+  const [editing, setEditing] = useState(null);
+  function saveSettlement(id, data) {
+    setEmployees(allEmployees.map((e) => (e.id === id ? { ...e, ...data } : e)));
+    setEditing(null);
+  }
+  function reactivate(id) {
+    setEmployees(allEmployees.map((e) => (e.id === id ? { ...e, status: "active" } : e)));
+  }
+  return (
+    <div>
+      <SectionTitle eyebrow={`${employees.length} موظف سابق`} title="موظفون سابقون" />
+      {employees.length === 0 ? <Card className="p-0"><EmptyState text="مفيش موظفين سابقين مسجلين." /></Card> : (
+        <Card className="overflow-hidden p-0">
+          <table className="w-full text-sm">
+            <thead><tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
+              <th className="px-4 py-3">الاسم</th><th className="px-4 py-3">تاريخ التعيين</th><th className="px-4 py-3">تاريخ الاستقالة</th><th className="px-4 py-3">تسوية نهاية الخدمة</th><th className="px-4 py-3"></th>
+            </tr></thead>
+            <tbody>
+              {employees.map((e) => (
+                <tr key={e.id} className="border-b border-stone-100 last:border-0 hover:bg-stone-50">
+                  <td className="px-4 py-3 font-medium text-slate-800">{e.name}</td>
+                  <td className="px-4 py-3 text-slate-500">{e.hireDate}</td>
+                  <td className="px-4 py-3 text-slate-500">{e.resignationDate}</td>
+                  <td className="px-4 py-3 tabular-nums text-slate-700">{e.settlementAmount ? `${fmtMoney(e.settlementAmount)} ج.م` : "—"}</td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => setEditing(e)} className="rounded-md p-1.5 text-slate-400 hover:bg-stone-100 hover:text-teal-700"><Pencil size={15} /></button>
+                      <button onClick={() => reactivate(e.id)} title="إعادة تفعيل" className="rounded-md p-1.5 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600"><Check size={15} /></button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
+      <Modal open={!!editing} onClose={() => setEditing(null)} title="تسوية نهاية الخدمة">
+        {editing && <SettlementForm emp={editing} onSave={(d) => saveSettlement(editing.id, d)} onCancel={() => setEditing(null)} />}
+      </Modal>
+    </div>
+  );
+}
+function SettlementForm({ emp, onSave, onCancel }) {
+  const [form, setForm] = useState({ resignationDate: emp.resignationDate || todayISO(), lastWorkingDay: emp.lastWorkingDay || "", settlementAmount: emp.settlementAmount || "", settlementNotes: emp.settlementNotes || "" });
+  function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
+  function submit(e) { e.preventDefault(); onSave({ ...form, settlementAmount: Number(form.settlementAmount) || 0 }); }
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      <div className="grid grid-cols-2 gap-4">
+        <Field label="تاريخ تقديم الاستقالة"><input type="date" className={inputCls} value={form.resignationDate} onChange={(e) => set("resignationDate", e.target.value)} /></Field>
+        <Field label="آخر يوم عمل"><input type="date" className={inputCls} value={form.lastWorkingDay} onChange={(e) => set("lastWorkingDay", e.target.value)} /></Field>
+      </div>
+      <Field label="قيمة تسوية نهاية الخدمة (ج.م)"><input type="number" min="0" className={inputCls} value={form.settlementAmount} onChange={(e) => set("settlementAmount", e.target.value)} /></Field>
+      <Field label="ملاحظات"><textarea rows={2} className={inputCls} value={form.settlementNotes} onChange={(e) => set("settlementNotes", e.target.value)} /></Field>
+      <div className="flex justify-end gap-2 border-t border-stone-200 pt-4">
+        <button type="button" onClick={onCancel} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50">إلغاء</button>
+        <button type="submit" className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Save size={15} /> حفظ</button>
+      </div>
+    </form>
+  );
+}
+
+/* ================= PAYROLL ================= */
+function PayrollTab({ employees, attendance, penalties, payrollMeta, setPayrollMeta, advances, settings }) {
+  const [ym, setYm] = useState(todayISO().slice(0, 7));
+  const [payslipEmp, setPayslipEmp] = useState(null);
+  const meta = payrollMeta[ym] || {};
+
+  function setMetaFor(empId, patch) { setPayrollMeta({ ...payrollMeta, [ym]: { ...meta, [empId]: { ...(meta[empId] || {}), ...patch } } }); }
+
+  function computeRow(e) {
+    let absentDays = 0, overtimeHours = 0;
+    Object.keys(attendance).forEach((date) => {
+      if (monthKey(date) !== ym) return;
+      const entry = getAttEntry(attendance, date, e.id);
+      if (!entry) return;
+      if (entry.status === "absent") absentDays++;
+      overtimeHours += Number(entry.overtimeHours) || 0;
+    });
+    const base = Number(e.salary) || 0;
+    const perDay = base / 30;
+    const absenceDeduction = Math.round(perDay * absentDays);
+    const monthPenalties = penalties.filter((p) => p.employeeId === e.id && monthKey(p.date) === ym && p.actionType === "خصم مالي");
+    const penaltyDeduction = monthPenalties.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+    const empAdvances = advances.filter((a) => a.employeeId === e.id);
+    const advanceDeduction = empAdvances.reduce((s, a) => s + advanceDeductionForMonth(a, ym), 0);
+    const hourlyRate = base / (30 * 8);
+    const overtimePay = Math.round(hourlyRate * settings.overtimeMultiplier * overtimeHours);
+    const empMeta = meta[e.id] || {};
+    const bonus = Number(empMeta.bonus) || 0;
+
+    const insuranceDeduction = Math.round((base * settings.insuranceRate) / 100);
+    const annualTaxable = Math.max(0, base * 12 - insuranceDeduction * 12 - settings.personalExemptionAnnual);
+    const taxDeduction = Math.round(computeTax(annualTaxable, settings.taxBrackets) / 12);
+
+    const net = base - absenceDeduction - penaltyDeduction - advanceDeduction - insuranceDeduction - taxDeduction + overtimePay + bonus;
+    return { emp: e, absentDays, overtimeHours, absenceDeduction, penaltyDeduction, advanceDeduction, insuranceDeduction, taxDeduction, overtimePay, bonus, net, paid: !!empMeta.paid };
+  }
+
+  const rows = employees.map(computeRow);
+  const totals = rows.reduce((acc, r) => {
+    acc.base += Number(r.emp.salary) || 0;
+    acc.deductions += r.absenceDeduction + r.penaltyDeduction + r.advanceDeduction + r.insuranceDeduction + r.taxDeduction;
+    acc.additions += r.overtimePay + r.bonus;
+    acc.net += r.net;
+    return acc;
+  }, { base: 0, deductions: 0, additions: 0, net: 0 });
+
+  function shiftMonth(delta) {
+    const [y, m] = ym.split("-").map(Number);
+    const d = new Date(y, m - 1 + delta, 1);
+    setYm(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  }
+
+  return (
+    <div>
+      <SectionTitle eyebrow="كشف رواتب شهري" title="المرتبات" action={
+        <div className="flex items-center gap-2">
+          <button onClick={() => shiftMonth(-1)} className="rounded-lg border border-stone-300 p-2 hover:bg-stone-50"><ChevronRight size={16} /></button>
+          <input type="month" value={ym} onChange={(e) => setYm(e.target.value)} className={`${inputCls} w-auto`} />
+          <button onClick={() => shiftMonth(1)} className="rounded-lg border border-stone-300 p-2 hover:bg-stone-50"><ChevronLeft size={16} /></button>
+        </div>
+      } />
+
+      <p className="mb-4 flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700"><Info size={14} className="mt-0.5 shrink-0" />خصومات التأمينات والضريبة تقديرية حسب النسب في تاب «الإعدادات» — راجعها مع محاسبك قبل الاعتماد عليها فعليًا.</p>
+
+      <div className="mb-5 grid grid-cols-4 gap-3">
+        <div className="rounded-xl bg-stone-100 px-4 py-3"><div className="text-lg font-bold tabular-nums text-slate-800">{fmtMoney(totals.base)}</div><div className="text-xs font-medium text-slate-500">إجمالي الرواتب الأساسية</div></div>
+        <div className="rounded-xl bg-rose-50 px-4 py-3"><div className="text-lg font-bold tabular-nums text-rose-700">-{fmtMoney(totals.deductions)}</div><div className="text-xs font-medium text-rose-600">إجمالي الخصومات</div></div>
+        <div className="rounded-xl bg-emerald-50 px-4 py-3"><div className="text-lg font-bold tabular-nums text-emerald-700">+{fmtMoney(totals.additions)}</div><div className="text-xs font-medium text-emerald-600">إضافي ومكافآت</div></div>
+        <div className="rounded-xl bg-teal-800 px-4 py-3"><div className="text-lg font-bold tabular-nums text-white">{fmtMoney(totals.net)}</div><div className="text-xs font-medium text-teal-100">صافي المستحق</div></div>
+      </div>
+
+      {rows.length === 0 ? <Card className="p-0"><EmptyState text="لسه معملتش أي موظف نشط." /></Card> : (
+        <Card className="overflow-hidden p-0">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
+                <th className="px-3 py-3">الموظف</th><th className="px-3 py-3">الأساسي</th><th className="px-3 py-3">غياب</th><th className="px-3 py-3">جزاءات</th>
+                <th className="px-3 py-3">سلف</th><th className="px-3 py-3">تأمينات</th><th className="px-3 py-3">ضريبة</th><th className="px-3 py-3">إضافي</th>
+                <th className="px-3 py-3">مكافأة</th><th className="px-3 py-3">الصافي</th><th className="px-3 py-3">الحالة</th><th className="px-3 py-3"></th>
+              </tr></thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.emp.id} className="border-b border-stone-100 last:border-0 hover:bg-stone-50">
+                    <td className="px-3 py-3 font-medium text-slate-800 whitespace-nowrap">{r.emp.name}</td>
+                    <td className="px-3 py-3 tabular-nums text-slate-600">{fmtMoney(r.emp.salary)}</td>
+                    <td className="px-3 py-3 tabular-nums text-rose-600">-{fmtMoney(r.absenceDeduction)}</td>
+                    <td className="px-3 py-3 tabular-nums text-rose-600">-{fmtMoney(r.penaltyDeduction)}</td>
+                    <td className="px-3 py-3 tabular-nums text-rose-600">-{fmtMoney(r.advanceDeduction)}</td>
+                    <td className="px-3 py-3 tabular-nums text-rose-600">-{fmtMoney(r.insuranceDeduction)}</td>
+                    <td className="px-3 py-3 tabular-nums text-rose-600">-{fmtMoney(r.taxDeduction)}</td>
+                    <td className="px-3 py-3 tabular-nums text-emerald-600">+{fmtMoney(r.overtimePay)}</td>
+                    <td className="px-3 py-3">
+                      <input type="number" min="0" className="w-16 rounded-md border border-stone-200 px-1.5 py-1 text-xs tabular-nums outline-none focus:border-teal-500" value={meta[r.emp.id]?.bonus || ""} onChange={(e) => setMetaFor(r.emp.id, { bonus: e.target.value })} placeholder="0" />
+                    </td>
+                    <td className="px-3 py-3 tabular-nums font-bold text-slate-800 whitespace-nowrap">{fmtMoney(r.net)}</td>
+                    <td className="px-3 py-3">
+                      <button onClick={() => setMetaFor(r.emp.id, { paid: !r.paid })} className={`whitespace-nowrap rounded-full border px-2.5 py-1 text-xs font-semibold ${r.paid ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-stone-200 text-slate-400"}`}>{r.paid ? "تم الصرف" : "لسه"}</button>
+                    </td>
+                    <td className="px-3 py-3"><button onClick={() => setPayslipEmp(r)} className="rounded-md p-1.5 text-slate-400 hover:bg-teal-50 hover:text-teal-700"><Printer size={15} /></button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {payslipEmp && <PayslipModal row={payslipEmp} ym={ym} onClose={() => setPayslipEmp(null)} />}
+    </div>
+  );
+}
+
+function PayslipModal({ row, ym, onClose }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+      <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl bg-white shadow-xl print-area">
+        <div className="no-print flex items-center justify-between border-b border-stone-200 px-6 py-4">
+          <h3 className="text-lg font-bold text-slate-800">إيصال مرتب</h3>
+          <div className="flex items-center gap-2">
+            <button onClick={() => window.print()} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-900"><Printer size={14} /> طباعة</button>
+            <button onClick={onClose} className="rounded-full p-1.5 text-slate-400 hover:bg-stone-100"><X size={18} /></button>
+          </div>
+        </div>
+        <div className="p-6">
+          <div className="mb-4 border-b-2 border-amber-500 pb-3 text-center">
+            <div className="text-lg font-bold text-slate-800">إيصال مرتب — {ym}</div>
+            <div className="text-sm text-slate-500">{row.emp.name} · {row.emp.position || "—"}</div>
+          </div>
+          <table className="w-full text-sm">
+            <tbody>
+              <Row label="الراتب الأساسي" value={row.emp.salary} />
+              <Row label="خصم أيام الغياب" value={-row.absenceDeduction} />
+              <Row label="خصم الجزاءات" value={-row.penaltyDeduction} />
+              <Row label="خصم قسط السلفة" value={-row.advanceDeduction} />
+              <Row label="التأمينات الاجتماعية" value={-row.insuranceDeduction} />
+              <Row label="ضريبة كسب العمل" value={-row.taxDeduction} />
+              <Row label="مقابل الوقت الإضافي" value={row.overtimePay} />
+              <Row label="مكافأة" value={row.bonus} />
+              <tr className="border-t-2 border-teal-800">
+                <td className="py-3 font-bold text-slate-800">صافي المستحق</td>
+                <td className="py-3 text-left font-bold tabular-nums text-teal-800">{fmtMoney(row.net)} ج.م</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+function Row({ label, value }) {
+  const neg = value < 0;
+  return (
+    <tr className="border-b border-stone-100">
+      <td className="py-2 text-slate-600">{label}</td>
+      <td className={`py-2 text-left tabular-nums font-medium ${neg ? "text-rose-600" : "text-slate-700"}`}>{neg ? "-" : value > 0 ? "+" : ""}{fmtMoney(Math.abs(value))} ج.م</td>
+    </tr>
+  );
+}
+
+/* ================= SETTINGS ================= */
+function SettingsTab({ settings, setSettings }) {
+  const [form, setForm] = useState(settings);
+  const [holidayForm, setHolidayForm] = useState({ date: "", name: "" });
+
+  function save(e) { e.preventDefault(); setSettings(form); }
+  function addHoliday(e) {
+    e.preventDefault();
+    if (!holidayForm.date) return;
+    const next = { ...form, publicHolidays: [...form.publicHolidays, holidayForm] };
+    setForm(next); setSettings(next); setHolidayForm({ date: "", name: "" });
+  }
+  function removeHoliday(date) {
+    const next = { ...form, publicHolidays: form.publicHolidays.filter((h) => h.date !== date) };
+    setForm(next); setSettings(next);
+  }
+  function updateBracket(i, patch) {
+    const next = { ...form, taxBrackets: form.taxBrackets.map((b, idx) => (idx === i ? { ...b, ...patch } : b)) };
+    setForm(next);
+  }
+
+  return (
+    <div>
+      <SectionTitle eyebrow="نسب وقيم قابلة للتعديل" title="الإعدادات" />
+      <p className="mb-5 flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700"><Info size={14} className="mt-0.5 shrink-0" />النسب دي تقديرية ومسؤوليتك تراجعها وتحدّثها مع محاسب أو مستشار قانوني، خصوصًا إن قوانين التأمينات والضرايب بتتغير كل فترة.</p>
+
+      <form onSubmit={save} className="space-y-6">
+        <Card className="p-5">
+          <h3 className="mb-4 flex items-center gap-2 font-bold text-slate-800"><Landmark size={16} /> التأمينات والإجازات والإضافي</h3>
+          <div className="grid grid-cols-3 gap-4">
+            <Field label="نسبة التأمينات على الموظف (%)"><input type="number" step="0.1" className={inputCls} value={form.insuranceRate} onChange={(e) => setForm({ ...form, insuranceRate: Number(e.target.value) })} /></Field>
+            <Field label="مضاعف أجر الوقت الإضافي"><input type="number" step="0.1" className={inputCls} value={form.overtimeMultiplier} onChange={(e) => setForm({ ...form, overtimeMultiplier: Number(e.target.value) })} /></Field>
+            <Field label="رصيد الإجازة السنوي الافتراضي (يوم)"><input type="number" className={inputCls} value={form.leaveDefaultDays} onChange={(e) => setForm({ ...form, leaveDefaultDays: Number(e.target.value) })} /></Field>
+          </div>
+        </Card>
+
+        <Card className="p-5">
+          <h3 className="mb-4 font-bold text-slate-800">شرائح ضريبة كسب العمل (سنويًا)</h3>
+          <Field label="الإعفاء الشخصي السنوي (ج.م)"><input type="number" className={inputCls} value={form.personalExemptionAnnual} onChange={(e) => setForm({ ...form, personalExemptionAnnual: Number(e.target.value) })} /></Field>
+          <div className="mt-4 space-y-2">
+            {form.taxBrackets.map((b, i) => (
+              <div key={i} className="grid grid-cols-2 gap-3">
+                <input type="number" placeholder="حتى (ج.م، فارغ = بلا حد)" className={inputCls} value={b.upTo ?? ""} onChange={(e) => updateBracket(i, { upTo: e.target.value === "" ? null : Number(e.target.value) })} />
+                <div className="flex items-center gap-2">
+                  <input type="number" step="0.5" className={inputCls} value={b.rate} onChange={(e) => updateBracket(i, { rate: Number(e.target.value) })} />
+                  <span className="text-xs text-slate-400">%</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        <button type="submit" className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Save size={15} /> حفظ الإعدادات</button>
+      </form>
+
+      <Card className="mt-6 p-5">
+        <h3 className="mb-4 font-bold text-slate-800">العطلات الرسمية</h3>
+        <form onSubmit={addHoliday} className="mb-4 grid grid-cols-3 gap-2">
+          <input type="date" className={inputCls} value={holidayForm.date} onChange={(e) => setHolidayForm({ ...holidayForm, date: e.target.value })} />
+          <input placeholder="اسم المناسبة" className={inputCls} value={holidayForm.name} onChange={(e) => setHolidayForm({ ...holidayForm, name: e.target.value })} />
+          <button className="flex items-center justify-center gap-1 rounded-lg bg-teal-800 px-3 py-2 text-xs font-semibold text-white hover:bg-teal-900"><Plus size={14} /> إضافة</button>
+        </form>
+        {form.publicHolidays.length === 0 ? <p className="text-sm text-slate-400">مفيش عطلات مسجلة.</p> : (
+          <div className="space-y-1.5">
+            {form.publicHolidays.map((h) => (
+              <div key={h.date} className="flex items-center justify-between rounded-lg border border-stone-100 px-3 py-2 text-sm">
+                <span className="text-slate-700">{h.name || "عطلة"} — {h.date}</span>
+                <button onClick={() => removeHoliday(h.date)} className="text-slate-300 hover:text-rose-600"><Trash2 size={14} /></button>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<HRSystem />);
+
+</script>
+</body>
+</html>
