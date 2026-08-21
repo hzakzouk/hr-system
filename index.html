@@ -1200,7 +1200,7 @@ function EmployeeProfileModal({ employee, onClose, attendance, documents, setDoc
     e.preventDefault();
     setPortalMsg(null);
     if (!employee.employeeCode) { setPortalMsg({ tone: "rose", text: "لازم تحدد كود الموظف الأول من زرار التعديل قبل ما تفعّل الدخول." }); return; }
-    if (!/^\d{4,6}$/.test(pin)) { setPortalMsg({ tone: "rose", text: "الرقم السري لازم يكون من 4 لـ 6 أرقام." }); return; }
+    if (!/^\d{6,8}$/.test(pin)) { setPortalMsg({ tone: "rose", text: "الرقم السري لازم يكون من 6 لـ 8 أرقام (Firebase مش بيقبل باسورد أقل من 6 خانات)." }); return; }
     setPortalBusy(true);
     try {
       const authUid = await createEmployeeAuthAccount(employee.employeeCode, pin);
@@ -1209,7 +1209,12 @@ function EmployeeProfileModal({ employee, onClose, attendance, documents, setDoc
       setPortalMsg({ tone: "teal", text: "تم تفعيل الدخول. اديله كود الموظف والرقم السري ده." });
     } catch (err) {
       const already = err?.code === "auth/email-already-in-use";
-      setPortalMsg({ tone: "rose", text: already ? "كود الموظف ده مستخدم بالفعل لحساب دخول موجود — لو ضاع الرقم السري، لازم تمسح الحساب من Firebase Console (Authentication → Users) وتجرب تاني." : "حصل خطأ أثناء التفعيل. جرب تاني." });
+      const weak = err?.code === "auth/weak-password";
+      let text = "حصل خطأ أثناء التفعيل. جرب تاني.";
+      if (already) text = "كود الموظف ده مستخدم بالفعل لحساب دخول موجود — لو ضاع الرقم السري، لازم تمسح الحساب من Firebase Console (Authentication → Users) وتجرب تاني.";
+      else if (weak) text = "الرقم السري ضعيف جدًا بالنسبة لـ Firebase — جرب رقم من 6 أرقام أو أكتر.";
+      else if (err?.code) text = `حصل خطأ أثناء التفعيل (${err.code}). جرب تاني.`;
+      setPortalMsg({ tone: "rose", text });
     } finally { setPortalBusy(false); }
   }
   const today = todayISO();
@@ -1324,8 +1329,8 @@ function EmployeeProfileModal({ employee, onClose, attendance, documents, setDoc
             <div>
               <p className="mb-3 flex items-start gap-1.5 rounded-lg bg-stone-50 px-3 py-2 text-xs text-slate-500"><Info size={14} className="mt-0.5 shrink-0" />بعد التفعيل، الموظف هيقدر يدخل بوابته الخاصة ويشوف رصيد إجازاته وسجل حضوره وجزاءاته بس — من غير أي صلاحية تعديل أو رؤية بيانات زمايله.</p>
               <form onSubmit={enablePortal} className="flex items-end gap-2">
-                <Field label="رقم سري للموظف (4-6 أرقام)">
-                  <input type="text" inputMode="numeric" maxLength={6} className={inputCls} value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))} placeholder="مثلًا 1234" />
+                <Field label="رقم سري للموظف (6-8 أرقام)">
+                  <input type="text" inputMode="numeric" maxLength={8} className={inputCls} value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))} placeholder="مثلًا 123456" />
                 </Field>
                 <button disabled={portalBusy} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-900 disabled:opacity-50">
                   {portalBusy ? <Loader2 size={14} className="animate-spin" /> : <LogIn size={14} />} تفعيل الدخول
