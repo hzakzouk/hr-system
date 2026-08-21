@@ -46,6 +46,7 @@ import {
 } from "firebase/auth";
 import {
   getFirestore, collection, doc, onSnapshot, setDoc, writeBatch, getDoc,
+  query, where, getDocs,
 } from "firebase/firestore";
 
 /* ================= FIREBASE ================= */
@@ -186,6 +187,27 @@ function payslipRowToDoc(ym, r) {
 async function syncPayslipsForMonth(ym, rows, currentMonthDocs) {
   const nextDocs = rows.map((r) => payslipRowToDoc(ym, r));
   await syncCollection("payslips", currentMonthDocs, nextDocs);
+}
+
+// A deleted employee may still be referenced by `requests` docs (leave/late/advance) as
+// either the requester or the current approver - that collection is only ever read/written
+// by the employee portal, never subscribed to here, so deleting an employee elsewhere in
+// this file wouldn't otherwise touch it. This sweeps up every request that mentions any of
+// the given ids, in Firestore directly. Firestore's `in` filter caps at 10 values, so this
+// chunks the id list defensively; a Map (keyed by doc id) dedupes a request that would
+// otherwise be matched by both the employeeId and approverId query.
+async function deleteOrphanedRequests(employeeIds) {
+  if (employeeIds.length === 0) return;
+  const refsToDelete = new Map();
+  for (let i = 0; i < employeeIds.length; i += 10) {
+    const chunk = employeeIds.slice(i, i + 10);
+    const [byRequester, byApprover] = await Promise.all([
+      getDocs(query(collection(db, "requests"), where("employeeId", "in", chunk))),
+      getDocs(query(collection(db, "requests"), where("approverId", "in", chunk))),
+    ]);
+    [...byRequester.docs, ...byApprover.docs].forEach((d) => refsToDelete.set(d.id, d.ref));
+  }
+  await commitOpsChunked([...refsToDelete.values()].map((ref) => ({ type: "delete", ref })));
 }
 
 // Creates the employee's portal login (Firebase Auth email/password account, using their
@@ -433,6 +455,37 @@ function Modal({ open, onClose, title, children, wide }) {
 function Field({ label, children }) {
   return <label className="block"><span className="mb-1.5 block text-sm font-medium text-slate-600">{label}</span>{children}</label>;
 }
+// Shared confirmation step for a hard employee delete (one or many) - used by both
+// EmployeesTab and FormerEmployeesTab. Deliberately spells out everything the delete cascades
+// into (see HRSystem.deleteEmployees), since it's irreversible and touches several
+// collections at once.
+function EmployeeDeleteConfirmModal({ employees, onConfirm, onCancel }) {
+  if (!employees || employees.length === 0) return null;
+  const many = employees.length > 1;
+  return (
+    <Modal open title={many ? `حذف ${employees.length} موظفين نهائيًا` : "حذف موظف نهائيًا"} onClose={onCancel}>
+      <div className="space-y-4">
+        <div className="flex items-start gap-2 rounded-lg bg-rose-50 px-3 py-2.5 text-sm text-rose-700">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+          <span>الإجراء ده نهائي ومش هيتم التراجع عنه. هيتم حذف ملف الموظف كامل مع الحضور والجزاءات والسلف والمستندات والتقييمات وسجلات المرتب الخاصة بيه.</span>
+        </div>
+        <ul className="max-h-48 space-y-1 overflow-y-auto rounded-lg border border-stone-200 p-2 text-sm">
+          {employees.map((e) => (
+            <li key={e.id} className="flex items-center justify-between rounded-md px-2 py-1.5 hover:bg-stone-50">
+              <span className="font-medium text-slate-700">{e.name}</span>
+              <span className="text-xs text-slate-400">{e.employeeCode || "—"}{e.department ? ` · ${e.department}` : ""}</span>
+            </li>
+          ))}
+        </ul>
+        <p className="text-xs text-slate-400">لو أي حد منهم فعّل بوابة الموظف بتاعته قبل كده، حساب الدخول (Firebase Auth) مش بيتحذف تلقائي من هنا - بس هيفضل عاجز يقرأ أي حاجة لأن ملفه اتحذف. لو عايز تقفل الحساب ده نهائي، احذفه يدويًا من Firebase Console.</p>
+        <div className="flex justify-end gap-2 border-t border-stone-200 pt-4">
+          <button type="button" onClick={onCancel} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50">إلغاء</button>
+          <button type="button" onClick={onConfirm} className="flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700"><Trash2 size={15} /> {many ? `حذف ${employees.length} موظفين` : "حذف نهائيًا"}</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
 const inputCls = "w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-100";
 function EmptyState({ text }) {
   return <div className="rounded-xl border border-dashed border-stone-300 py-10 text-center text-sm text-slate-400">{text}</div>;
@@ -518,6 +571,60 @@ function HRSystem({ adminUser }) {
     payslips: (ym, rows) => track(syncPayslipsForMonth(ym, rows, payslipDocs.filter((d) => d.id.startsWith(`${ym}_`)))),
   };
 
+  // Permanently deletes one or more employees and sweeps their data out of every other
+  // collection this app owns - attendance, penalties, advances, documents, reviews, and
+  // per-month payroll meta (mirrors the remap logic DuplicateMergeWizard already uses, minus
+  // the "keep one" part) - plus `publicDirectory` (automatic, via upd.employees already
+  // calling syncPublicDirectory) and any stray `requests` docs that mention them (Firestore-
+  // direct, see deleteOrphanedRequests). Also clears them out of orgChart if they were a
+  // department head or the CEO, so a stale id never silently blocks request routing.
+  // NOTE: this does NOT delete their Firebase Auth portal login (if the portal was ever
+  // activated for them) - the client SDK can't delete another user's auth account, only the
+  // Firebase Console can. That's harmless here: with no employees doc left, every Security
+  // Rule keyed off isOwnEmployeeRecord() denies them everywhere, so an orphaned login account
+  // simply can't read or write anything - but if it's an activated login who is no longer
+  // trusted, revoke it by hand from Firebase Console -> Authentication.
+  function deleteEmployees(ids) {
+    const idSet = new Set(ids);
+    if (idSet.size === 0) return;
+
+    if (openEmployeeId && idSet.has(openEmployeeId)) setOpenEmployeeId(null);
+
+    upd.employees(employees.filter((e) => !idSet.has(e.id)));
+
+    const nextAttendance = {};
+    Object.keys(attendance).forEach((date) => {
+      const dayRec = { ...attendance[date] };
+      ids.forEach((id) => delete dayRec[id]);
+      nextAttendance[date] = dayRec;
+    });
+    upd.attendance(nextAttendance);
+
+    upd.penalties(penalties.filter((p) => !idSet.has(p.employeeId)));
+    upd.advances(advances.filter((a) => !idSet.has(a.employeeId)));
+    upd.documents(documents.filter((d) => !idSet.has(d.employeeId)));
+    upd.reviews(reviews.filter((r) => !idSet.has(r.employeeId)));
+
+    const nextPayrollMeta = {};
+    Object.keys(payrollMeta).forEach((ym) => {
+      const monthRec = { ...payrollMeta[ym] };
+      ids.forEach((id) => delete monthRec[id]);
+      nextPayrollMeta[ym] = monthRec;
+    });
+    upd.payrollMeta(nextPayrollMeta);
+
+    const nextHeads = { ...(orgChart.departmentHeads || {}) };
+    let orgChartChanged = false;
+    Object.keys(nextHeads).forEach((dept) => {
+      if (idSet.has(nextHeads[dept])) { delete nextHeads[dept]; orgChartChanged = true; }
+    });
+    let nextCeo = orgChart.ceoEmployeeId;
+    if (idSet.has(nextCeo)) { nextCeo = null; orgChartChanged = true; }
+    if (orgChartChanged) upd.orgChart({ ...orgChart, departmentHeads: nextHeads, ceoEmployeeId: nextCeo });
+
+    track(deleteOrphanedRequests(ids));
+  }
+
   const activeEmployees = useMemo(() => employees.filter((e) => e.status === "active" || !e.status), [employees]);
   const formerEmployees = useMemo(() => employees.filter((e) => e.status === "resigned" || e.status === "terminated"), [employees]);
 
@@ -576,13 +683,14 @@ function HRSystem({ adminUser }) {
             documents={documents} setDocuments={upd.documents}
             reviews={reviews} setReviews={upd.reviews}
             payrollMeta={payrollMeta} setPayrollMeta={upd.payrollMeta}
+            onDelete={deleteEmployees}
           />}
           {tab === "orgchart" && <OrgChartTab employees={activeEmployees} orgChart={orgChart} setOrgChart={upd.orgChart} onPrint={() => setOrgChartPrintOpen(true)} />}
           {tab === "attendance" && <AttendanceTab employees={activeEmployees} attendance={attendance} setAttendance={upd.attendance} settings={settings} />}
           {tab === "payroll" && <PayrollTab employees={activeEmployees} attendance={attendance} penalties={penalties} payrollMeta={payrollMeta} setPayrollMeta={upd.payrollMeta} advances={advances} settings={settings} payslipDocs={payslipDocs} onSyncPayslips={upd.payslips} />}
           {tab === "penalties" && <PenaltiesTab employees={activeEmployees} penalties={penalties} setPenalties={upd.penalties} />}
           {tab === "advances" && <AdvancesTab employees={activeEmployees} advances={advances} setAdvances={upd.advances} />}
-          {tab === "former" && <FormerEmployeesTab employees={formerEmployees} setEmployees={upd.employees} allEmployees={employees} />}
+          {tab === "former" && <FormerEmployeesTab employees={formerEmployees} setEmployees={upd.employees} allEmployees={employees} onDelete={deleteEmployees} />}
           {tab === "settings" && <SettingsTab
             settings={settings} setSettings={upd.settings}
             backupProps={{ employees, attendance, penalties, payrollMeta, advances, documents, reviews, settings, orgChart, upd }}
@@ -712,12 +820,14 @@ function Dashboard({ employees, attendance, penalties, advances, settings, docum
 }
 
 /* ================= EMPLOYEES ================= */
-function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, setAttendance, penalties, setPenalties, advances, setAdvances, documents, setDocuments, reviews, setReviews, payrollMeta, setPayrollMeta }) {
+function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, setAttendance, penalties, setPenalties, advances, setAdvances, documents, setDocuments, reviews, setReviews, payrollMeta, setPayrollMeta, onDelete }) {
   const [modalOpen, setModalOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [mergeOpen, setMergeOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState(() => new Set());
+  const [confirmDelete, setConfirmDelete] = useState(null); // array of employees pending delete, or null
   const visible = employees.filter((e) => e.status === "active" || !e.status);
   const filtered = visible.filter((e) => e.name.includes(query) || (e.position || "").includes(query) || (e.department || "").includes(query));
   const dupGroups = useMemo(() => findDuplicateGroups(visible), [visible]);
@@ -729,6 +839,24 @@ function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, s
   }
   function markResigned(emp) {
     setEmployees(employees.map((e) => (e.id === emp.id ? { ...e, status: "resigned", resignationDate: todayISO() } : e)));
+  }
+  function toggleSelected(id) {
+    setSelected((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  }
+  const allFilteredSelected = filtered.length > 0 && filtered.every((e) => selected.has(e.id));
+  const someFilteredSelected = filtered.some((e) => selected.has(e.id));
+  function toggleSelectAllFiltered() {
+    setSelected((s) => {
+      const n = new Set(s);
+      if (allFilteredSelected) filtered.forEach((e) => n.delete(e.id));
+      else filtered.forEach((e) => n.add(e.id));
+      return n;
+    });
+  }
+  function runConfirmedDelete() {
+    onDelete(confirmDelete.map((e) => e.id));
+    setSelected((s) => { const n = new Set(s); confirmDelete.forEach((e) => n.delete(e.id)); return n; });
+    setConfirmDelete(null);
   }
   function importBulk(newRecords) {
     const byCode = {};
@@ -767,6 +895,11 @@ function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, s
     <div>
       <SectionTitle eyebrow={`${visible.length} موظف نشط`} title="الموظفون والعقود" action={
         <div className="flex items-center gap-2">
+          {selected.size > 0 && (
+            <button onClick={() => setConfirmDelete(visible.filter((e) => selected.has(e.id)))} className="flex items-center gap-1.5 rounded-lg border border-rose-500 bg-rose-50 px-3.5 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100">
+              <Trash2 size={16} /> حذف المحدد ({selected.size})
+            </button>
+          )}
           {dupGroups.length > 0 && (
             <button onClick={() => setMergeOpen(true)} className="flex items-center gap-1.5 rounded-lg border border-amber-500 bg-amber-50 px-3.5 py-2 text-sm font-semibold text-amber-700 hover:bg-amber-100">
               <Users size={16} /> دمج المكررات ({dupGroups.length})
@@ -791,13 +924,17 @@ function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, s
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
+                <th className="w-8 px-4 py-3">
+                  <input type="checkbox" checked={allFilteredSelected} ref={(el) => { if (el) el.indeterminate = someFilteredSelected && !allFilteredSelected; }} onChange={toggleSelectAllFiltered} className="h-4 w-4 rounded border-stone-300" />
+                </th>
                 <th className="px-4 py-3">كود</th><th className="px-4 py-3">الاسم</th><th className="px-4 py-3">الوظيفة</th><th className="px-4 py-3">القسم</th>
                 <th className="px-4 py-3">نوع العقد</th><th className="px-4 py-3">نهاية العقد</th><th className="px-4 py-3">الراتب الأساسي</th><th className="px-4 py-3"></th>
               </tr>
             </thead>
             <tbody>
               {filtered.map((e) => (
-                <tr key={e.id} className="border-b border-stone-100 last:border-0 hover:bg-stone-50">
+                <tr key={e.id} className={`border-b border-stone-100 last:border-0 hover:bg-stone-50 ${selected.has(e.id) ? "bg-rose-50/40" : ""}`}>
+                  <td className="px-4 py-3"><input type="checkbox" checked={selected.has(e.id)} onChange={() => toggleSelected(e.id)} className="h-4 w-4 rounded border-stone-300" /></td>
                   <td className="px-4 py-3 text-slate-500 tabular-nums">{e.employeeCode || "—"}</td>
                   <td className="px-4 py-3 font-medium text-teal-800 cursor-pointer hover:underline" onClick={() => onOpen(e.id)}>{e.name}</td>
                   <td className="px-4 py-3 text-slate-600">{e.position || "—"}</td>
@@ -808,7 +945,8 @@ function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, s
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-1">
                       <button onClick={() => { setEditing(e); setModalOpen(true); }} className="rounded-md p-1.5 text-slate-400 hover:bg-stone-100 hover:text-teal-700"><Pencil size={15} /></button>
-                      <button onClick={() => markResigned(e)} title="نقل لموظفين سابقين" className="rounded-md p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><LogOut size={15} /></button>
+                      <button onClick={() => markResigned(e)} title="نقل لموظفين سابقين" className="rounded-md p-1.5 text-slate-400 hover:bg-amber-50 hover:text-amber-600"><LogOut size={15} /></button>
+                      <button onClick={() => setConfirmDelete([e])} title="حذف نهائي" className="rounded-md p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 size={15} /></button>
                     </div>
                   </td>
                 </tr>
@@ -839,6 +977,10 @@ function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, s
           onDone={() => setMergeOpen(false)}
         />
       </Modal>
+
+      {confirmDelete && (
+        <EmployeeDeleteConfirmModal employees={confirmDelete} onConfirm={runConfirmedDelete} onCancel={() => setConfirmDelete(null)} />
+      )}
     </div>
   );
 }
@@ -1803,8 +1945,10 @@ function AdvanceForm({ employees, onSave, onCancel }) {
 }
 
 /* ================= FORMER EMPLOYEES ================= */
-function FormerEmployeesTab({ employees, setEmployees, allEmployees }) {
+function FormerEmployeesTab({ employees, setEmployees, allEmployees, onDelete }) {
   const [editing, setEditing] = useState(null);
+  const [selected, setSelected] = useState(() => new Set());
+  const [confirmDelete, setConfirmDelete] = useState(null);
   function saveSettlement(id, data) {
     setEmployees(allEmployees.map((e) => (e.id === id ? { ...e, ...data } : e)));
     setEditing(null);
@@ -1812,18 +1956,46 @@ function FormerEmployeesTab({ employees, setEmployees, allEmployees }) {
   function reactivate(id) {
     setEmployees(allEmployees.map((e) => (e.id === id ? { ...e, status: "active" } : e)));
   }
+  function toggleSelected(id) {
+    setSelected((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  }
+  const allSelected = employees.length > 0 && employees.every((e) => selected.has(e.id));
+  const someSelected = employees.some((e) => selected.has(e.id));
+  function toggleSelectAll() {
+    setSelected((s) => {
+      const n = new Set(s);
+      if (allSelected) employees.forEach((e) => n.delete(e.id));
+      else employees.forEach((e) => n.add(e.id));
+      return n;
+    });
+  }
+  function runConfirmedDelete() {
+    onDelete(confirmDelete.map((e) => e.id));
+    setSelected((s) => { const n = new Set(s); confirmDelete.forEach((e) => n.delete(e.id)); return n; });
+    setConfirmDelete(null);
+  }
   return (
     <div>
-      <SectionTitle eyebrow={`${employees.length} موظف سابق`} title="موظفون سابقون" />
+      <SectionTitle eyebrow={`${employees.length} موظف سابق`} title="موظفون سابقون" action={
+        selected.size > 0 && (
+          <button onClick={() => setConfirmDelete(employees.filter((e) => selected.has(e.id)))} className="flex items-center gap-1.5 rounded-lg border border-rose-500 bg-rose-50 px-3.5 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100">
+            <Trash2 size={16} /> حذف المحدد ({selected.size})
+          </button>
+        )
+      } />
       {employees.length === 0 ? <Card className="p-0"><EmptyState text="مفيش موظفين سابقين مسجلين." /></Card> : (
         <Card className="overflow-hidden p-0">
           <table className="w-full text-sm">
             <thead><tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
+              <th className="w-8 px-4 py-3">
+                <input type="checkbox" checked={allSelected} ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }} onChange={toggleSelectAll} className="h-4 w-4 rounded border-stone-300" />
+              </th>
               <th className="px-4 py-3">الاسم</th><th className="px-4 py-3">تاريخ التعيين</th><th className="px-4 py-3">تاريخ الاستقالة</th><th className="px-4 py-3">تسوية نهاية الخدمة</th><th className="px-4 py-3"></th>
             </tr></thead>
             <tbody>
               {employees.map((e) => (
-                <tr key={e.id} className="border-b border-stone-100 last:border-0 hover:bg-stone-50">
+                <tr key={e.id} className={`border-b border-stone-100 last:border-0 hover:bg-stone-50 ${selected.has(e.id) ? "bg-rose-50/40" : ""}`}>
+                  <td className="px-4 py-3"><input type="checkbox" checked={selected.has(e.id)} onChange={() => toggleSelected(e.id)} className="h-4 w-4 rounded border-stone-300" /></td>
                   <td className="px-4 py-3 font-medium text-slate-800">{e.name}</td>
                   <td className="px-4 py-3 text-slate-500">{e.hireDate}</td>
                   <td className="px-4 py-3 text-slate-500">{e.resignationDate}</td>
@@ -1832,6 +2004,7 @@ function FormerEmployeesTab({ employees, setEmployees, allEmployees }) {
                     <div className="flex items-center gap-1">
                       <button onClick={() => setEditing(e)} className="rounded-md p-1.5 text-slate-400 hover:bg-stone-100 hover:text-teal-700"><Pencil size={15} /></button>
                       <button onClick={() => reactivate(e.id)} title="إعادة تفعيل" className="rounded-md p-1.5 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600"><Check size={15} /></button>
+                      <button onClick={() => setConfirmDelete([e])} title="حذف نهائي" className="rounded-md p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 size={15} /></button>
                     </div>
                   </td>
                 </tr>
@@ -1843,6 +2016,9 @@ function FormerEmployeesTab({ employees, setEmployees, allEmployees }) {
       <Modal open={!!editing} onClose={() => setEditing(null)} title="تسوية نهاية الخدمة">
         {editing && <SettlementForm emp={editing} onSave={(d) => saveSettlement(editing.id, d)} onCancel={() => setEditing(null)} />}
       </Modal>
+      {confirmDelete && (
+        <EmployeeDeleteConfirmModal employees={confirmDelete} onConfirm={runConfirmedDelete} onCancel={() => setConfirmDelete(null)} />
+      )}
     </div>
   );
 }
@@ -2513,6 +2689,7 @@ function AdminAuthGate() {
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(<AdminAuthGate />);
+
 </script>
 </body>
 </html>
