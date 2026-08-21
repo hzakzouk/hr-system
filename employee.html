@@ -87,6 +87,30 @@ function ymLabel(ym) {
   const [y, m] = String(ym || "").split("-").map(Number);
   return AR_MONTHS[m - 1] ? `${AR_MONTHS[m - 1]} ${y}` : ym;
 }
+// Every calendar date from `from` to `to` inclusive, as "YYYY-MM-DD" strings. Capped at 45
+// days as a safety net against a mistyped date range creating a runaway batch of writes.
+function dateRange(from, to) {
+  const out = [];
+  let d = new Date(`${from}T00:00:00`);
+  const end = new Date(`${to}T00:00:00`);
+  let guard = 0;
+  while (d <= end && guard < 45) {
+    out.push(d.toISOString().slice(0, 10));
+    d.setDate(d.getDate() + 1);
+    guard++;
+  }
+  return out;
+}
+// Who should approve a request from this employee: normally their department head, but if
+// THEY are the department head, escalate to the CEO instead - a department head can never be
+// the one who approves their own request (also enforced server-side in firestore.rules).
+function resolveApprover(employee, orgChart) {
+  const dept = employee.department || "";
+  const headId = (orgChart.departmentHeads || {})[dept];
+  const amIHead = headId === employee.id;
+  const approverId = amIHead ? orgChart.ceoEmployeeId : headId;
+  return approverId && approverId !== employee.id ? approverId : null;
+}
 
 const inputCls = "w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-100";
 function Card({ children, className = "" }) {
@@ -326,15 +350,15 @@ function RequestCard({ req, showEmployee, onDecide, decideBusy }) {
       )}
       {onDecide && req.status === "pending" && (
         <div className="mt-3 flex gap-2">
-          <button disabled={decideBusy} onClick={() => onDecide(req.id, "approved")} className="flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"><Check size={13} /> موافقة</button>
-          <button disabled={decideBusy} onClick={() => onDecide(req.id, "rejected")} className="flex items-center gap-1 rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-50"><X size={13} /> رفض</button>
+          <button disabled={decideBusy} onClick={() => onDecide(req, "approved")} className="flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"><Check size={13} /> موافقة</button>
+          <button disabled={decideBusy} onClick={() => onDecide(req, "rejected")} className="flex items-center gap-1 rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-50"><X size={13} /> رفض</button>
         </div>
       )}
     </Card>
   );
 }
 
-function RequestsSection({ employee }) {
+function RequestsSection({ employee, orgChart, directory }) {
   const [requests, setRequests] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -350,7 +374,13 @@ function RequestsSection({ employee }) {
   }, [employee.id]);
 
   async function handleSubmit(payload) {
-    setMsg(null); setBusy(true);
+    setMsg(null);
+    const approverId = resolveApprover(employee, orgChart);
+    if (!approverId) {
+      setMsg({ tone: "rose", text: "مفيش حد محدد يقدر يوافق على طلبك (مفيش رئيس قسم أو رئيس تنفيذي مسجل) — كلّم شؤون الأفراد يظبطوا الهيكل التنظيمي الأول." });
+      return;
+    }
+    setBusy(true);
     try {
       const ref = doc(collection(db, "requests"));
       await setDoc(ref, {
@@ -358,10 +388,12 @@ function RequestsSection({ employee }) {
         employeeId: employee.id,
         employeeName: employee.name,
         department: employee.department || "",
+        approverId,
         status: "pending",
         createdAt: new Date().toISOString(),
       });
-      setMsg({ tone: "teal", text: "تم إرسال الطلب — هيوصل لرئيس قسمك للمراجعة." });
+      const approverName = directory.find((d) => d.id === approverId)?.name;
+      setMsg({ tone: "teal", text: approverName ? `تم إرسال الطلب — هيوصل لـ ${approverName} للمراجعة.` : "تم إرسال الطلب للمراجعة." });
     } catch (err) {
       setMsg({ tone: "rose", text: "تعذّر إرسال الطلب. جرب تاني." });
     } finally { setBusy(false); }
@@ -378,24 +410,28 @@ function RequestsSection({ employee }) {
   );
 }
 
-function TeamRequestsSection({ employee }) {
-  const [requests, setRequests] = useState([]);
-  const [loaded, setLoaded] = useState(false);
+function TeamRequestsSection({ employee, requests, loaded }) {
   const [decideBusy, setDecideBusy] = useState(false);
 
-  useEffect(() => {
-    const q = query(collection(db, "requests"), where("department", "==", employee.department || ""));
-    const unsub = onSnapshot(q, (snap) => {
-      setRequests(snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)));
-      setLoaded(true);
-    }, () => setLoaded(true));
-    return unsub;
-  }, [employee.department]);
-
-  async function decide(reqId, status) {
+  // Approving a leave/late request also writes the matching attendance record(s) - the same
+  // `attendanceRecords` collection and doc-id shape (`${date}_${employeeId}`) the admin app
+  // uses, merged in so nothing else on that date gets overwritten. Approving an advance
+  // request does NOT create an advance automatically - that still needs the admin's review
+  // in the Advances tab, since it directly affects payroll deductions.
+  async function decide(req, status) {
     setDecideBusy(true);
     try {
-      await updateDoc(doc(db, "requests", reqId), { status, decidedByName: employee.name, decidedAt: new Date().toISOString() });
+      await updateDoc(doc(db, "requests", req.id), { status, decidedByName: employee.name, decidedAt: new Date().toISOString() });
+      if (status === "approved") {
+        if (req.kind === "leave") {
+          const dates = dateRange(req.dateFrom, req.dateTo);
+          await Promise.all(dates.map((d) =>
+            setDoc(doc(db, "attendanceRecords", `${d}_${req.employeeId}`), { date: d, employeeId: req.employeeId, status: "leave" }, { merge: true })
+          ));
+        } else if (req.kind === "late") {
+          await setDoc(doc(db, "attendanceRecords", `${req.date}_${req.employeeId}`), { date: req.date, employeeId: req.employeeId, status: "late" }, { merge: true });
+        }
+      }
     } catch (err) {
       alert("تعذّر تسجيل القرار — راجع اتصالك بالإنترنت وجرب تاني.");
     } finally { setDecideBusy(false); }
@@ -408,6 +444,7 @@ function TeamRequestsSection({ employee }) {
 
   return (
     <div>
+      <p className="mb-4 flex items-start gap-1.5 rounded-lg bg-stone-50 px-3 py-2 text-xs text-slate-400"><Info size={13} className="mt-0.5 shrink-0" />الموافقة على إجازة أو تأخير بتسجّل الحضور تلقائي. الموافقة على سلفة لسه محتاجة تُضاف يدويًا في تاب السلف بنظام الأدمن.</p>
       <h3 className="mb-2 text-sm font-bold text-slate-700">طلبات قيد المراجعة ({pending.length})</h3>
       {pending.length === 0 ? <EmptyState text="مفيش طلبات محتاجة مراجعة دلوقتي." />
         : <div className="mb-6 space-y-2">{pending.map((r) => <RequestCard key={r.id} req={r} showEmployee onDecide={decide} decideBusy={decideBusy} />)}</div>}
@@ -463,6 +500,22 @@ function EmployeePortal({ authUid, onSignOut }) {
     return () => { unsubAtt(); unsubPen(); };
   }, [employee?.id]);
 
+  // "Manager" = this employee is the head of their own department per orgChart/main. Computed
+  // here (not just inside render) because the team-requests subscription below needs it, and
+  // hooks can't come after the early-returns further down.
+  const isManager = !!(employee && employee.department && (orgChart.departmentHeads || {})[employee.department] === employee.id);
+  const [teamRequests, setTeamRequests] = useState([]);
+  const [teamRequestsLoaded, setTeamRequestsLoaded] = useState(false);
+  useEffect(() => {
+    if (!isManager) { setTeamRequests([]); setTeamRequestsLoaded(true); return; }
+    const q = query(collection(db, "requests"), where("department", "==", employee.department));
+    const unsub = onSnapshot(q, (snap) => {
+      setTeamRequests(snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)));
+      setTeamRequestsLoaded(true);
+    }, () => setTeamRequestsLoaded(true));
+    return unsub;
+  }, [isManager, employee?.department]);
+
   if (employee === undefined) return <FullScreenLoader text="جاري تحميل بياناتك..." />;
   if (employee === null) return <NotProvisionedScreen />;
 
@@ -471,7 +524,7 @@ function EmployeePortal({ authUid, onSignOut }) {
   const entitlement = employee.leaveEntitlement ?? settings.leaveDefaultDays ?? 21;
   const remaining = entitlement - takenLeave;
   const penaltiesTotal = penalties.filter((p) => p.actionType === "خصم مالي").reduce((s, p) => s + (Number(p.amount) || 0), 0);
-  const isManager = employee.department && (orgChart.departmentHeads || {})[employee.department] === employee.id;
+  const pendingTeamCount = teamRequests.filter((r) => r.status === "pending").length;
 
   const TABS = [
     ["leave", "الإجازات", <CalendarCheck size={14} />],
@@ -501,7 +554,10 @@ function EmployeePortal({ authUid, onSignOut }) {
       <main className="mx-auto max-w-3xl p-5">
         <div className="no-print mb-4 flex flex-wrap gap-2 border-b border-stone-200 pb-3">
           {TABS.map(([k, l, icon]) => (
-            <button key={k} onClick={() => setTab(k)} className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium ${tab === k ? "bg-teal-800 text-white" : "text-slate-500 hover:bg-stone-100"}`}>{icon}{l}</button>
+            <button key={k} onClick={() => setTab(k)} className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium ${tab === k ? "bg-teal-800 text-white" : "text-slate-500 hover:bg-stone-100"}`}>
+              {icon}{l}
+              {k === "team" && pendingTeamCount > 0 && <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-600 px-1 text-[10px] font-bold text-white">{pendingTeamCount}</span>}
+            </button>
           ))}
         </div>
 
@@ -568,9 +624,9 @@ function EmployeePortal({ authUid, onSignOut }) {
         )}
 
         {tab === "payroll" && <PayrollSection employee={employee} />}
-        {tab === "requests" && <RequestsSection employee={employee} />}
+        {tab === "requests" && <RequestsSection employee={employee} orgChart={orgChart} directory={directory} />}
         {tab === "orgchart" && <OrgChartSection employee={employee} orgChart={orgChart} directory={directory} />}
-        {tab === "team" && isManager && <TeamRequestsSection employee={employee} />}
+        {tab === "team" && isManager && <TeamRequestsSection employee={employee} requests={teamRequests} loaded={teamRequestsLoaded} />}
       </main>
     </div>
   );
