@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>بوابة الموظف | شؤون الأفراد</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18",
+    "react/jsx-runtime": "https://esm.sh/react@18/jsx-runtime",
+    "react/jsx-dev-runtime": "https://esm.sh/react@18/jsx-dev-runtime",
+    "react-dom/client": "https://esm.sh/react-dom@18/client",
+    "lucide-react": "https://esm.sh/lucide-react@0.383.0?external=react",
+    "xlsx": "https://esm.sh/xlsx@0.18.5",
+    "firebase/app": "https://esm.sh/firebase@10.12.2/app",
+    "firebase/auth": "https://esm.sh/firebase@10.12.2/auth",
+    "firebase/firestore": "https://esm.sh/firebase@10.12.2/firestore"
+  }
+}
+</script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Tahoma", "Cairo", sans-serif; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script type="text/babel" data-type="module" data-presets="react">
+import React, { useState, useEffect, useMemo } from "react";
+import ReactDOM from "react-dom/client";
+import {
+  CalendarCheck, Clock, AlertTriangle, LogOut, Loader2, User, Lock, LogIn,
+  Check, UserX,
+} from "lucide-react";
+import { initializeApp } from "firebase/app";
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { getFirestore, collection, doc, query, where, onSnapshot } from "firebase/firestore";
+
+/* ================= FIREBASE ================= */
+// Same project as the admin app (hr-system.jsx) — read-only access here is enforced by
+// Firestore Security Rules (see firestore.rules), not by anything in this file. This
+// firebaseConfig and EMPLOYEE_AUTH_DOMAIN must stay identical to the copies in
+// hr-system.jsx; the two files share no imports, so keep them in sync by hand.
+const firebaseConfig = {
+  apiKey: "AIzaSyAddES77DppbDFbEDUmyswi0v1jamM1bfQ",
+  authDomain: "hr-system-hzakzouk.firebaseapp.com",
+  projectId: "hr-system-hzakzouk",
+  storageBucket: "hr-system-hzakzouk.firebasestorage.app",
+  messagingSenderId: "595637881370",
+  appId: "1:595637881370:web:607fd32ae64afc397f9fa3",
+};
+const firebaseApp = initializeApp(firebaseConfig);
+const auth = getAuth(firebaseApp);
+const db = getFirestore(firebaseApp);
+const EMPLOYEE_AUTH_DOMAIN = "hzakzouk-hr.local";
+function employeeAuthEmail(employeeCode) {
+  return `${String(employeeCode || "").trim().toLowerCase()}@${EMPLOYEE_AUTH_DOMAIN}`;
+}
+
+const STATUS_LABELS = { present: "حاضر", absent: "غائب", late: "متأخر", leave: "إجازة" };
+const STATUS_COLORS = {
+  present: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  absent: "bg-rose-50 text-rose-700 border-rose-200",
+  late: "bg-amber-50 text-amber-700 border-amber-200",
+  leave: "bg-sky-50 text-sky-700 border-sky-200",
+};
+function fmtMoney(n) { return (Number(n) || 0).toLocaleString("en-US", { maximumFractionDigits: 0 }); }
+function todayISO() { return new Date().toISOString().slice(0, 10); }
+function yearKey(d) { return d.slice(0, 4); }
+
+const inputCls = "w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-100";
+function Card({ children, className = "" }) {
+  return <div className={`rounded-2xl border border-stone-200 bg-white shadow-sm ${className}`}>{children}</div>;
+}
+function EmptyState({ text }) {
+  return <div className="rounded-xl border border-dashed border-stone-300 py-10 text-center text-sm text-slate-400">{text}</div>;
+}
+
+/* ================= LOGIN ================= */
+function PortalLoginScreen({ onSubmit, busy, error }) {
+  const [form, setForm] = useState({ code: "", pin: "" });
+  return (
+    <div dir="rtl" className="flex min-h-screen w-full items-center justify-center bg-stone-50 p-6 font-sans">
+      <div className="w-full max-w-sm rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
+        <div className="mb-5 flex flex-col items-center text-center">
+          <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-xl bg-teal-800 text-white"><User size={20} /></div>
+          <h1 className="text-lg font-bold text-slate-800">بوابة الموظف</h1>
+          <p className="mt-1 text-xs text-slate-400">شوف رصيد إجازاتك وحضورك وجزاءاتك</p>
+        </div>
+        <form onSubmit={(e) => { e.preventDefault(); onSubmit(form); }} className="space-y-3">
+          <label className="block">
+            <span className="mb-1.5 block text-sm font-medium text-slate-600">كود الموظف</span>
+            <input required autoFocus placeholder="مثلًا EMP-101" className={inputCls} value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} />
+          </label>
+          <label className="block">
+            <span className="mb-1.5 block text-sm font-medium text-slate-600">الرقم السري</span>
+            <input required type="password" inputMode="numeric" className={inputCls} value={form.pin} onChange={(e) => setForm({ ...form, pin: e.target.value })} />
+          </label>
+          {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-600">{error}</p>}
+          <button disabled={busy} className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-900 disabled:opacity-50">
+            {busy ? <Loader2 size={15} className="animate-spin" /> : <LogIn size={15} />} دخول
+          </button>
+        </form>
+        <p className="mt-4 text-center text-[11px] text-slate-400">مش عارف كود الموظف أو الرقم السري بتاعك؟ كلّم شؤون الأفراد.</p>
+      </div>
+    </div>
+  );
+}
+
+function NotProvisionedScreen({ email }) {
+  return (
+    <div dir="rtl" className="flex min-h-screen w-full items-center justify-center bg-stone-50 p-6 font-sans">
+      <div className="w-full max-w-sm rounded-2xl border border-amber-200 bg-white p-6 text-center shadow-sm">
+        <div className="mb-3 flex justify-center text-amber-500"><AlertTriangle size={28} /></div>
+        <h1 className="mb-1 text-lg font-bold text-slate-800">حسابك مش مربوط بملف موظف</h1>
+        <p className="mb-4 text-xs text-slate-400">تسجيل الدخول نجح، بس مفيش ملف موظف مرتبط بالحساب ده. كلّم شؤون الأفراد يتأكدوا من الإعداد.</p>
+        <button onClick={() => signOut(auth)} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50">تسجيل خروج</button>
+      </div>
+    </div>
+  );
+}
+
+/* ================= PORTAL ================= */
+function EmployeePortal({ authUid, onSignOut }) {
+  const [employee, setEmployee] = useState(undefined); // undefined = loading, null = not found
+  const [attendanceRecords, setAttendanceRecords] = useState([]);
+  const [penalties, setPenalties] = useState([]);
+  const [settings, setSettings] = useState({ leaveDefaultDays: 21 });
+  const [tab, setTab] = useState("leave");
+
+  useEffect(() => {
+    const q = query(collection(db, "employees"), where("authUid", "==", authUid));
+    const unsub = onSnapshot(q, (snap) => setEmployee(snap.empty ? null : { id: snap.docs[0].id, ...snap.docs[0].data() }),
+      (err) => { console.error(err); setEmployee(null); });
+    return unsub;
+  }, [authUid]);
+
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "settings", "main"), (snap) => { if (snap.exists()) setSettings((s) => ({ ...s, ...snap.data() })); });
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    if (!employee) return;
+    const attQ = query(collection(db, "attendanceRecords"), where("employeeId", "==", employee.id));
+    const unsubAtt = onSnapshot(attQ, (snap) => setAttendanceRecords(snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => (a.date < b.date ? 1 : -1))));
+    const penQ = query(collection(db, "penalties"), where("employeeId", "==", employee.id));
+    const unsubPen = onSnapshot(penQ, (snap) => setPenalties(snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => (a.date < b.date ? 1 : -1))));
+    return () => { unsubAtt(); unsubPen(); };
+  }, [employee?.id]);
+
+  if (employee === undefined) return <FullScreenLoader text="جاري تحميل بياناتك..." />;
+  if (employee === null) return <NotProvisionedScreen />;
+
+  const today = todayISO();
+  const takenLeave = attendanceRecords.filter((r) => yearKey(r.date) === yearKey(today) && r.status === "leave").length;
+  const entitlement = employee.leaveEntitlement ?? settings.leaveDefaultDays ?? 21;
+  const remaining = entitlement - takenLeave;
+  const penaltiesTotal = penalties.filter((p) => p.actionType === "خصم مالي").reduce((s, p) => s + (Number(p.amount) || 0), 0);
+
+  return (
+    <div dir="rtl" className="min-h-screen w-full bg-stone-50 font-sans text-slate-800">
+      <header className="border-b border-stone-200 bg-white">
+        <div className="mx-auto flex max-w-3xl items-center justify-between px-5 py-4">
+          <div>
+            <div className="text-sm font-bold text-slate-800">{employee.name}</div>
+            <div className="text-xs text-slate-400">{employee.position || "—"}{employee.department ? ` · ${employee.department}` : ""}</div>
+          </div>
+          <button onClick={onSignOut} className="flex items-center gap-1.5 rounded-lg border border-stone-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-stone-50">
+            <LogOut size={14} /> خروج
+          </button>
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-3xl p-5">
+        <div className="mb-4 flex gap-2 border-b border-stone-200 pb-3">
+          {[["leave", "الإجازات", <CalendarCheck size={14} />], ["attendance", "الحضور", <Clock size={14} />], ["penalties", "الجزاءات", <AlertTriangle size={14} />]].map(([k, l, icon]) => (
+            <button key={k} onClick={() => setTab(k)} className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium ${tab === k ? "bg-teal-800 text-white" : "text-slate-500 hover:bg-stone-100"}`}>{icon}{l}</button>
+          ))}
+        </div>
+
+        {tab === "leave" && (
+          <Card className="p-5">
+            <div className="mb-4 grid grid-cols-3 gap-3">
+              <div className="rounded-xl bg-stone-100 px-3 py-2.5 text-center"><div className="text-lg font-bold tabular-nums">{entitlement}</div><div className="text-[11px] text-slate-500">مستحق سنويًا</div></div>
+              <div className="rounded-xl bg-sky-50 px-3 py-2.5 text-center"><div className="text-lg font-bold tabular-nums text-sky-700">{takenLeave}</div><div className="text-[11px] text-sky-600">مأخوذ هذا العام</div></div>
+              <div className={`rounded-xl px-3 py-2.5 text-center ${remaining <= 2 ? "bg-rose-50" : "bg-emerald-50"}`}><div className={`text-lg font-bold tabular-nums ${remaining <= 2 ? "text-rose-700" : "text-emerald-700"}`}>{remaining}</div><div className={`text-[11px] ${remaining <= 2 ? "text-rose-600" : "text-emerald-600"}`}>الرصيد المتبقي</div></div>
+            </div>
+            <p className="text-xs text-slate-400">الأيام المأخوذة بتتحسب تلقائي من أيام «إجازة» المسجلة في سجل حضورك خلال السنة الحالية.</p>
+          </Card>
+        )}
+
+        {tab === "attendance" && (
+          attendanceRecords.length === 0 ? <EmptyState text="مفيش سجل حضور مسجل لسه." /> : (
+            <Card className="overflow-hidden p-0">
+              <div className="max-h-[480px] overflow-y-auto">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-stone-50">
+                    <tr className="border-b border-stone-200 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      <th className="px-4 py-2.5">التاريخ</th><th className="px-4 py-2.5">الحالة</th><th className="px-4 py-2.5">وقت إضافي</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {attendanceRecords.map((r) => (
+                      <tr key={r.id} className="border-b border-stone-100 last:border-0">
+                        <td className="px-4 py-2.5 tabular-nums text-slate-600">{r.date}</td>
+                        <td className="px-4 py-2.5"><span className={`rounded-full border px-2.5 py-0.5 text-xs font-semibold ${STATUS_COLORS[r.status] || ""}`}>{STATUS_LABELS[r.status] || r.status}</span></td>
+                        <td className="px-4 py-2.5 tabular-nums text-slate-500">{r.overtimeHours ? `${r.overtimeHours} س` : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )
+        )}
+
+        {tab === "penalties" && (
+          <div>
+            {penaltiesTotal > 0 && (
+              <Card className="mb-4 p-4">
+                <div className="text-xs text-slate-500">إجمالي الخصومات المالية</div>
+                <div className="text-xl font-bold tabular-nums text-rose-700">{fmtMoney(penaltiesTotal)} <span className="text-sm font-normal text-slate-400">ج.م</span></div>
+              </Card>
+            )}
+            {penalties.length === 0 ? <EmptyState text="مفيش جزاءات مسجلة — الحمد لله." /> : (
+              <div className="space-y-2">
+                {penalties.map((p) => (
+                  <Card key={p.id} className="p-3.5">
+                    <div className="mb-1 flex items-center justify-between">
+                      <span className="text-sm font-semibold text-slate-700">{p.actionType}</span>
+                      <span className="text-xs text-slate-400">{p.date}</span>
+                    </div>
+                    {p.reason && <p className="text-sm text-slate-600">{p.reason}</p>}
+                    {p.amount ? <div className="mt-1 text-xs font-semibold text-rose-600">خصم {fmtMoney(p.amount)} ج.م</div> : null}
+                    {p.notes && <p className="mt-1 text-xs text-slate-400">{p.notes}</p>}
+                  </Card>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
+
+function FullScreenLoader({ text }) {
+  return (
+    <div dir="rtl" className="flex min-h-screen w-full items-center justify-center bg-stone-50 font-sans">
+      <div className="flex flex-col items-center gap-3 text-teal-700">
+        <Loader2 className="animate-spin" size={28} />
+        <span className="text-sm font-medium">{text}</span>
+      </div>
+    </div>
+  );
+}
+
+/* ================= AUTH GATE ================= */
+function EmployeePortalApp() {
+  const [authState, setAuthState] = useState("loading"); // loading | signedOut | signedIn
+  const [user, setUser] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => { setUser(u); setAuthState(u ? "signedIn" : "signedOut"); });
+    return unsub;
+  }, []);
+
+  async function handleLogin({ code, pin }) {
+    setError(""); setBusy(true);
+    try {
+      await signInWithEmailAndPassword(auth, employeeAuthEmail(code), pin);
+    } catch (err) {
+      setError("كود الموظف أو الرقم السري غلط.");
+    } finally { setBusy(false); }
+  }
+
+  if (authState === "loading") return <FullScreenLoader text="جاري التحقق من الدخول..." />;
+  if (authState === "signedOut") return <PortalLoginScreen onSubmit={handleLogin} busy={busy} error={error} />;
+  return <EmployeePortal authUid={user.uid} onSignOut={() => signOut(auth)} />;
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<EmployeePortalApp />);
+</script>
+</body>
+</html>
