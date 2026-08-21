@@ -1764,6 +1764,83 @@ function Row({ label, value }) {
 }
 
 /* ================= SETTINGS ================= */
+// Everything in this app lives in this one browser's localStorage — there is no server,
+// no shared database, and nothing in the GitHub repo holds employee data. That means a
+// cleared cache/"clear site data", or simply opening the site on another device, loses (or
+// never shows) any of it. This section is the one way to get data out as a real file: a
+// manual JSON snapshot the user can keep safe, hand to someone else, or use to move data
+// between browsers/devices.
+const BACKUP_KEYS = ["hr_employees", "hr_attendance", "hr_penalties", "hr_payroll", "hr_advances", "hr_documents", "hr_reviews", "hr_settings", "hr_orgchart"];
+
+function BackupSection() {
+  const fileRef = useRef(null);
+  const [msg, setMsg] = useState(null); // { tone: "teal" | "rose", text }
+
+  function exportBackup() {
+    const data = {};
+    let found = 0;
+    BACKUP_KEYS.forEach((k) => {
+      const raw = localStorage.getItem(k);
+      if (raw) {
+        try { data[k] = JSON.parse(raw); found++; }
+        catch (e) { /* skip a corrupted key rather than fail the whole export */ }
+      }
+    });
+    const payload = { app: "hr-system", exportedAt: new Date().toISOString(), data };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `hr-backup-${todayISO()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    setMsg({ tone: "teal", text: `تم تحميل نسخة احتياطية فيها ${found} من مجموعات البيانات.` });
+  }
+
+  function handleImportFile(file) {
+    setMsg(null);
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const parsed = JSON.parse(e.target.result);
+        const data = parsed && parsed.data ? parsed.data : parsed;
+        let count = 0;
+        BACKUP_KEYS.forEach((k) => {
+          if (data[k] !== undefined) { localStorage.setItem(k, JSON.stringify(data[k])); count++; }
+        });
+        if (count === 0) { setMsg({ tone: "rose", text: "الملف ده مش نسخة احتياطية من النظام ده — مفيش أي بيانات معروفة فيه." }); return; }
+        setMsg({ tone: "teal", text: `تم استرجاع ${count} من مجموعات البيانات. هيتم تحديث الصفحة الآن...` });
+        setTimeout(() => window.location.reload(), 1200);
+      } catch (err) {
+        setMsg({ tone: "rose", text: "تعذّر قراءة الملف — تأكد إنه ملف JSON صحيح من نسخة احتياطية سابقة." });
+      }
+    };
+    reader.onerror = () => setMsg({ tone: "rose", text: "تعذّرت قراءة الملف." });
+    reader.readAsText(file);
+  }
+
+  return (
+    <Card className="mb-6 p-5">
+      <h3 className="mb-1 flex items-center gap-2 font-bold text-slate-800"><Save size={16} /> النسخ الاحتياطي والاستعادة</h3>
+      <p className="mb-4 text-xs text-slate-500">
+        كل بيانات النظام (الموظفين، الحضور، المرتبات، الجزاءات، السلف...) متخزنة حاليًا جوه متصفحك انت بس على الجهاز ده — مفيش قاعدة بيانات مركزية ولا نسخة على أي سيرفر. لو مسحت بيانات المتصفح، أو فتحت النظام من متصفح أو جهاز تاني، البيانات مش هتكون موجودة هناك. خد نسخة احتياطية بانتظام واحفظها في مكان آمن (إيميلك لنفسك، أو Google Drive مثلًا).
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <button onClick={exportBackup} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-900">
+          <Save size={15} /> تحميل نسخة احتياطية (JSON)
+        </button>
+        <button onClick={() => fileRef.current?.click()} className="flex items-center gap-1.5 rounded-lg border border-teal-700 px-3.5 py-2 text-sm font-semibold text-teal-800 hover:bg-teal-50">
+          <Upload size={15} /> استرجاع من نسخة احتياطية
+        </button>
+        <input ref={fileRef} type="file" accept=".json,application/json" className="hidden" onChange={(e) => e.target.files[0] && handleImportFile(e.target.files[0])} />
+      </div>
+      {msg && <p className={`mt-3 text-xs font-medium ${msg.tone === "rose" ? "text-rose-600" : "text-teal-700"}`}>{msg.text}</p>}
+    </Card>
+  );
+}
+
 function SettingsTab({ settings, setSettings }) {
   const [form, setForm] = useState(settings);
   const [holidayForm, setHolidayForm] = useState({ date: "", name: "" });
@@ -1788,6 +1865,8 @@ function SettingsTab({ settings, setSettings }) {
     <div>
       <SectionTitle eyebrow="نسب وقيم قابلة للتعديل" title="الإعدادات" />
       <p className="mb-5 flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700"><Info size={14} className="mt-0.5 shrink-0" />النسب دي تقديرية ومسؤوليتك تراجعها وتحدّثها مع محاسب أو مستشار قانوني، خصوصًا إن قوانين التأمينات والضرايب بتتغير كل فترة.</p>
+
+      <BackupSection />
 
       <form onSubmit={save} className="space-y-6">
         <Card className="p-5">
