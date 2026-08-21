@@ -103,6 +103,23 @@ async function syncCollection(colName, currentArr, nextArr) {
   await commitOpsChunked(ops);
 }
 
+// A deliberately "thin" mirror of `employees` holding only name/department/position/code -
+// never salary or personal data. The employee portal's org-chart view and team-requests
+// screen need to see teammates' names, which the `employees` Security Rules never allow
+// (an employee can only read their OWN employee doc) - this collection is what they read
+// instead, so a colleague's salary can never leak through those screens. Kept in sync
+// automatically every time the admin app writes to `employees`.
+async function syncPublicDirectory(nextEmployees, currentDirDocs) {
+  const nextDir = nextEmployees.map((e) => ({
+    id: e.id,
+    name: e.name || "",
+    department: e.department || "",
+    position: e.position || "",
+    employeeCode: e.employeeCode || "",
+  }));
+  await syncCollection("publicDirectory", currentDirDocs, nextDir);
+}
+
 // Attendance used to be one localStorage blob shaped { [date]: { [employeeId]: entry } }.
 // For the employee portal's security rules to be able to grant "read your own attendance
 // only" (a rule can't slice a map field down to one key), each (date, employeeId) pair is
@@ -135,6 +152,40 @@ async function syncPayrollMeta(nextObj, currentDocs) {
   nextYms.forEach((ym) => ops.push({ type: "set", ref: doc(db, "payrollMeta", ym), data: nextObj[ym] }));
   currentDocs.forEach((d) => { if (!nextYms.has(d.id)) ops.push({ type: "delete", ref: doc(db, "payrollMeta", d.id) }); });
   await commitOpsChunked(ops);
+}
+
+// Turns one computed payroll row (from PayrollTab's computeRow) into the flat, already-final
+// doc the employee portal reads directly - no salary-calculation logic (tax brackets,
+// insurance rate, overtime multiplier...) is duplicated there, only these final numbers.
+function payslipRowToDoc(ym, r) {
+  return {
+    id: `${ym}_${r.emp.id}`,
+    employeeId: r.emp.id,
+    employeeName: r.emp.name,
+    ym,
+    base: Number(r.emp.salary) || 0,
+    absentDays: r.absentDays,
+    overtimeHours: r.overtimeHours,
+    absenceDeduction: r.absenceDeduction,
+    penaltyDeduction: r.penaltyDeduction,
+    advanceDeduction: r.advanceDeduction,
+    insuranceDeduction: r.insuranceDeduction,
+    taxDeduction: r.taxDeduction,
+    overtimePay: r.overtimePay,
+    bonus: r.bonus,
+    net: r.net,
+    paid: r.paid,
+  };
+}
+
+// Publishes one month's computed payroll rows to the `payslips` collection so employees can
+// see (and print) their own payslip from the portal. Deliberately NOT automatic - the admin
+// clicks "sync" explicitly in the Payroll tab, so nothing reaches the employee portal before
+// the admin has reviewed the numbers for that month. Only touches docs for THIS month
+// (currentMonthDocs must already be filtered to `${ym}_*`) so other months are untouched.
+async function syncPayslipsForMonth(ym, rows, currentMonthDocs) {
+  const nextDocs = rows.map((r) => payslipRowToDoc(ym, r));
+  await syncCollection("payslips", currentMonthDocs, nextDocs);
 }
 
 // Creates the employee's portal login (Firebase Auth email/password account, using their
@@ -419,10 +470,13 @@ function HRSystem({ adminUser }) {
   const [reviews, reviewsLoaded] = useFirestoreCollection("reviews");
   const [settings, settingsLoaded] = useFirestoreDoc("settings", "main", DEFAULT_SETTINGS);
   const [orgChart, orgChartLoaded] = useFirestoreDoc("orgChart", "main", DEFAULT_ORG_CHART);
+  const [publicDirectory, publicDirectoryLoaded] = useFirestoreCollection("publicDirectory");
+  const [payslipDocs, payslipsLoaded] = useFirestoreCollection("payslips");
   const [orgChartPrintOpen, setOrgChartPrintOpen] = useState(false);
 
   const loading = !employeesLoaded || !attendanceLoaded || !penaltiesLoaded || !payrollLoaded
-    || !advancesLoaded || !documentsLoaded || !reviewsLoaded || !settingsLoaded || !orgChartLoaded;
+    || !advancesLoaded || !documentsLoaded || !reviewsLoaded || !settingsLoaded || !orgChartLoaded
+    || !publicDirectoryLoaded || !payslipsLoaded;
 
   // Reconstructed to the exact same { [date]: { [employeeId]: { status, overtimeHours } } }
   // shape the whole app already expects (getAttEntry, isNonWorkday, leave/payroll math),
@@ -452,7 +506,7 @@ function HRSystem({ adminUser }) {
   }
 
   const upd = {
-    employees: (n) => track(syncCollection("employees", employees, n)),
+    employees: (n) => { track(syncCollection("employees", employees, n)); track(syncPublicDirectory(n, publicDirectory)); },
     attendance: (n) => track(syncAttendanceRecords(n, attendanceRecords)),
     penalties: (n) => track(syncCollection("penalties", penalties, n)),
     payrollMeta: (n) => track(syncPayrollMeta(n, payrollMetaDocs)),
@@ -461,6 +515,7 @@ function HRSystem({ adminUser }) {
     reviews: (n) => track(syncCollection("reviews", reviews, n)),
     settings: (n) => track(setDoc(doc(db, "settings", "main"), n)),
     orgChart: (n) => track(setDoc(doc(db, "orgChart", "main"), n)),
+    payslips: (ym, rows) => track(syncPayslipsForMonth(ym, rows, payslipDocs.filter((d) => d.id.startsWith(`${ym}_`)))),
   };
 
   const activeEmployees = useMemo(() => employees.filter((e) => e.status === "active" || !e.status), [employees]);
@@ -524,7 +579,7 @@ function HRSystem({ adminUser }) {
           />}
           {tab === "orgchart" && <OrgChartTab employees={activeEmployees} orgChart={orgChart} setOrgChart={upd.orgChart} onPrint={() => setOrgChartPrintOpen(true)} />}
           {tab === "attendance" && <AttendanceTab employees={activeEmployees} attendance={attendance} setAttendance={upd.attendance} settings={settings} />}
-          {tab === "payroll" && <PayrollTab employees={activeEmployees} attendance={attendance} penalties={penalties} payrollMeta={payrollMeta} setPayrollMeta={upd.payrollMeta} advances={advances} settings={settings} />}
+          {tab === "payroll" && <PayrollTab employees={activeEmployees} attendance={attendance} penalties={penalties} payrollMeta={payrollMeta} setPayrollMeta={upd.payrollMeta} advances={advances} settings={settings} payslipDocs={payslipDocs} onSyncPayslips={upd.payslips} />}
           {tab === "penalties" && <PenaltiesTab employees={activeEmployees} penalties={penalties} setPenalties={upd.penalties} />}
           {tab === "advances" && <AdvancesTab employees={activeEmployees} advances={advances} setAdvances={upd.advances} />}
           {tab === "former" && <FormerEmployeesTab employees={formerEmployees} setEmployees={upd.employees} allEmployees={employees} />}
@@ -1812,7 +1867,7 @@ function SettlementForm({ emp, onSave, onCancel }) {
 }
 
 /* ================= PAYROLL ================= */
-function PayrollTab({ employees, attendance, penalties, payrollMeta, setPayrollMeta, advances, settings }) {
+function PayrollTab({ employees, attendance, penalties, payrollMeta, setPayrollMeta, advances, settings, payslipDocs, onSyncPayslips }) {
   const [ym, setYm] = useState(todayISO().slice(0, 7));
   const [payslipEmp, setPayslipEmp] = useState(null);
   const meta = payrollMeta[ym] || {};
@@ -1849,6 +1904,7 @@ function PayrollTab({ employees, attendance, penalties, payrollMeta, setPayrollM
   }
 
   const rows = employees.map(computeRow);
+  const syncedCount = payslipDocs.filter((d) => d.id.startsWith(`${ym}_`)).length;
   const totals = rows.reduce((acc, r) => {
     acc.base += Number(r.emp.salary) || 0;
     acc.deductions += r.absenceDeduction + r.penaltyDeduction + r.advanceDeduction + r.insuranceDeduction + r.taxDeduction;
@@ -1874,6 +1930,16 @@ function PayrollTab({ employees, attendance, penalties, payrollMeta, setPayrollM
       } />
 
       <p className="mb-4 flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700"><Info size={14} className="mt-0.5 shrink-0" />خصومات التأمينات والضريبة تقديرية حسب النسب في تاب «الإعدادات» — راجعها مع محاسبك قبل الاعتماد عليها فعليًا.</p>
+
+      <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-teal-200 bg-teal-50 px-3 py-2.5">
+        <p className="text-xs text-teal-700">
+          {syncedCount === 0 ? "بوابة الموظفين لسه ما شافتش مرتب الشهر ده." : `متزامن مع بوابة الموظفين: ${syncedCount} من ${rows.length} موظف.`}
+          {" "}الموظفين مش هيشوفوا أي تعديل هنا غير بعد ما تدوس «مزامنة».
+        </p>
+        <button onClick={() => onSyncPayslips(ym, rows)} className="flex shrink-0 items-center gap-1.5 rounded-lg bg-teal-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-900">
+          <Upload size={13} /> مزامنة مع بوابة الموظفين
+        </button>
+      </div>
 
       <div className="mb-5 grid grid-cols-4 gap-3">
         <div className="rounded-xl bg-stone-100 px-4 py-3"><div className="text-lg font-bold tabular-nums text-slate-800">{fmtMoney(totals.base)}</div><div className="text-xs font-medium text-slate-500">إجمالي الرواتب الأساسية</div></div>
