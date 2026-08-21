@@ -161,6 +161,30 @@ async function syncCollection(colName, currentArr, nextArr) {
 // A field-by-field value comparison (not just presence) is what makes "updated" mean "changed",
 // not "still there" - JSON.stringify is a cheap, good-enough equality check for these plain
 // data objects (no functions/dates-as-objects/circular refs ever end up in them).
+// Field-by-field diff between two plain data objects (an item's old vs new state) - every
+// top-level key (other than "id") whose value actually changed, as {field, from, to}. This is
+// what lets the audit log say WHAT changed on an "updated" item, not just THAT it changed.
+// undefined is normalized to null on both sides (a field that didn't exist yet, or was
+// removed) since Firestore rejects literal `undefined` field values.
+function diffFieldsFor(prev, next) {
+  const keys = new Set([...Object.keys(prev || {}), ...Object.keys(next || {})]);
+  const changes = [];
+  keys.forEach((k) => {
+    if (k === "id") return;
+    const a = (prev && prev[k] !== undefined) ? prev[k] : null;
+    const b = (next && next[k] !== undefined) ? next[k] : null;
+    if (JSON.stringify(a) !== JSON.stringify(b)) changes.push({ field: k, from: a, to: b });
+  });
+  return changes;
+}
+
+// short display label (e.g. an employee's name); omit it to only get counts, no sample labels
+// (used for high-volume collections like attendance where per-record labels aren't worth it).
+// A field-by-field value comparison (not just presence) is what makes "updated" mean "changed",
+// not "still there" - JSON.stringify is a cheap, good-enough equality check for these plain
+// data objects (no functions/dates-as-objects/circular refs ever end up in them). Each "updated"
+// entry is {label, changes} - changes is diffFieldsFor's field-level breakdown, so the audit
+// log can say e.g. "stage: جديد → مقابلة" instead of just "Ahmed's candidate record changed".
 function diffSummary(currentArr, nextArr, labelFn) {
   const curById = new Map(currentArr.map((x) => [x.id, x]));
   const nextIds = new Set(nextArr.map((x) => x.id));
@@ -168,7 +192,9 @@ function diffSummary(currentArr, nextArr, labelFn) {
   nextArr.forEach((item) => {
     const prev = curById.get(item.id);
     if (!prev) added.push(labelFn ? labelFn(item) : item.id);
-    else if (JSON.stringify(prev) !== JSON.stringify(item)) updated.push(labelFn ? labelFn(item) : item.id);
+    else if (JSON.stringify(prev) !== JSON.stringify(item)) {
+      updated.push({ label: labelFn ? labelFn(item) : item.id, changes: diffFieldsFor(prev, item) });
+    }
   });
   currentArr.forEach((item) => {
     if (!nextIds.has(item.id)) removed.push(labelFn ? labelFn(item) : item.id);
@@ -177,13 +203,12 @@ function diffSummary(currentArr, nextArr, labelFn) {
 }
 
 // Same idea as diffSummary but for a single settings/orgChart-style doc rather than an array
-// collection - returns the top-level field names whose value actually changed, for the same
-// "updated" bucket writeAuditLog expects (added/removed stay empty; a settings/org-chart doc
-// is edited in place, never created/deleted from this app).
+// collection (added/removed stay empty; a settings/org-chart doc is edited in place, never
+// created/deleted from this app). Each changed top-level field becomes its own {label, changes}
+// entry (same shape diffSummary uses) so AuditLogEntryCard can render both collection types
+// with one code path - here label is just the field's own name.
 function diffDocKeys(prevObj, nextObj) {
-  const keys = new Set([...Object.keys(prevObj || {}), ...Object.keys(nextObj || {})]);
-  const updated = [];
-  keys.forEach((k) => { if (JSON.stringify(prevObj?.[k]) !== JSON.stringify(nextObj?.[k])) updated.push(k); });
+  const updated = diffFieldsFor(prevObj, nextObj).map((change) => ({ label: change.field, changes: [change] }));
   return { added: [], removed: [], updated };
 }
 
@@ -2674,6 +2699,38 @@ const AUDIT_COLLECTION_LABELS = {
   candidates: "التعيين والتوظيف",
 };
 
+// Display label for a raw field key inside an "updated" entry's changes[] (e.g. "stage" ->
+// "مرحلة التوظيف"). Falls back to the raw key itself when a field isn't listed here - still
+// functional, just untranslated, so a field added later never breaks rendering.
+const AUDIT_FIELD_LABELS = {
+  name: "الاسم", phone: "رقم الموبايل", email: "الإيميل", position: "الوظيفة", department: "القسم",
+  salary: "الراتب الأساسي", contractType: "نوع العقد", contractStart: "بداية العقد", contractEnd: "نهاية العقد",
+  hireDate: "تاريخ التعيين", birthDate: "تاريخ الميلاد", nationalId: "الرقم القومي", employeeCode: "كود الموظف",
+  leaveEntitlement: "رصيد الإجازة السنوي", weeklyOffDays: "أيام الإجازة الأسبوعية", status: "الحالة",
+  resignationDate: "تاريخ الاستقالة", lastWorkingDay: "آخر يوم عمل",
+  settlementAmount: "قيمة تسوية نهاية الخدمة", settlementNotes: "ملاحظات التسوية",
+  overtimeHours: "ساعات إضافي", actionType: "نوع الإجراء", reason: "السبب", amount: "قيمة الخصم", notes: "ملاحظات",
+  totalAmount: "قيمة السلفة", installments: "عدد الأقساط", expiryDate: "تاريخ الانتهاء",
+  score: "التقييم", bonus: "المكافأة", paid: "تم الصرف",
+  source: "مصدر الترشيح", appliedDate: "تاريخ التقديم", stage: "مرحلة التوظيف",
+  convertedEmployeeId: "تحويل لموظف", convertedAt: "تاريخ التحويل",
+  ceoEmployeeId: "الرئيس التنفيذي", departmentHeads: "رؤساء الأقسام",
+  insuranceRate: "نسبة التأمينات", overtimeMultiplier: "مضاعف الإضافي", workStartTime: "بداية الدوام الرسمي",
+  lateGraceMinutes: "فترة سماح التأخير", personalExemptionAnnual: "الإعفاء الشخصي السنوي",
+  taxBrackets: "شرائح الضريبة", publicHolidays: "الإجازات الرسمية",
+};
+
+// Turns one changed field's raw value (from or to) into short displayable text - passed
+// through t() by the caller afterwards, so a canonical Arabic value (a status, a stage, an
+// action type) still translates correctly in English mode.
+function formatAuditValue(v) {
+  if (v === null || v === undefined || v === "") return "—";
+  if (Array.isArray(v)) return v.length === 0 ? "—" : v.map((x) => (typeof x === "object" && x !== null ? JSON.stringify(x) : String(x))).join("، ");
+  if (typeof v === "boolean") return v ? "نعم" : "لا";
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
 function AuditLogEntryCard({ entry }) {
   const { t, lang } = useLang();
   const [open, setOpen] = useState(false);
@@ -2704,9 +2761,37 @@ function AuditLogEntryCard({ entry }) {
         )}
       </div>
       {open && (
-        <div className="mt-3 space-y-1.5 border-t border-stone-100 pt-3 text-xs text-slate-600">
+        <div className="mt-3 space-y-2.5 border-t border-stone-100 pt-3 text-xs text-slate-600">
           {entry.addedSample?.length > 0 && <div><span className="font-semibold text-emerald-700">{t("أُضيف:")}</span> {entry.addedSample.join("، ")}</div>}
-          {entry.updatedSample?.length > 0 && <div><span className="font-semibold text-amber-700">{t("اتعدّل:")}</span> {entry.updatedSample.join("، ")}</div>}
+          {entry.updatedSample?.length > 0 && (
+            <div>
+              <div className="mb-1.5 font-semibold text-amber-700">{t("اتعدّل:")}</div>
+              <div className="space-y-2">
+                {entry.updatedSample.map((item, i) => {
+                  // Entries written before field-level diffs existed are a plain label string -
+                  // still rendered, just without a field-change breakdown.
+                  if (typeof item === "string") return <div key={i} className="rounded-lg bg-stone-50 px-2.5 py-1.5">{item}</div>;
+                  return (
+                    <div key={i} className="rounded-lg border border-amber-100 bg-amber-50/60 px-2.5 py-2">
+                      <div className="font-medium text-slate-700">{item.label}</div>
+                      {item.changes?.length > 0 && (
+                        <ul className="mt-1 space-y-0.5">
+                          {item.changes.map((c, j) => (
+                            <li key={j}>
+                              <span className="font-medium text-slate-600">{t(AUDIT_FIELD_LABELS[c.field] || c.field)}:</span>{" "}
+                              <span className="text-rose-600">{t(formatAuditValue(c.from))}</span>
+                              {" ← "}
+                              <span className="font-semibold text-emerald-700">{t(formatAuditValue(c.to))}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           {entry.removedSample?.length > 0 && <div><span className="font-semibold text-rose-700">{t("اتحذف:")}</span> {entry.removedSample.join("، ")}</div>}
           {capped && <div className="text-slate-400">{t("(المعروض عيّنة فقط من العدد الكامل أعلاه)")}</div>}
         </div>
@@ -3488,6 +3573,25 @@ function AdminAuthGate() {
 }
 
 const TRANSLATIONS = {
+  "نعم": "Yes",
+  "لا": "No",
+  "كود الموظف": "Employee Code",
+  "رصيد الإجازة السنوي": "Annual Leave Balance",
+  "أيام الإجازة الأسبوعية": "Weekly Off Days",
+  "قيمة تسوية نهاية الخدمة": "End-of-Service Settlement Amount",
+  "ملاحظات التسوية": "Settlement Notes",
+  "قيمة الخصم": "Deduction Amount",
+  "التقييم": "Rating",
+  "المكافأة": "Bonus",
+  "تاريخ التحويل": "Conversion Date",
+  "رؤساء الأقسام": "Department Heads",
+  "نسبة التأمينات": "Insurance Rate",
+  "مضاعف الإضافي": "Overtime Multiplier",
+  "بداية الدوام الرسمي": "Official Work Start Time",
+  "فترة سماح التأخير": "Late Grace Period",
+  "الإعفاء الشخصي السنوي": "Annual Personal Exemption",
+  "شرائح الضريبة": "Tax Brackets",
+  "الإجازات الرسمية": "Public Holidays",
   "التعيين والتوظيف": "Recruitment & Hiring",
   "{n} مرشح مسجل": "{n} candidate(s) recorded",
   "مرشح جديد": "New Candidate",
