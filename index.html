@@ -27,8 +27,7 @@
 <body>
 <div id="root"></div>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<script type="text/babel" data-type="module" data-presets="react">
-import React, { useState, useEffect, useMemo, useRef, createContext, useContext } from "react";
+<script type="text/babel" data-type="module" data-presets="react">import React, { useState, useEffect, useMemo, useRef, createContext, useContext } from "react";
 import ReactDOM from "react-dom/client";
 import {
   Users, CalendarCheck, Wallet, AlertTriangle, LayoutDashboard,
@@ -36,7 +35,8 @@ import {
   ChevronLeft, ChevronRight, FileText, Save, AlertCircle, TrendingDown,
   Loader2, Landmark, HandCoins, LogOut, ClipboardList, Star, Settings as SettingsIcon,
   Printer, Cake, ShieldAlert, Bell, Info, Upload, ArrowRight, ArrowLeft, FileSpreadsheet,
-  Network, Crown, ChevronDown, Lock, LogIn, ShieldCheck, Languages
+  Network, Crown, ChevronDown, ChevronUp, Lock, LogIn, ShieldCheck, Languages, History, BarChart3,
+  UserPlus, Download
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { initializeApp, deleteApp } from "firebase/app";
@@ -151,6 +151,94 @@ async function syncCollection(colName, currentArr, nextArr) {
     if (!nextIds.has(item.id)) ops.push({ type: "delete", ref: doc(db, colName, item.id) });
   });
   await commitOpsChunked(ops);
+}
+
+// Pure diff between a collection's current array and the "next full array" every Tab already
+// produces (same shape syncCollection above consumes) — used only to describe a change for the
+// audit log, never to decide what to write to Firestore. `labelFn(item)` turns one item into a
+// short display label (e.g. an employee's name); omit it to only get counts, no sample labels
+// (used for high-volume collections like attendance where per-record labels aren't worth it).
+// A field-by-field value comparison (not just presence) is what makes "updated" mean "changed",
+// not "still there" - JSON.stringify is a cheap, good-enough equality check for these plain
+// data objects (no functions/dates-as-objects/circular refs ever end up in them).
+function diffSummary(currentArr, nextArr, labelFn) {
+  const curById = new Map(currentArr.map((x) => [x.id, x]));
+  const nextIds = new Set(nextArr.map((x) => x.id));
+  const added = [], removed = [], updated = [];
+  nextArr.forEach((item) => {
+    const prev = curById.get(item.id);
+    if (!prev) added.push(labelFn ? labelFn(item) : item.id);
+    else if (JSON.stringify(prev) !== JSON.stringify(item)) updated.push(labelFn ? labelFn(item) : item.id);
+  });
+  currentArr.forEach((item) => {
+    if (!nextIds.has(item.id)) removed.push(labelFn ? labelFn(item) : item.id);
+  });
+  return { added, removed, updated };
+}
+
+// Same idea as diffSummary but for a single settings/orgChart-style doc rather than an array
+// collection - returns the top-level field names whose value actually changed, for the same
+// "updated" bucket writeAuditLog expects (added/removed stay empty; a settings/org-chart doc
+// is edited in place, never created/deleted from this app).
+function diffDocKeys(prevObj, nextObj) {
+  const keys = new Set([...Object.keys(prevObj || {}), ...Object.keys(nextObj || {})]);
+  const updated = [];
+  keys.forEach((k) => { if (JSON.stringify(prevObj?.[k]) !== JSON.stringify(nextObj?.[k])) updated.push(k); });
+  return { added: [], removed: [], updated };
+}
+
+// Re-flattens the nested shapes upd.attendance/upd.payrollMeta pass around (see
+// syncAttendanceRecords/syncPayrollMeta above) into the same flat "array with stable ids"
+// shape diffSummary expects - purely for computing an audit-log diff, no Firestore access.
+function flattenAttendanceForDiff(nextAttendance) {
+  const out = [];
+  Object.entries(nextAttendance || {}).forEach(([date, dayRec]) => {
+    Object.entries(dayRec || {}).forEach(([employeeId, entry]) => {
+      if (!entry || !entry.status) return;
+      out.push({ id: `${date}_${employeeId}`, status: entry.status, overtimeHours: Number(entry.overtimeHours) || 0 });
+    });
+  });
+  return out;
+}
+function flattenPayrollMetaDocs(docsArr) {
+  const out = [];
+  (docsArr || []).forEach((d) => {
+    const { id: ym, ...employeesMeta } = d;
+    Object.entries(employeesMeta).forEach(([empId, meta]) => out.push({ id: `${ym}_${empId}`, ...meta }));
+  });
+  return out;
+}
+function flattenPayrollMetaObj(nextObj) {
+  const out = [];
+  Object.entries(nextObj || {}).forEach(([ym, monthRec]) => {
+    Object.entries(monthRec || {}).forEach(([empId, meta]) => out.push({ id: `${ym}_${empId}`, ...meta }));
+  });
+  return out;
+}
+
+// Writes one entry to the `auditLog` collection - a flat, append-only trail of who changed
+// what and when, browsable from the "سجل النشاط" tab. Deliberately stores STRUCTURED counts
+// and sample labels rather than a pre-built sentence, so the viewing tab can translate/format
+// it (see AuditLogTab's t() templates) instead of freezing English/Arabic wording into old
+// entries forever. Caps sample labels at 5 per bucket so one 300-row bulk import doesn't
+// balloon a single log doc - the counts still reflect the true total.
+const AUDIT_SAMPLE_CAP = 5;
+async function writeAuditLog(actor, collectionLabel, diff) {
+  const total = diff.added.length + diff.removed.length + diff.updated.length;
+  if (total === 0) return;
+  const ref = doc(collection(db, "auditLog"));
+  await setDoc(ref, {
+    at: new Date().toISOString(),
+    actorEmail: actor?.email || "",
+    actorUid: actor?.uid || "",
+    collection: collectionLabel,
+    addedCount: diff.added.length,
+    updatedCount: diff.updated.length,
+    removedCount: diff.removed.length,
+    addedSample: diff.added.slice(0, AUDIT_SAMPLE_CAP),
+    updatedSample: diff.updated.slice(0, AUDIT_SAMPLE_CAP),
+    removedSample: diff.removed.slice(0, AUDIT_SAMPLE_CAP),
+  });
 }
 
 // A deliberately "thin" mirror of `employees` holding only name/department/position/code -
@@ -322,6 +410,11 @@ const DEPARTMENTS_DEFAULT = ["الإدارة", "المبيعات", "التشغي
 const WEEKDAYS = ["الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
 const ACTION_TYPES = ["تنبيه شفهي", "إنذار كتابي", "خصم مالي", "فصل"];
 const DOC_TYPES = ["صورة البطاقة", "المؤهل الدراسي", "العقد الموقّع", "الفيش الجنائي", "صورة شخصية", "أخرى"];
+const CANDIDATE_SOURCES = ["إعلان وظيفة", "توصية موظف", "لينكدإن", "تقديم مباشر", "أخرى"];
+// The recruitment pipeline. "مرفوض" is a terminal side-branch (reachable from any earlier
+// stage), not a 6th sequential step - RecruitmentTab's stage picker treats it that way, but it
+// still gets its own Kanban column like the other five.
+const CANDIDATE_STAGES = ["جديد", "قيد المراجعة", "مقابلة", "عرض عمل", "تم التعيين", "مرفوض"];
 
 const DEFAULT_SETTINGS = {
   insuranceRate: 11,
@@ -464,6 +557,128 @@ function advanceRemaining(adv) {
   return Math.max(0, adv.totalAmount - paid);
 }
 
+// One employee's full payroll breakdown for one month - the single source of truth used by
+// both PayrollTab (live, editable view of the CURRENT month) and ReportsTab (read-only trend
+// across past months). Pulled out as a standalone function (rather than staying a closure
+// inside PayrollTab) specifically so ReportsTab can reuse the exact same math instead of
+// drifting out of sync with a second copy of it.
+function computePayrollRow(e, ym, attendance, penalties, advances, settings, meta) {
+  let absentDays = 0, overtimeHours = 0;
+  Object.keys(attendance).forEach((date) => {
+    if (monthKey(date) !== ym) return;
+    const entry = getAttEntry(attendance, date, e.id);
+    if (!entry) return;
+    if (entry.status === "absent") absentDays++;
+    overtimeHours += Number(entry.overtimeHours) || 0;
+  });
+  const base = Number(e.salary) || 0;
+  const perDay = base / 30;
+  const absenceDeduction = Math.round(perDay * absentDays);
+  const monthPenalties = penalties.filter((p) => p.employeeId === e.id && monthKey(p.date) === ym && p.actionType === "خصم مالي");
+  const penaltyDeduction = monthPenalties.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  const empAdvances = advances.filter((a) => a.employeeId === e.id);
+  const advanceDeduction = empAdvances.reduce((s, a) => s + advanceDeductionForMonth(a, ym), 0);
+  const hourlyRate = base / (30 * 8);
+  const overtimePay = Math.round(hourlyRate * settings.overtimeMultiplier * overtimeHours);
+  const empMeta = (meta || {})[e.id] || {};
+  const bonus = Number(empMeta.bonus) || 0;
+
+  const insuranceDeduction = Math.round((base * settings.insuranceRate) / 100);
+  const annualTaxable = Math.max(0, base * 12 - insuranceDeduction * 12 - settings.personalExemptionAnnual);
+  const taxDeduction = Math.round(computeTax(annualTaxable, settings.taxBrackets) / 12);
+
+  const net = base - absenceDeduction - penaltyDeduction - advanceDeduction - insuranceDeduction - taxDeduction + overtimePay + bonus;
+  return { emp: e, absentDays, overtimeHours, absenceDeduction, penaltyDeduction, advanceDeduction, insuranceDeduction, taxDeduction, overtimePay, bonus, net, paid: !!empMeta.paid };
+}
+
+/* ---------- reports (pure, testable helpers - see ReportsTab for the tab that renders them) ---------- */
+
+// True if the employee was on the books at ANY point during month `ym` ("YYYY-MM") - hired on
+// or before the month's end, and (still active, or resigned/terminated on or after the
+// month's start). Missing hireDate/resignationDate default to "always counted" rather than
+// excluding an employee whose record is simply incomplete.
+function wasActiveInMonth(e, ym) {
+  if (e.hireDate && monthKey(e.hireDate) > ym) return false;
+  if (e.resignationDate && monthKey(e.resignationDate) < ym) return false;
+  return true;
+}
+
+// `count` consecutive "YYYY-MM" months, oldest first, ending at (and including) `ym`.
+function monthRangeEndingAt(ym, count) {
+  const [y, m] = ym.split("-").map(Number);
+  const out = [];
+  for (let i = count - 1; i >= 0; i--) {
+    const d = new Date(y, m - 1 - i, 1);
+    out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  }
+  return out;
+}
+
+// Attendance rate (% present, of every present/absent/late entry recorded that month) across
+// the given employee ids only - so a past month correctly reflects only who was employed then.
+function computeAttendanceRateForMonth(employeeIds, attendance, ym) {
+  const idSet = new Set(employeeIds);
+  let present = 0, absent = 0, late = 0;
+  Object.keys(attendance).forEach((date) => {
+    if (monthKey(date) !== ym) return;
+    Object.entries(attendance[date] || {}).forEach(([empId, entry]) => {
+      if (!idSet.has(empId)) return;
+      const status = typeof entry === "string" ? entry : entry?.status;
+      if (status === "present") present++;
+      else if (status === "absent") absent++;
+      else if (status === "late") late++;
+    });
+  });
+  const total = present + absent + late;
+  return { present, absent, late, rate: total === 0 ? null : Math.round((present / total) * 1000) / 10 };
+}
+
+// One full row of the monthly trend report - headcount, attendance rate, payroll cost,
+// penalties/advances totals, hires and resignations - all for a single month `ym`.
+function computeMonthlyReportRow(ym, employees, attendance, penalties, advances, payrollMeta, settings) {
+  const activeIds = employees.filter((e) => wasActiveInMonth(e, ym)).map((e) => e.id);
+  const activeEmps = employees.filter((e) => activeIds.includes(e.id));
+  const meta = payrollMeta[ym] || {};
+  const payrollCost = activeEmps.reduce((s, e) => s + computePayrollRow(e, ym, attendance, penalties, advances, settings, meta).net, 0);
+  const penaltiesTotal = penalties.filter((p) => monthKey(p.date) === ym && p.actionType === "خصم مالي").reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  const advancesTotal = advances.filter((a) => monthKey(a.date) === ym).reduce((s, a) => s + (Number(a.totalAmount) || 0), 0);
+  const hires = employees.filter((e) => e.hireDate && monthKey(e.hireDate) === ym).length;
+  const resignations = employees.filter((e) => e.resignationDate && monthKey(e.resignationDate) === ym).length;
+  const { rate: attendanceRate } = computeAttendanceRateForMonth(activeIds, attendance, ym);
+  return { ym, headcount: activeEmps.length, attendanceRate, payrollCost, penaltiesTotal, advancesTotal, hires, resignations };
+}
+
+// Active headcount grouped by department (today's snapshot, not historical) - same "بدون قسم"
+// fallback bucket used by the org chart, sorted by headcount descending.
+function computeDepartmentHeadcount(activeEmployees) {
+  const counts = {};
+  activeEmployees.forEach((e) => {
+    const dept = (e.department || "").trim() || "بدون قسم";
+    counts[dept] = (counts[dept] || 0) + 1;
+  });
+  return Object.entries(counts).map(([dept, count]) => ({ dept, count })).sort((a, b) => b.count - a.count);
+}
+
+/* ---------- recruitment (pure, testable helpers - see RecruitmentTab for the tab itself) ---------- */
+
+// One count per CANDIDATE_STAGES entry (0 for a stage nobody is currently in), in pipeline
+// order - drives both the Kanban column headers and the small KPI row above them.
+function computeCandidatePipelineCounts(candidates) {
+  const counts = {};
+  CANDIDATE_STAGES.forEach((s) => { counts[s] = 0; });
+  candidates.forEach((c) => { if (counts[c.stage] !== undefined) counts[c.stage]++; });
+  return CANDIDATE_STAGES.map((stage) => ({ stage, count: counts[stage] }));
+}
+
+// Simple case-insensitive substring match across the fields RecruitmentTab's search box
+// covers, used by both the live UI filter and (indirectly) this test suite.
+function candidateMatchesQuery(candidate, query) {
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return true;
+  return [candidate.name, candidate.position, candidate.department, candidate.phone]
+    .some((v) => String(v || "").toLowerCase().includes(q));
+}
+
 /* ---------- shared UI ---------- */
 // Note: every primitive below reads `useLang()` itself and auto-translates any plain-string
 // text prop it's handed (via autoT) - so most of the ~50 components further down that just
@@ -587,7 +802,13 @@ function HRSystem({ adminUser }) {
   const [orgChart, orgChartLoaded] = useFirestoreDoc("orgChart", "main", DEFAULT_ORG_CHART);
   const [publicDirectory, publicDirectoryLoaded] = useFirestoreCollection("publicDirectory");
   const [payslipDocs, payslipsLoaded] = useFirestoreCollection("payslips");
+  const [auditLog] = useFirestoreCollection("auditLog");
+  const [candidates] = useFirestoreCollection("candidates");
   const [orgChartPrintOpen, setOrgChartPrintOpen] = useState(false);
+  // Set by RecruitmentTab's "تحويل لموظف" action on a hired candidate - EmployeesTab watches
+  // this to auto-open its "New Employee" modal pre-filled with the candidate's info, then
+  // reports back (via handleCandidateConverted) once that employee is actually saved.
+  const [prefillCandidate, setPrefillCandidate] = useState(null);
 
   const loading = !employeesLoaded || !attendanceLoaded || !penaltiesLoaded || !payrollLoaded
     || !advancesLoaded || !documentsLoaded || !reviewsLoaded || !settingsLoaded || !orgChartLoaded
@@ -611,6 +832,14 @@ function HRSystem({ adminUser }) {
     return out;
   }, [payrollMetaDocs]);
 
+  // Employee id -> display name, used only to make audit-log samples readable
+  // (e.g. "أحمد علي" instead of a raw employeeId) for collections keyed by employeeId.
+  const employeeNameById = useMemo(() => {
+    const out = {};
+    employees.forEach((e) => { out[e.id] = e.name || e.id; });
+    return out;
+  }, [employees]);
+
   // Fire-and-forget wrapper matching every existing call site's expectation (setX(next) with
   // no await), while still surfacing a transient "saving" indicator and logging write failures
   // (most commonly a Security Rules rejection) instead of swallowing them silently.
@@ -621,17 +850,63 @@ function HRSystem({ adminUser }) {
   }
 
   const upd = {
-    employees: (n) => { track(syncCollection("employees", employees, n)); track(syncPublicDirectory(n, publicDirectory)); },
-    attendance: (n) => track(syncAttendanceRecords(n, attendanceRecords)),
-    penalties: (n) => track(syncCollection("penalties", penalties, n)),
-    payrollMeta: (n) => track(syncPayrollMeta(n, payrollMetaDocs)),
-    advances: (n) => track(syncCollection("advances", advances, n)),
-    documents: (n) => track(syncCollection("documents", documents, n)),
-    reviews: (n) => track(syncCollection("reviews", reviews, n)),
-    settings: (n) => track(setDoc(doc(db, "settings", "main"), n)),
-    orgChart: (n) => track(setDoc(doc(db, "orgChart", "main"), n)),
+    employees: (n) => {
+      track(syncCollection("employees", employees, n));
+      track(syncPublicDirectory(n, publicDirectory));
+      track(writeAuditLog(adminUser, "employees", diffSummary(employees, n, (e) => e.name || e.id)));
+    },
+    attendance: (n) => {
+      track(syncAttendanceRecords(n, attendanceRecords));
+      track(writeAuditLog(adminUser, "attendance", diffSummary(flattenAttendanceForDiff(attendance), flattenAttendanceForDiff(n))));
+    },
+    penalties: (n) => {
+      track(syncCollection("penalties", penalties, n));
+      track(writeAuditLog(adminUser, "penalties", diffSummary(penalties, n, (p) => `${employeeNameById[p.employeeId] || p.employeeId} - ${p.actionType || ""}`)));
+    },
+    payrollMeta: (n) => {
+      track(syncPayrollMeta(n, payrollMetaDocs));
+      track(writeAuditLog(adminUser, "payrollMeta", diffSummary(flattenPayrollMetaObj(payrollMeta), flattenPayrollMetaObj(n))));
+    },
+    advances: (n) => {
+      track(syncCollection("advances", advances, n));
+      track(writeAuditLog(adminUser, "advances", diffSummary(advances, n, (a) => `${employeeNameById[a.employeeId] || a.employeeId} - ${a.totalAmount || ""} ج.م`)));
+    },
+    documents: (n) => {
+      track(syncCollection("documents", documents, n));
+      track(writeAuditLog(adminUser, "documents", diffSummary(documents, n, (d) => `${employeeNameById[d.employeeId] || d.employeeId} - ${d.name || ""}`)));
+    },
+    reviews: (n) => {
+      track(syncCollection("reviews", reviews, n));
+      track(writeAuditLog(adminUser, "reviews", diffSummary(reviews, n, (r) => `${employeeNameById[r.employeeId] || r.employeeId}`)));
+    },
+    settings: (n) => {
+      track(setDoc(doc(db, "settings", "main"), n));
+      track(writeAuditLog(adminUser, "settings", diffDocKeys(settings, n)));
+    },
+    orgChart: (n) => {
+      track(setDoc(doc(db, "orgChart", "main"), n));
+      track(writeAuditLog(adminUser, "orgChart", diffDocKeys(orgChart, n)));
+    },
     payslips: (ym, rows) => track(syncPayslipsForMonth(ym, rows, payslipDocs.filter((d) => d.id.startsWith(`${ym}_`)))),
+    candidates: (n) => {
+      track(syncCollection("candidates", candidates, n));
+      track(writeAuditLog(adminUser, "candidates", diffSummary(candidates, n, (c) => `${c.name || c.id} - ${c.stage || ""}`)));
+    },
   };
+
+  // RecruitmentTab's "تحويل لموظف" on a hired candidate: hand off to EmployeesTab (switch tab,
+  // hand it the candidate to prefill from) rather than creating the employee record directly -
+  // that way the admin still reviews/completes the details (salary, contract, etc.) that a
+  // candidate record was never meant to carry, before anything is actually saved.
+  function handleConvertCandidate(candidate) {
+    setPrefillCandidate(candidate);
+    setTab("employees");
+  }
+  // Called by EmployeesTab once the prefilled "New Employee" form is actually saved - marks
+  // the source candidate as converted so RecruitmentTab stops offering the button again.
+  function handleCandidateConverted(candidateId, employeeId) {
+    upd.candidates(candidates.map((c) => (c.id === candidateId ? { ...c, convertedEmployeeId: employeeId, convertedAt: todayISO() } : c)));
+  }
 
   // Permanently deletes one or more employees and sweeps their data out of every other
   // collection this app owns - attendance, penalties, advances, documents, reviews, and
@@ -725,6 +1000,9 @@ function HRSystem({ adminUser }) {
             <NavItem icon={<AlertTriangle size={17} />} label="الجزاءات والإنذارات" active={tab === "penalties"} onClick={() => setTab("penalties")} />
             <NavItem icon={<HandCoins size={17} />} label="السلف" active={tab === "advances"} onClick={() => setTab("advances")} />
             <NavItem icon={<LogOut size={17} />} label="موظفون سابقون" active={tab === "former"} onClick={() => setTab("former")} />
+            <NavItem icon={<UserPlus size={17} />} label="التعيين والتوظيف" active={tab === "recruitment"} onClick={() => setTab("recruitment")} />
+            <NavItem icon={<BarChart3 size={17} />} label="تقارير" active={tab === "reports"} onClick={() => setTab("reports")} />
+            <NavItem icon={<History size={17} />} label="سجل النشاط" active={tab === "auditLog"} onClick={() => setTab("auditLog")} />
             <NavItem icon={<SettingsIcon size={17} />} label="الإعدادات" active={tab === "settings"} onClick={() => setTab("settings")} />
           </nav>
           <div className="mt-6 flex items-center gap-1.5 rounded-lg bg-stone-50 px-2.5 py-2 text-[11px] text-slate-400">
@@ -747,6 +1025,8 @@ function HRSystem({ adminUser }) {
             reviews={reviews} setReviews={upd.reviews}
             payrollMeta={payrollMeta} setPayrollMeta={upd.payrollMeta}
             onDelete={deleteEmployees}
+            prefillCandidate={prefillCandidate} onPrefillConsumed={() => setPrefillCandidate(null)}
+            onCandidateConverted={handleCandidateConverted}
           />}
           {tab === "orgchart" && <OrgChartTab employees={activeEmployees} orgChart={orgChart} setOrgChart={upd.orgChart} onPrint={() => setOrgChartPrintOpen(true)} />}
           {tab === "attendance" && <AttendanceTab employees={activeEmployees} attendance={attendance} setAttendance={upd.attendance} settings={settings} />}
@@ -754,6 +1034,9 @@ function HRSystem({ adminUser }) {
           {tab === "penalties" && <PenaltiesTab employees={activeEmployees} penalties={penalties} setPenalties={upd.penalties} />}
           {tab === "advances" && <AdvancesTab employees={activeEmployees} advances={advances} setAdvances={upd.advances} />}
           {tab === "former" && <FormerEmployeesTab employees={formerEmployees} setEmployees={upd.employees} allEmployees={employees} onDelete={deleteEmployees} />}
+          {tab === "recruitment" && <RecruitmentTab candidates={candidates} setCandidates={upd.candidates} onConvert={handleConvertCandidate} />}
+          {tab === "reports" && <ReportsTab employees={employees} activeEmployees={activeEmployees} attendance={attendance} penalties={penalties} advances={advances} payrollMeta={payrollMeta} settings={settings} />}
+          {tab === "auditLog" && <AuditLogTab auditLog={auditLog} />}
           {tab === "settings" && <SettingsTab
             settings={settings} setSettings={upd.settings}
             backupProps={{ employees, attendance, penalties, payrollMeta, advances, documents, reviews, settings, orgChart, upd }}
@@ -884,12 +1167,14 @@ function Dashboard({ employees, attendance, penalties, advances, settings, docum
 }
 
 /* ================= EMPLOYEES ================= */
-function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, setAttendance, penalties, setPenalties, advances, setAdvances, documents, setDocuments, reviews, setReviews, payrollMeta, setPayrollMeta, onDelete }) {
+function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, setAttendance, penalties, setPenalties, advances, setAdvances, documents, setDocuments, reviews, setReviews, payrollMeta, setPayrollMeta, onDelete, prefillCandidate, onPrefillConsumed, onCandidateConverted }) {
   const { t } = useLang();
   const [modalOpen, setModalOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [mergeOpen, setMergeOpen] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [prefillData, setPrefillData] = useState(null); // draft data for a NEW employee seeded from a hired candidate
+  const [convertingCandidateId, setConvertingCandidateId] = useState(null);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(() => new Set());
   const [confirmDelete, setConfirmDelete] = useState(null); // array of employees pending delete, or null
@@ -897,10 +1182,39 @@ function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, s
   const filtered = visible.filter((e) => e.name.includes(query) || (e.position || "").includes(query) || (e.department || "").includes(query));
   const dupGroups = useMemo(() => findDuplicateGroups(visible), [visible]);
 
-  function save(data) {
-    if (editing) setEmployees(employees.map((e) => (e.id === editing.id ? { ...editing, ...data } : e)));
-    else setEmployees([...employees, { id: uid("emp"), status: "active", leaveEntitlement: settings.leaveDefaultDays, ...data }]);
+  // A candidate handed off from RecruitmentTab's "تحويل لموظف" - open the New Employee modal
+  // pre-filled from their info, then immediately tell HRSystem we've picked it up (clears
+  // prefillCandidate there so switching tabs away and back doesn't re-trigger this).
+  useEffect(() => {
+    if (!prefillCandidate) return;
+    setConvertingCandidateId(prefillCandidate.id);
+    setPrefillData({
+      name: prefillCandidate.name || "", phone: prefillCandidate.phone || "",
+      position: prefillCandidate.position || "", department: prefillCandidate.department || "",
+      hireDate: todayISO(),
+    });
+    setEditing(null);
+    setModalOpen(true);
+    onPrefillConsumed();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillCandidate]);
+
+  function closeModal() {
     setModalOpen(false);
+    setEditing(null);
+    setPrefillData(null);
+    setConvertingCandidateId(null);
+  }
+
+  function save(data) {
+    if (editing) {
+      setEmployees(employees.map((e) => (e.id === editing.id ? { ...editing, ...data } : e)));
+    } else {
+      const newId = uid("emp");
+      setEmployees([...employees, { id: newId, status: "active", leaveEntitlement: settings.leaveDefaultDays, ...data }]);
+      if (convertingCandidateId) onCandidateConverted(convertingCandidateId, newId);
+    }
+    closeModal();
   }
   function markResigned(emp) {
     setEmployees(employees.map((e) => (e.id === emp.id ? { ...e, status: "resigned", resignationDate: todayISO() } : e)));
@@ -1021,8 +1335,8 @@ function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, s
         </Card>
       )}
 
-      <Modal open={modalOpen} onClose={() => setModalOpen(false)} title={editing ? "تعديل بيانات موظف" : "إضافة موظف جديد"} wide>
-        <EmployeeForm initial={editing} settings={settings} onSave={save} onCancel={() => setModalOpen(false)} />
+      <Modal open={modalOpen} onClose={closeModal} title={editing ? "تعديل بيانات موظف" : convertingCandidateId ? "تحويل مرشح لموظف" : "إضافة موظف جديد"} wide>
+        <EmployeeForm initial={editing || prefillData} settings={settings} onSave={save} onCancel={closeModal} />
       </Modal>
 
       <Modal open={importOpen} onClose={() => setImportOpen(false)} title="استيراد جماعي للموظفين" wide>
@@ -2129,36 +2443,7 @@ function PayrollTab({ employees, attendance, penalties, payrollMeta, setPayrollM
 
   function setMetaFor(empId, patch) { setPayrollMeta({ ...payrollMeta, [ym]: { ...meta, [empId]: { ...(meta[empId] || {}), ...patch } } }); }
 
-  function computeRow(e) {
-    let absentDays = 0, overtimeHours = 0;
-    Object.keys(attendance).forEach((date) => {
-      if (monthKey(date) !== ym) return;
-      const entry = getAttEntry(attendance, date, e.id);
-      if (!entry) return;
-      if (entry.status === "absent") absentDays++;
-      overtimeHours += Number(entry.overtimeHours) || 0;
-    });
-    const base = Number(e.salary) || 0;
-    const perDay = base / 30;
-    const absenceDeduction = Math.round(perDay * absentDays);
-    const monthPenalties = penalties.filter((p) => p.employeeId === e.id && monthKey(p.date) === ym && p.actionType === "خصم مالي");
-    const penaltyDeduction = monthPenalties.reduce((s, p) => s + (Number(p.amount) || 0), 0);
-    const empAdvances = advances.filter((a) => a.employeeId === e.id);
-    const advanceDeduction = empAdvances.reduce((s, a) => s + advanceDeductionForMonth(a, ym), 0);
-    const hourlyRate = base / (30 * 8);
-    const overtimePay = Math.round(hourlyRate * settings.overtimeMultiplier * overtimeHours);
-    const empMeta = meta[e.id] || {};
-    const bonus = Number(empMeta.bonus) || 0;
-
-    const insuranceDeduction = Math.round((base * settings.insuranceRate) / 100);
-    const annualTaxable = Math.max(0, base * 12 - insuranceDeduction * 12 - settings.personalExemptionAnnual);
-    const taxDeduction = Math.round(computeTax(annualTaxable, settings.taxBrackets) / 12);
-
-    const net = base - absenceDeduction - penaltyDeduction - advanceDeduction - insuranceDeduction - taxDeduction + overtimePay + bonus;
-    return { emp: e, absentDays, overtimeHours, absenceDeduction, penaltyDeduction, advanceDeduction, insuranceDeduction, taxDeduction, overtimePay, bonus, net, paid: !!empMeta.paid };
-  }
-
-  const rows = employees.map(computeRow);
+  const rows = employees.map((e) => computePayrollRow(e, ym, attendance, penalties, advances, settings, meta));
   const syncedCount = payslipDocs.filter((d) => d.id.startsWith(`${ym}_`)).length;
   const totals = rows.reduce((acc, r) => {
     acc.base += Number(r.emp.salary) || 0;
@@ -2371,6 +2656,418 @@ function BackupSection({ employees, attendance, penalties, payrollMeta, advances
       </div>
       {msg && <p className={`mt-3 text-xs font-medium ${msg.tone === "rose" ? "text-rose-600" : "text-teal-700"}`}>{msg.text}</p>}
     </Card>
+  );
+}
+
+// Stable (untranslated) key -> Arabic label; AuditLogTab/AuditLogEntryCard run every label
+// through t() at render time so the audit log itself stays language-agnostic in Firestore.
+const AUDIT_COLLECTION_LABELS = {
+  employees: "الموظفون",
+  attendance: "الحضور والانصراف",
+  penalties: "الجزاءات والإنذارات",
+  payrollMeta: "بيانات المرتبات",
+  advances: "السلف",
+  documents: "المستندات",
+  reviews: "التقييمات",
+  settings: "الإعدادات",
+  orgChart: "الهيكل التنظيمي",
+};
+
+function AuditLogEntryCard({ entry }) {
+  const { t, lang } = useLang();
+  const [open, setOpen] = useState(false);
+  const total = (entry.addedCount || 0) + (entry.updatedCount || 0) + (entry.removedCount || 0);
+  const when = entry.at ? new Date(entry.at) : null;
+  const hasSamples = (entry.addedSample?.length || 0) + (entry.updatedSample?.length || 0) + (entry.removedSample?.length || 0) > 0;
+  const capped = entry.addedCount > AUDIT_SAMPLE_CAP || entry.updatedCount > AUDIT_SAMPLE_CAP || entry.removedCount > AUDIT_SAMPLE_CAP;
+  return (
+    <Card className="p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <StampBadge tone="teal">{AUDIT_COLLECTION_LABELS[entry.collection] || entry.collection}</StampBadge>
+          <span className="text-sm font-medium text-slate-700">{entry.actorEmail || "—"}</span>
+        </div>
+        <div className="text-xs text-slate-400">
+          {when ? when.toLocaleString(lang === "en" ? "en-GB" : "ar-EG", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"}
+        </div>
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
+        {entry.addedCount > 0 && <span className="flex items-center gap-1 font-semibold text-emerald-700"><Plus size={12} /> {t("{n} إضافة", { n: entry.addedCount })}</span>}
+        {entry.updatedCount > 0 && <span className="flex items-center gap-1 font-semibold text-amber-700"><Pencil size={12} /> {t("{n} تعديل", { n: entry.updatedCount })}</span>}
+        {entry.removedCount > 0 && <span className="flex items-center gap-1 font-semibold text-rose-700"><Trash2 size={12} /> {t("{n} حذف", { n: entry.removedCount })}</span>}
+        {total === 0 && <span className="text-slate-400">{t("لا يوجد تغيير مسجل")}</span>}
+        {hasSamples && (
+          <button onClick={() => setOpen((o) => !o)} className="me-auto flex items-center gap-1 text-teal-700 hover:text-teal-900">
+            {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />} {t("التفاصيل")}
+          </button>
+        )}
+      </div>
+      {open && (
+        <div className="mt-3 space-y-1.5 border-t border-stone-100 pt-3 text-xs text-slate-600">
+          {entry.addedSample?.length > 0 && <div><span className="font-semibold text-emerald-700">{t("أُضيف:")}</span> {entry.addedSample.join("، ")}</div>}
+          {entry.updatedSample?.length > 0 && <div><span className="font-semibold text-amber-700">{t("اتعدّل:")}</span> {entry.updatedSample.join("، ")}</div>}
+          {entry.removedSample?.length > 0 && <div><span className="font-semibold text-rose-700">{t("اتحذف:")}</span> {entry.removedSample.join("، ")}</div>}
+          {capped && <div className="text-slate-400">{t("(المعروض عيّنة فقط من العدد الكامل أعلاه)")}</div>}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function AuditLogTab({ auditLog }) {
+  const { t } = useLang();
+  const [collectionFilter, setCollectionFilter] = useState("all");
+  const [search, setSearch] = useState("");
+
+  const sorted = useMemo(() => [...(auditLog || [])].sort((a, b) => (b.at || "").localeCompare(a.at || "")), [auditLog]);
+
+  const filtered = useMemo(() => sorted.filter((e) => {
+    if (collectionFilter !== "all" && e.collection !== collectionFilter) return false;
+    if (search.trim() && !(e.actorEmail || "").toLowerCase().includes(search.trim().toLowerCase())) return false;
+    return true;
+  }), [sorted, collectionFilter, search]);
+
+  const visible = filtered.slice(0, 300);
+
+  return (
+    <div>
+      <SectionTitle eyebrow={t("سجل كل التعديلات المسجلة على النظام")} title="سجل النشاط" />
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <select className={`${inputCls} w-auto`} value={collectionFilter} onChange={(e) => setCollectionFilter(e.target.value)}>
+          <option value="all">{t("كل الأقسام")}</option>
+          {Object.keys(AUDIT_COLLECTION_LABELS).map((k) => <option key={k} value={k}>{t(AUDIT_COLLECTION_LABELS[k])}</option>)}
+        </select>
+        <input className={`${inputCls} w-56`} placeholder={t("دوّر باسم المستخدم (إيميل)")} value={search} onChange={(e) => setSearch(e.target.value)} />
+        <span className="text-xs text-slate-400">{t("{n} حركة", { n: filtered.length })}</span>
+      </div>
+      {visible.length === 0 ? (
+        <EmptyState text="مفيش أي نشاط مسجل لسه." />
+      ) : (
+        <div className="space-y-2.5">
+          {visible.map((e) => <AuditLogEntryCard key={e.id} entry={e} />)}
+          {filtered.length > visible.length && (
+            <p className="pt-2 text-center text-xs text-slate-400">{t("معروض آخر {n} حركة فقط.", { n: visible.length })}</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const REPORT_RANGES = [3, 6, 12];
+
+// Small hand-rolled vertical bar chart (no external charting library) - callers pass already-
+// translated `label` strings, so this component never needs useLang() itself.
+function MiniBarChart({ bars, formatValue, maxValue }) {
+  const max = maxValue ?? Math.max(1, ...bars.map((b) => Math.abs(b.value) || 0));
+  const toneCls = { teal: "bg-teal-700", emerald: "bg-emerald-600", rose: "bg-rose-600", amber: "bg-amber-500" };
+  return (
+    <div className="flex h-40 items-end gap-2">
+      {bars.map((b, i) => (
+        <div key={i} className="flex flex-1 flex-col items-center gap-1">
+          <span className="text-[10px] font-semibold tabular-nums text-slate-500">{formatValue ? formatValue(b.value) : b.value}</span>
+          <div className="flex w-full flex-1 items-end">
+            <div className={`w-full rounded-t-md ${toneCls[b.tone || "teal"]}`} style={{ height: `${b.value ? Math.max(3, (Math.abs(b.value) / max) * 100) : 0}%` }} />
+          </div>
+          <span className="whitespace-nowrap text-[10px] text-slate-400">{b.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Horizontal bar list (department headcount, etc.) - same "pre-translated labels" contract.
+function HBarList({ rows }) {
+  const max = Math.max(1, ...rows.map((r) => r.value));
+  return (
+    <div className="space-y-2.5">
+      {rows.map((r) => (
+        <div key={r.label}>
+          <div className="mb-1 flex items-center justify-between text-xs">
+            <span className="font-medium text-slate-700">{r.label}</span>
+            <span className="tabular-nums text-slate-500">{r.value}</span>
+          </div>
+          <div className="h-2 rounded-full bg-stone-100"><div className="h-2 rounded-full bg-teal-700" style={{ width: `${(r.value / max) * 100}%` }} /></div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ReportsTab({ employees, activeEmployees, attendance, penalties, advances, payrollMeta, settings }) {
+  const { t, lang } = useLang();
+  const [months, setMonths] = useState(6);
+  const currentYm = todayISO().slice(0, 7);
+  const range = useMemo(() => monthRangeEndingAt(currentYm, months), [currentYm, months]);
+  const rows = useMemo(
+    () => range.map((ym) => computeMonthlyReportRow(ym, employees, attendance, penalties, advances, payrollMeta, settings)),
+    [range, employees, attendance, penalties, advances, payrollMeta, settings]
+  );
+  const deptRows = useMemo(() => computeDepartmentHeadcount(activeEmployees), [activeEmployees]);
+
+  function monthLabel(ym) {
+    const [y, m] = ym.split("-").map(Number);
+    return new Date(y, m - 1, 1).toLocaleDateString(lang === "en" ? "en-GB" : "ar-EG", { month: "short", year: "2-digit" });
+  }
+
+  const avgAttendance = useMemo(() => {
+    const withData = rows.filter((r) => r.attendanceRate !== null);
+    if (withData.length === 0) return null;
+    return Math.round((withData.reduce((s, r) => s + r.attendanceRate, 0) / withData.length) * 10) / 10;
+  }, [rows]);
+  const totalPayrollThisMonth = rows[rows.length - 1]?.payrollCost || 0;
+  const totalHires = rows.reduce((s, r) => s + r.hires, 0);
+  const totalResignations = rows.reduce((s, r) => s + r.resignations, 0);
+  const hiresResignMax = Math.max(1, ...rows.map((r) => Math.max(r.hires, r.resignations)));
+
+  function exportExcel() {
+    const sheetRows = rows.map((r) => ({
+      [t("الشهر")]: r.ym,
+      [t("عدد الموظفين")]: r.headcount,
+      [t("معدل الحضور")]: r.attendanceRate === null ? "" : r.attendanceRate,
+      [t("تكلفة المرتبات")]: r.payrollCost,
+      [t("خصومات الجزاءات")]: r.penaltiesTotal,
+      [t("سلف جديدة")]: r.advancesTotal,
+      [t("تعيينات")]: r.hires,
+      [t("استقالات")]: r.resignations,
+    }));
+    const deptSheetRows = deptRows.map((d) => ({ [t("القسم")]: t(d.dept), [t("عدد الموظفين")]: d.count }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sheetRows), t("الاتجاه الشهري"));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(deptSheetRows), t("الأقسام"));
+    const out = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    const blob = new Blob([out], { type: "application/octet-stream" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `hr-reports-${currentYm}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <div>
+      <SectionTitle eyebrow={t("إحصائيات وتحليلات آخر {n} شهر", { n: months })} title="تقارير" action={
+        <div className="flex items-center gap-2">
+          <select className={`${inputCls} w-auto`} value={months} onChange={(e) => setMonths(Number(e.target.value))}>
+            {REPORT_RANGES.map((n) => <option key={n} value={n}>{t("آخر {n} شهر", { n })}</option>)}
+          </select>
+          <button onClick={exportExcel} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-900">
+            <FileSpreadsheet size={15} /> {t("تصدير Excel")}
+          </button>
+        </div>
+      } />
+
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+        <KpiCard label="إجمالي الموظفين النشطين" value={activeEmployees.length} icon={<Users size={18} />} tone="teal" />
+        <KpiCard label="متوسط نسبة الحضور" value={avgAttendance === null ? "—" : `${avgAttendance}%`} icon={<CalendarCheck size={18} />} tone="emerald" />
+        <KpiCard label="تكلفة مرتبات الشهر الحالي" value={fmtMoney(totalPayrollThisMonth)} icon={<Wallet size={18} />} tone="amber" />
+        <KpiCard label="صافي التعيينات" value={totalHires - totalResignations} icon={<UserPlus size={18} />} tone={totalHires - totalResignations >= 0 ? "emerald" : "rose"} />
+      </div>
+
+      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <Card className="p-5">
+          <h3 className="mb-4 font-bold text-slate-800">{t("معدل الحضور الشهري (%)")}</h3>
+          <MiniBarChart maxValue={100} formatValue={(v) => `${v}%`} bars={rows.map((r) => ({ label: monthLabel(r.ym), value: r.attendanceRate ?? 0, tone: "emerald" }))} />
+        </Card>
+        <Card className="p-5">
+          <h3 className="mb-4 font-bold text-slate-800">{t("تكلفة المرتبات الشهرية (ج.م)")}</h3>
+          <MiniBarChart formatValue={(v) => fmtMoney(v)} bars={rows.map((r) => ({ label: monthLabel(r.ym), value: r.payrollCost, tone: "teal" }))} />
+        </Card>
+        <Card className="p-5">
+          <h3 className="mb-4 font-bold text-slate-800">{t("توزيع الموظفين حسب القسم")}</h3>
+          {deptRows.length === 0 ? <EmptyState text="لسه معملتش أي موظف." /> : <HBarList rows={deptRows.map((d) => ({ label: t(d.dept), value: d.count }))} />}
+        </Card>
+        <Card className="p-5">
+          <h3 className="mb-4 font-bold text-slate-800">{t("التعيينات والاستقالات الشهرية")}</h3>
+          <div className="flex h-40 items-end gap-2">
+            {rows.map((r) => (
+              <div key={r.ym} className="flex flex-1 flex-col items-center gap-1">
+                <div className="flex w-full flex-1 items-end gap-0.5">
+                  <div className="flex-1 rounded-t-md bg-emerald-600" style={{ height: `${r.hires ? Math.max(4, (r.hires / hiresResignMax) * 100) : 0}%` }} title={t("{n} تعيين", { n: r.hires })} />
+                  <div className="flex-1 rounded-t-md bg-rose-500" style={{ height: `${r.resignations ? Math.max(4, (r.resignations / hiresResignMax) * 100) : 0}%` }} title={t("{n} استقالة", { n: r.resignations })} />
+                </div>
+                <span className="whitespace-nowrap text-[10px] text-slate-400">{monthLabel(r.ym)}</span>
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 flex items-center gap-4 text-xs">
+            <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-emerald-600" /> {t("تعيينات")}</span>
+            <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-rose-500" /> {t("استقالات")}</span>
+          </div>
+        </Card>
+      </div>
+
+      <Card className="mt-6 overflow-hidden p-0">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
+              <th className="px-3 py-3">{t("الشهر")}</th>
+              <th className="px-3 py-3">{t("عدد الموظفين")}</th>
+              <th className="px-3 py-3">{t("معدل الحضور")}</th>
+              <th className="px-3 py-3">{t("تكلفة المرتبات")}</th>
+              <th className="px-3 py-3">{t("خصومات الجزاءات")}</th>
+              <th className="px-3 py-3">{t("سلف جديدة")}</th>
+              <th className="px-3 py-3">{t("تعيينات")}</th>
+              <th className="px-3 py-3">{t("استقالات")}</th>
+            </tr></thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.ym} className="border-b border-stone-100 last:border-0 hover:bg-stone-50">
+                  <td className="px-3 py-3 font-medium text-slate-800 whitespace-nowrap">{monthLabel(r.ym)}</td>
+                  <td className="px-3 py-3 tabular-nums text-slate-600">{r.headcount}</td>
+                  <td className="px-3 py-3 tabular-nums text-slate-600">{r.attendanceRate === null ? "—" : `${r.attendanceRate}%`}</td>
+                  <td className="px-3 py-3 tabular-nums font-semibold text-slate-800">{fmtMoney(r.payrollCost)}</td>
+                  <td className="px-3 py-3 tabular-nums text-rose-600">{r.penaltiesTotal ? `-${fmtMoney(r.penaltiesTotal)}` : "—"}</td>
+                  <td className="px-3 py-3 tabular-nums text-amber-600">{r.advancesTotal ? fmtMoney(r.advancesTotal) : "—"}</td>
+                  <td className="px-3 py-3 tabular-nums text-emerald-600">{r.hires || "—"}</td>
+                  <td className="px-3 py-3 tabular-nums text-rose-600">{r.resignations || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+const CANDIDATE_STAGE_TONE = {
+  "جديد": "slate", "قيد المراجعة": "teal", "مقابلة": "amber",
+  "عرض عمل": "emerald", "تم التعيين": "emerald", "مرفوض": "rose",
+};
+
+function CandidateForm({ initial, onSave, onCancel }) {
+  const { t } = useLang();
+  const [form, setForm] = useState({
+    name: initial?.name || "", phone: initial?.phone || "", email: initial?.email || "",
+    position: initial?.position || "", department: initial?.department || "",
+    source: initial?.source || CANDIDATE_SOURCES[0], appliedDate: initial?.appliedDate || todayISO(),
+    stage: initial?.stage || CANDIDATE_STAGES[0], notes: initial?.notes || "",
+  });
+  function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
+  function submit(e) { e.preventDefault(); if (!form.name.trim()) return; onSave(form); }
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      <div className="grid grid-cols-2 gap-4">
+        <Field label="الاسم بالكامل"><input required className={inputCls} value={form.name} onChange={(e) => set("name", e.target.value)} /></Field>
+        <Field label="رقم الموبايل"><input className={inputCls} value={form.phone} onChange={(e) => set("phone", e.target.value)} /></Field>
+        <Field label="الإيميل"><input type="email" className={inputCls} value={form.email} onChange={(e) => set("email", e.target.value)} /></Field>
+        <Field label="الوظيفة المتقدم لها"><input className={inputCls} value={form.position} onChange={(e) => set("position", e.target.value)} /></Field>
+        <Field label="القسم"><input className={inputCls} value={form.department} onChange={(e) => set("department", e.target.value)} placeholder={t("مثلًا المبيعات")} /></Field>
+        <Field label="مصدر الترشيح"><select className={inputCls} value={form.source} onChange={(e) => set("source", e.target.value)}>{CANDIDATE_SOURCES.map((s) => <option key={s} value={s}>{t(s)}</option>)}</select></Field>
+        <Field label="تاريخ التقديم"><input type="date" className={inputCls} value={form.appliedDate} onChange={(e) => set("appliedDate", e.target.value)} /></Field>
+        <Field label="مرحلة التوظيف"><select className={inputCls} value={form.stage} onChange={(e) => set("stage", e.target.value)}>{CANDIDATE_STAGES.map((s) => <option key={s} value={s}>{t(s)}</option>)}</select></Field>
+      </div>
+      <Field label="ملاحظات"><textarea rows={3} className={inputCls} value={form.notes} onChange={(e) => set("notes", e.target.value)} placeholder={t("انطباع المقابلة، الراتب المتوقع، إلخ.")} /></Field>
+      <div className="flex justify-end gap-2 border-t border-stone-200 pt-4">
+        <button type="button" onClick={onCancel} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50">{t("إلغاء")}</button>
+        <button type="submit" className="rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900">{t("حفظ")}</button>
+      </div>
+    </form>
+  );
+}
+
+function CandidateCard({ candidate, onEdit, onDelete, onStageChange, onConvert }) {
+  const { t } = useLang();
+  const converted = !!candidate.convertedEmployeeId;
+  return (
+    <Card className="p-3">
+      <div className="mb-1.5 flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-semibold text-slate-800">{candidate.name}</div>
+          <div className="truncate text-xs text-slate-400">{candidate.position || "—"}{candidate.department ? ` · ${candidate.department}` : ""}</div>
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <button onClick={() => onEdit(candidate)} className="rounded-md p-1 text-slate-400 hover:bg-stone-100 hover:text-teal-700"><Pencil size={13} /></button>
+          <button onClick={() => onDelete(candidate)} className="rounded-md p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 size={13} /></button>
+        </div>
+      </div>
+      {candidate.phone && <div className="mb-1 text-xs text-slate-500">{candidate.phone}</div>}
+      <div className="mb-2 text-[11px] text-slate-400">{t("تقدّم في {date}", { date: candidate.appliedDate || "—" })}</div>
+      <select
+        value={candidate.stage}
+        onChange={(e) => onStageChange(candidate, e.target.value)}
+        className="w-full rounded-md border border-stone-200 bg-white px-2 py-1 text-xs outline-none focus:border-teal-500"
+      >
+        {CANDIDATE_STAGES.map((s) => <option key={s} value={s}>{t(s)}</option>)}
+      </select>
+      {candidate.stage === "تم التعيين" && (
+        converted ? (
+          <div className="mt-2 flex items-center gap-1 text-[11px] font-semibold text-emerald-700"><Check size={12} /> {t("تم التحويل لموظف")}</div>
+        ) : (
+          <button onClick={() => onConvert(candidate)} className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-md bg-teal-800 px-2 py-1.5 text-xs font-semibold text-white hover:bg-teal-900">
+            <UserPlus size={13} /> {t("تحويل لموظف")}
+          </button>
+        )
+      )}
+    </Card>
+  );
+}
+
+function RecruitmentTab({ candidates, setCandidates, onConvert }) {
+  const { t } = useLang();
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [query, setQuery] = useState("");
+
+  const filtered = useMemo(() => candidates.filter((c) => candidateMatchesQuery(c, query)), [candidates, query]);
+  const pipelineCounts = useMemo(() => computeCandidatePipelineCounts(filtered), [filtered]);
+
+  function save(data) {
+    if (editing) setCandidates(candidates.map((c) => (c.id === editing.id ? { ...editing, ...data } : c)));
+    else setCandidates([{ id: uid("cand"), ...data }, ...candidates]);
+    setModalOpen(false);
+    setEditing(null);
+  }
+  function remove(c) { setCandidates(candidates.filter((x) => x.id !== c.id)); }
+  function changeStage(c, stage) { setCandidates(candidates.map((x) => (x.id === c.id ? { ...x, stage } : x))); }
+
+  return (
+    <div>
+      <SectionTitle eyebrow={t("{n} مرشح مسجل", { n: candidates.length })} title="التعيين والتوظيف" action={
+        <button onClick={() => { setEditing(null); setModalOpen(true); }} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-900">
+          <Plus size={16} /> {t("مرشح جديد")}
+        </button>
+      } />
+
+      <div className="mb-4 flex items-center gap-2 rounded-lg border border-stone-300 bg-white px-3 py-2">
+        <Search size={16} className="text-slate-400" />
+        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t("دور بالاسم أو الوظيفة أو القسم...")} className="w-full text-sm outline-none" />
+      </div>
+
+      {candidates.length === 0 ? (
+        <Card className="p-0"><EmptyState text="لسه معملتش أي مرشح. ابدأ بـ«مرشح جديد»." /></Card>
+      ) : (
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+          {pipelineCounts.map(({ stage, count }) => (
+            <div key={stage} className="min-w-0">
+              <div className="mb-2 flex items-center justify-between px-1">
+                <StampBadge tone={CANDIDATE_STAGE_TONE[stage]}>{stage}</StampBadge>
+                <span className="text-xs font-semibold tabular-nums text-slate-400">{count}</span>
+              </div>
+              <div className="space-y-2.5">
+                {filtered.filter((c) => c.stage === stage).map((c) => (
+                  <CandidateCard
+                    key={c.id} candidate={c}
+                    onEdit={(cand) => { setEditing(cand); setModalOpen(true); }}
+                    onDelete={remove}
+                    onStageChange={changeStage}
+                    onConvert={onConvert}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <Modal open={modalOpen} onClose={() => { setModalOpen(false); setEditing(null); }} title={editing ? "تعديل بيانات مرشح" : "إضافة مرشح جديد"} wide>
+        <CandidateForm initial={editing} onSave={save} onCancel={() => { setModalOpen(false); setEditing(null); }} />
+      </Modal>
+    </div>
   );
 }
 
@@ -2790,6 +3487,74 @@ function AdminAuthGate() {
 }
 
 const TRANSLATIONS = {
+  "التعيين والتوظيف": "Recruitment & Hiring",
+  "{n} مرشح مسجل": "{n} candidate(s) recorded",
+  "مرشح جديد": "New Candidate",
+  "تعديل بيانات مرشح": "Edit Candidate",
+  "إضافة مرشح جديد": "Add New Candidate",
+  "تحويل مرشح لموظف": "Convert Candidate to Employee",
+  "الوظيفة المتقدم لها": "Position Applied For",
+  "مصدر الترشيح": "Source",
+  "تاريخ التقديم": "Applied Date",
+  "مرحلة التوظيف": "Hiring Stage",
+  "مثلًا المبيعات": "e.g. Sales",
+  "انطباع المقابلة، الراتب المتوقع، إلخ.": "Interview impression, expected salary, etc.",
+  "لسه معملتش أي مرشح. ابدأ بـ«مرشح جديد».": "No candidates yet. Start with \"New Candidate\".",
+  "تقدّم في {date}": "Applied on {date}",
+  "تحويل لموظف": "Convert to Employee",
+  "تم التحويل لموظف": "Converted to Employee",
+  "جديد": "New",
+  "قيد المراجعة": "Reviewing",
+  "مقابلة": "Interview",
+  "عرض عمل": "Offer",
+  "تم التعيين": "Hired",
+  "مرفوض": "Rejected",
+  "إعلان وظيفة": "Job Ad",
+  "توصية موظف": "Employee Referral",
+  "لينكدإن": "LinkedIn",
+  "تقديم مباشر": "Direct Application",
+  "تقارير": "Reports",
+  "إحصائيات وتحليلات آخر {n} شهر": "Stats and analytics for the last {n} months",
+  "آخر {n} شهر": "Last {n} months",
+  "تصدير Excel": "Export Excel",
+  "إجمالي الموظفين النشطين": "Total Active Employees",
+  "متوسط نسبة الحضور": "Average Attendance Rate",
+  "تكلفة مرتبات الشهر الحالي": "Current Month's Payroll Cost",
+  "صافي التعيينات": "Net Hires",
+  "معدل الحضور الشهري (%)": "Monthly Attendance Rate (%)",
+  "تكلفة المرتبات الشهرية (ج.م)": "Monthly Payroll Cost (EGP)",
+  "توزيع الموظفين حسب القسم": "Headcount by Department",
+  "التعيينات والاستقالات الشهرية": "Monthly Hires & Resignations",
+  "{n} تعيين": "{n} hire(s)",
+  "{n} استقالة": "{n} resignation(s)",
+  "تعيينات": "Hires",
+  "استقالات": "Resignations",
+  "الشهر": "Month",
+  "عدد الموظفين": "Employee Count",
+  "معدل الحضور": "Attendance Rate",
+  "تكلفة المرتبات": "Payroll Cost",
+  "خصومات الجزاءات": "Penalty Deductions",
+  "سلف جديدة": "New Advances",
+  "الاتجاه الشهري": "Monthly Trend",
+  "الأقسام": "Departments",
+  "سجل النشاط": "Activity Log",
+  "سجل كل التعديلات المسجلة على النظام": "Log of every change made to the system",
+  "{n} إضافة": "{n} added",
+  "{n} تعديل": "{n} updated",
+  "{n} حذف": "{n} removed",
+  "لا يوجد تغيير مسجل": "No change recorded",
+  "التفاصيل": "Details",
+  "أُضيف:": "Added:",
+  "اتعدّل:": "Updated:",
+  "اتحذف:": "Removed:",
+  "(المعروض عيّنة فقط من العدد الكامل أعلاه)": "(Only a sample of the full count is shown above)",
+  "كل الأقسام": "All sections",
+  "دوّر باسم المستخدم (إيميل)": "Search by user (email)",
+  "{n} حركة": "{n} entries",
+  "مفيش أي نشاط مسجل لسه.": "No activity recorded yet.",
+  "معروض آخر {n} حركة فقط.": "Showing only the latest {n} entries.",
+  "الموظفون": "Employees",
+  "بيانات المرتبات": "Payroll Data",
   ")، وبعدها ارجع هنا وفعّل الدخول تاني برقم سري جديد.": "), then come back here and activate access again with a new PIN.",
   "{doc} بتاع {name} بينتهي في {date}": "{name}'s {doc} expires on {date}",
   "{n} ": "{n} ",
@@ -3073,7 +3838,6 @@ const TRANSLATIONS = {
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(<AdminAuthGate />);
-
 </script>
 </body>
 </html>
