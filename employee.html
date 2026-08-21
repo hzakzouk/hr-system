@@ -502,19 +502,30 @@ function EmployeePortal({ authUid, onSignOut }) {
 
   // "Manager" = this employee is the head of their own department per orgChart/main. Computed
   // here (not just inside render) because the team-requests subscription below needs it, and
-  // hooks can't come after the early-returns further down.
+  // hooks can't come after the early-returns further down. The CEO also gets the "team
+  // requests" tab, since a department head's OWN request is routed to the CEO to approve.
   const isManager = !!(employee && employee.department && (orgChart.departmentHeads || {})[employee.department] === employee.id);
+  const isCEO = !!(employee && orgChart.ceoEmployeeId === employee.id);
+  const canApproveRequests = isManager || isCEO;
   const [teamRequests, setTeamRequests] = useState([]);
   const [teamRequestsLoaded, setTeamRequestsLoaded] = useState(false);
   useEffect(() => {
-    if (!isManager) { setTeamRequests([]); setTeamRequestsLoaded(true); return; }
-    const q = query(collection(db, "requests"), where("department", "==", employee.department));
+    if (!employee || !canApproveRequests) { setTeamRequests([]); setTeamRequestsLoaded(true); return; }
+    // Filtered by approverId (not department) on purpose: Firestore only allows a security
+    // rule that reads resource.data.X to grant a *list* query when X is also the field the
+    // query filters on - the request docs are already routed 1:1 to the exact person meant
+    // to decide them, via `approverId`, so this is both the correct AND the only query shape
+    // Firestore's rules engine will actually allow to return results (a department-based
+    // filter here would silently return zero, since the rule checks approverId not
+    // department, and Firestore rejects/empties queries it can't statically verify against
+    // the rule rather than filtering result-by-result).
+    const q = query(collection(db, "requests"), where("approverId", "==", employee.id));
     const unsub = onSnapshot(q, (snap) => {
       setTeamRequests(snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)));
       setTeamRequestsLoaded(true);
     }, () => setTeamRequestsLoaded(true));
     return unsub;
-  }, [isManager, employee?.department]);
+  }, [canApproveRequests, employee?.id]);
 
   if (employee === undefined) return <FullScreenLoader text="جاري تحميل بياناتك..." />;
   if (employee === null) return <NotProvisionedScreen />;
@@ -533,7 +544,7 @@ function EmployeePortal({ authUid, onSignOut }) {
     ["payroll", "المرتب", <Wallet size={14} />],
     ["requests", "طلباتي", <ClipboardList size={14} />],
     ["orgchart", "الهيكل التنظيمي", <Network size={14} />],
-    ...(isManager ? [["team", "طلبات الفريق", <Users size={14} />]] : []),
+    ...(canApproveRequests ? [["team", "طلبات الفريق", <Users size={14} />]] : []),
   ];
 
   return (
@@ -626,7 +637,7 @@ function EmployeePortal({ authUid, onSignOut }) {
         {tab === "payroll" && <PayrollSection employee={employee} />}
         {tab === "requests" && <RequestsSection employee={employee} orgChart={orgChart} directory={directory} />}
         {tab === "orgchart" && <OrgChartSection employee={employee} orgChart={orgChart} directory={directory} />}
-        {tab === "team" && isManager && <TeamRequestsSection employee={employee} requests={teamRequests} loaded={teamRequestsLoaded} />}
+        {tab === "team" && canApproveRequests && <TeamRequestsSection employee={employee} requests={teamRequests} loaded={teamRequestsLoaded} />}
       </main>
     </div>
   );
