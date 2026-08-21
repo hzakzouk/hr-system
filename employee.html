@@ -32,11 +32,12 @@ import React, { useState, useEffect, useMemo } from "react";
 import ReactDOM from "react-dom/client";
 import {
   CalendarCheck, Clock, AlertTriangle, LogOut, Loader2, User, Lock, LogIn,
-  Check, UserX,
+  Check, UserX, Wallet, Printer, Network, Crown, HandCoins, Plus, ClipboardList,
+  X, Info, Users,
 } from "lucide-react";
 import { initializeApp } from "firebase/app";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
-import { getFirestore, collection, doc, query, where, onSnapshot } from "firebase/firestore";
+import { getFirestore, collection, doc, query, where, onSnapshot, setDoc, updateDoc } from "firebase/firestore";
 
 /* ================= FIREBASE ================= */
 // Same project as the admin app (hr-system.jsx) — read-only access here is enforced by
@@ -66,9 +67,26 @@ const STATUS_COLORS = {
   late: "bg-amber-50 text-amber-700 border-amber-200",
   leave: "bg-sky-50 text-sky-700 border-sky-200",
 };
+const REQUEST_KINDS = {
+  leave: { label: "إجازة", icon: <CalendarCheck size={14} /> },
+  late: { label: "تأخير / استئذان", icon: <Clock size={14} /> },
+  advance: { label: "سلفة", icon: <HandCoins size={14} /> },
+};
+const REQUEST_STATUS_LABELS = { pending: "قيد المراجعة", approved: "متوافَق عليه", rejected: "مرفوض" };
+const REQUEST_STATUS_COLORS = {
+  pending: "bg-amber-50 text-amber-700 border-amber-200",
+  approved: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  rejected: "bg-rose-50 text-rose-700 border-rose-200",
+};
+const AR_MONTHS = ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"];
+
 function fmtMoney(n) { return (Number(n) || 0).toLocaleString("en-US", { maximumFractionDigits: 0 }); }
 function todayISO() { return new Date().toISOString().slice(0, 10); }
 function yearKey(d) { return d.slice(0, 4); }
+function ymLabel(ym) {
+  const [y, m] = String(ym || "").split("-").map(Number);
+  return AR_MONTHS[m - 1] ? `${AR_MONTHS[m - 1]} ${y}` : ym;
+}
 
 const inputCls = "w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-100";
 function Card({ children, className = "" }) {
@@ -76,6 +94,14 @@ function Card({ children, className = "" }) {
 }
 function EmptyState({ text }) {
   return <div className="rounded-xl border border-dashed border-stone-300 py-10 text-center text-sm text-slate-400">{text}</div>;
+}
+function Field({ label, children }) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block text-sm font-medium text-slate-600">{label}</span>
+      {children}
+    </label>
+  );
 }
 
 /* ================= LOGIN ================= */
@@ -122,12 +148,288 @@ function NotProvisionedScreen({ email }) {
   );
 }
 
+/* ================= PAYROLL ================= */
+function PayrollSection({ employee }) {
+  const [payslips, setPayslips] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [selectedYm, setSelectedYm] = useState(null);
+
+  useEffect(() => {
+    const q = query(collection(db, "payslips"), where("employeeId", "==", employee.id));
+    const unsub = onSnapshot(q, (snap) => {
+      const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => (a.ym < b.ym ? 1 : -1));
+      setPayslips(rows);
+      setLoaded(true);
+      setSelectedYm((cur) => (cur && rows.some((r) => r.ym === cur)) ? cur : (rows[0]?.ym || null));
+    }, () => setLoaded(true));
+    return unsub;
+  }, [employee.id]);
+
+  if (!loaded) return <div className="flex justify-center py-10"><Loader2 className="animate-spin text-teal-700" size={22} /></div>;
+  if (payslips.length === 0) return <EmptyState text="لسه مفيش مرتب متاح — شؤون الأفراد لسه ما فعّلتش عرض المرتب في البوابة." />;
+
+  const row = payslips.find((r) => r.ym === selectedYm) || payslips[0];
+  const additions = (row.overtimePay || 0) + (row.bonus || 0);
+  const deductions = (row.absenceDeduction || 0) + (row.penaltyDeduction || 0) + (row.advanceDeduction || 0) + (row.insuranceDeduction || 0) + (row.taxDeduction || 0);
+
+  return (
+    <div>
+      <div className="no-print mb-4 flex items-center justify-between gap-2">
+        <select className={`${inputCls} w-auto`} value={selectedYm || ""} onChange={(e) => setSelectedYm(e.target.value)}>
+          {payslips.map((r) => <option key={r.ym} value={r.ym}>{ymLabel(r.ym)}</option>)}
+        </select>
+        <button onClick={() => window.print()} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-900">
+          <Printer size={14} /> طباعة
+        </button>
+      </div>
+
+      <Card className="print-area p-6">
+        <div className="mb-4 flex items-start justify-between border-b border-stone-100 pb-4">
+          <div>
+            <h3 className="text-base font-bold text-slate-800">إيصال مرتب — {ymLabel(row.ym)}</h3>
+            <p className="text-xs text-slate-400">{employee.name}{employee.position ? ` · ${employee.position}` : ""}</p>
+          </div>
+          <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${row.paid ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-stone-200 text-slate-400"}`}>{row.paid ? "تم الصرف" : "لسه لم يُصرف"}</span>
+        </div>
+
+        <div className="space-y-2 text-sm">
+          <div className="flex justify-between"><span className="text-slate-500">الراتب الأساسي</span><span className="tabular-nums font-medium text-slate-800">{fmtMoney(row.base)}</span></div>
+          {row.overtimePay > 0 && <div className="flex justify-between"><span className="text-slate-500">وقت إضافي ({row.overtimeHours} س)</span><span className="tabular-nums font-medium text-emerald-700">+{fmtMoney(row.overtimePay)}</span></div>}
+          {row.bonus > 0 && <div className="flex justify-between"><span className="text-slate-500">مكافأة</span><span className="tabular-nums font-medium text-emerald-700">+{fmtMoney(row.bonus)}</span></div>}
+          {row.absenceDeduction > 0 && <div className="flex justify-between"><span className="text-slate-500">خصم غياب ({row.absentDays} يوم)</span><span className="tabular-nums font-medium text-rose-600">-{fmtMoney(row.absenceDeduction)}</span></div>}
+          {row.penaltyDeduction > 0 && <div className="flex justify-between"><span className="text-slate-500">خصم جزاءات</span><span className="tabular-nums font-medium text-rose-600">-{fmtMoney(row.penaltyDeduction)}</span></div>}
+          {row.advanceDeduction > 0 && <div className="flex justify-between"><span className="text-slate-500">قسط سلفة</span><span className="tabular-nums font-medium text-rose-600">-{fmtMoney(row.advanceDeduction)}</span></div>}
+          <div className="flex justify-between"><span className="text-slate-500">التأمينات</span><span className="tabular-nums font-medium text-rose-600">-{fmtMoney(row.insuranceDeduction)}</span></div>
+          <div className="flex justify-between"><span className="text-slate-500">الضريبة</span><span className="tabular-nums font-medium text-rose-600">-{fmtMoney(row.taxDeduction)}</span></div>
+        </div>
+
+        <div className="mt-4 flex items-center justify-between border-t border-stone-200 pt-4">
+          <span className="text-sm font-bold text-slate-700">صافي المستحق</span>
+          <span className="text-xl font-bold tabular-nums text-teal-800">{fmtMoney(row.net)} <span className="text-sm font-normal text-slate-400">ج.م</span></span>
+        </div>
+      </Card>
+      <p className="no-print mt-3 flex items-start gap-1.5 rounded-lg bg-stone-50 px-3 py-2 text-xs text-slate-400"><Info size={13} className="mt-0.5 shrink-0" />الأرقام دي بتُحدَّث لما شؤون الأفراد تراجع وتزامن مرتب الشهر — مش لحظيًا.</p>
+    </div>
+  );
+}
+
+/* ================= ORG CHART ================= */
+function OrgChartSection({ employee, orgChart, directory }) {
+  const ceo = directory.find((d) => d.id === orgChart.ceoEmployeeId);
+  const dept = employee.department || "";
+  const headId = (orgChart.departmentHeads || {})[dept];
+  const head = directory.find((d) => d.id === headId);
+  const teammates = directory.filter((d) => (d.department || "") === dept && d.id !== headId);
+
+  function Box({ name, sub, highlight, icon }) {
+    return (
+      <div className={`inline-flex flex-col items-center gap-1 rounded-xl border px-4 py-3 text-center ${highlight ? "border-teal-300 bg-teal-50" : "border-stone-200 bg-white"}`}>
+        <div className="flex items-center gap-1.5 text-sm font-bold text-slate-800">{icon}{name}</div>
+        {sub && <div className="text-[11px] text-slate-400">{sub}</div>}
+      </div>
+    );
+  }
+
+  if (!dept) return <EmptyState text="مفيش قسم محدد لملفك — كلّم شؤون الأفراد." />;
+
+  return (
+    <div className="flex flex-col items-center gap-3 py-2">
+      {ceo && <Box name={ceo.name} sub="الرئيس التنفيذي" icon={<Crown size={14} className="text-amber-500" />} />}
+      {ceo && <div className="h-6 w-px bg-stone-300" />}
+      <Box name={head ? head.name : dept} sub={head ? `رئيس قسم ${dept}` : "لسه محدّدش رئيس القسم"} highlight={head?.id === employee.id} />
+      <div className="h-6 w-px bg-stone-300" />
+      <div className="flex flex-wrap justify-center gap-2.5">
+        {teammates.length === 0 ? (
+          <p className="text-xs text-slate-400">مفيش موظفين تانيين مسجلين في قسم {dept}.</p>
+        ) : teammates.map((t) => <Box key={t.id} name={t.name} sub={t.position} highlight={t.id === employee.id} />)}
+      </div>
+    </div>
+  );
+}
+
+/* ================= REQUESTS ================= */
+function NewRequestForm({ onSubmit, busy, msg }) {
+  const [kind, setKind] = useState("leave");
+  const [form, setForm] = useState({ dateFrom: "", dateTo: "", date: "", minutes: "", amount: "", reason: "" });
+
+  function set(patch) { setForm((f) => ({ ...f, ...patch })); }
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    if (kind === "leave") {
+      if (!form.dateFrom || !form.dateTo || form.dateFrom > form.dateTo) return;
+      onSubmit({ kind, dateFrom: form.dateFrom, dateTo: form.dateTo, reason: form.reason });
+    } else if (kind === "late") {
+      if (!form.date || !(Number(form.minutes) > 0)) return;
+      onSubmit({ kind, date: form.date, minutes: Number(form.minutes), reason: form.reason });
+    } else {
+      if (!(Number(form.amount) > 0)) return;
+      onSubmit({ kind, amount: Number(form.amount), reason: form.reason });
+    }
+    set({ dateFrom: "", dateTo: "", date: "", minutes: "", amount: "", reason: "" });
+  }
+
+  return (
+    <Card className="mb-5 p-5">
+      <h3 className="mb-3 text-sm font-bold text-slate-800">طلب جديد</h3>
+      <div className="mb-4 flex gap-2">
+        {Object.entries(REQUEST_KINDS).map(([k, v]) => (
+          <button key={k} type="button" onClick={() => setKind(k)} className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold ${kind === k ? "bg-teal-800 text-white" : "bg-stone-100 text-slate-500 hover:bg-stone-200"}`}>{v.icon}{v.label}</button>
+        ))}
+      </div>
+      <form onSubmit={handleSubmit} className="space-y-3">
+        {kind === "leave" && (
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="من تاريخ"><input required type="date" className={inputCls} value={form.dateFrom} onChange={(e) => set({ dateFrom: e.target.value })} /></Field>
+            <Field label="لحد تاريخ"><input required type="date" className={inputCls} value={form.dateTo} onChange={(e) => set({ dateTo: e.target.value })} /></Field>
+          </div>
+        )}
+        {kind === "late" && (
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="التاريخ"><input required type="date" className={inputCls} value={form.date} onChange={(e) => set({ date: e.target.value })} /></Field>
+            <Field label="عدد الدقايق"><input required type="number" min="1" className={inputCls} value={form.minutes} onChange={(e) => set({ minutes: e.target.value })} placeholder="مثلًا 30" /></Field>
+          </div>
+        )}
+        {kind === "advance" && (
+          <Field label="المبلغ المطلوب (ج.م)"><input required type="number" min="1" className={inputCls} value={form.amount} onChange={(e) => set({ amount: e.target.value })} placeholder="مثلًا 1000" /></Field>
+        )}
+        <Field label="السبب (اختياري)">
+          <textarea rows={2} className={inputCls} value={form.reason} onChange={(e) => set({ reason: e.target.value })} placeholder="اكتب أي تفاصيل تساعد في مراجعة الطلب" />
+        </Field>
+        {msg && <p className={`text-xs font-medium ${msg.tone === "rose" ? "text-rose-600" : "text-teal-700"}`}>{msg.text}</p>}
+        <button disabled={busy} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900 disabled:opacity-50">
+          {busy ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} إرسال الطلب
+        </button>
+      </form>
+    </Card>
+  );
+}
+
+function RequestCard({ req, showEmployee, onDecide, decideBusy }) {
+  return (
+    <Card className="p-3.5">
+      <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 text-sm font-semibold text-slate-700">
+          {REQUEST_KINDS[req.kind]?.icon}{REQUEST_KINDS[req.kind]?.label || req.kind}
+          {showEmployee && <span className="font-normal text-slate-400"> — {req.employeeName}</span>}
+        </div>
+        <span className={`rounded-full border px-2.5 py-0.5 text-xs font-semibold ${REQUEST_STATUS_COLORS[req.status] || ""}`}>{REQUEST_STATUS_LABELS[req.status] || req.status}</span>
+      </div>
+      <div className="text-xs text-slate-500">
+        {req.kind === "leave" && <span>من {req.dateFrom} لحد {req.dateTo}</span>}
+        {req.kind === "late" && <span>يوم {req.date} — {req.minutes} دقيقة</span>}
+        {req.kind === "advance" && <span>{fmtMoney(req.amount)} ج.م</span>}
+      </div>
+      {req.reason && <p className="mt-1 text-xs text-slate-500">{req.reason}</p>}
+      {req.status !== "pending" && req.decidedByName && (
+        <p className="mt-1.5 text-[11px] text-slate-400">تم البت بواسطة {req.decidedByName}{req.decidedAt ? ` — ${req.decidedAt.slice(0, 10)}` : ""}</p>
+      )}
+      {onDecide && req.status === "pending" && (
+        <div className="mt-3 flex gap-2">
+          <button disabled={decideBusy} onClick={() => onDecide(req.id, "approved")} className="flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"><Check size={13} /> موافقة</button>
+          <button disabled={decideBusy} onClick={() => onDecide(req.id, "rejected")} className="flex items-center gap-1 rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-50"><X size={13} /> رفض</button>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function RequestsSection({ employee }) {
+  const [requests, setRequests] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  useEffect(() => {
+    const q = query(collection(db, "requests"), where("employeeId", "==", employee.id));
+    const unsub = onSnapshot(q, (snap) => {
+      setRequests(snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)));
+      setLoaded(true);
+    }, () => setLoaded(true));
+    return unsub;
+  }, [employee.id]);
+
+  async function handleSubmit(payload) {
+    setMsg(null); setBusy(true);
+    try {
+      const ref = doc(collection(db, "requests"));
+      await setDoc(ref, {
+        ...payload,
+        employeeId: employee.id,
+        employeeName: employee.name,
+        department: employee.department || "",
+        status: "pending",
+        createdAt: new Date().toISOString(),
+      });
+      setMsg({ tone: "teal", text: "تم إرسال الطلب — هيوصل لرئيس قسمك للمراجعة." });
+    } catch (err) {
+      setMsg({ tone: "rose", text: "تعذّر إرسال الطلب. جرب تاني." });
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div>
+      <NewRequestForm onSubmit={handleSubmit} busy={busy} msg={msg} />
+      <h3 className="mb-2 text-sm font-bold text-slate-700">طلباتي السابقة</h3>
+      {!loaded ? <div className="flex justify-center py-6"><Loader2 className="animate-spin text-teal-700" size={20} /></div>
+        : requests.length === 0 ? <EmptyState text="لسه معملتش أي طلب." />
+        : <div className="space-y-2">{requests.map((r) => <RequestCard key={r.id} req={r} />)}</div>}
+    </div>
+  );
+}
+
+function TeamRequestsSection({ employee }) {
+  const [requests, setRequests] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [decideBusy, setDecideBusy] = useState(false);
+
+  useEffect(() => {
+    const q = query(collection(db, "requests"), where("department", "==", employee.department || ""));
+    const unsub = onSnapshot(q, (snap) => {
+      setRequests(snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)));
+      setLoaded(true);
+    }, () => setLoaded(true));
+    return unsub;
+  }, [employee.department]);
+
+  async function decide(reqId, status) {
+    setDecideBusy(true);
+    try {
+      await updateDoc(doc(db, "requests", reqId), { status, decidedByName: employee.name, decidedAt: new Date().toISOString() });
+    } catch (err) {
+      alert("تعذّر تسجيل القرار — راجع اتصالك بالإنترنت وجرب تاني.");
+    } finally { setDecideBusy(false); }
+  }
+
+  const pending = requests.filter((r) => r.status === "pending");
+  const decided = requests.filter((r) => r.status !== "pending");
+
+  if (!loaded) return <div className="flex justify-center py-10"><Loader2 className="animate-spin text-teal-700" size={22} /></div>;
+
+  return (
+    <div>
+      <h3 className="mb-2 text-sm font-bold text-slate-700">طلبات قيد المراجعة ({pending.length})</h3>
+      {pending.length === 0 ? <EmptyState text="مفيش طلبات محتاجة مراجعة دلوقتي." />
+        : <div className="mb-6 space-y-2">{pending.map((r) => <RequestCard key={r.id} req={r} showEmployee onDecide={decide} decideBusy={decideBusy} />)}</div>}
+
+      {decided.length > 0 && (
+        <>
+          <h3 className="mb-2 text-sm font-bold text-slate-700">طلبات سابقة</h3>
+          <div className="space-y-2">{decided.map((r) => <RequestCard key={r.id} req={r} showEmployee />)}</div>
+        </>
+      )}
+    </div>
+  );
+}
+
 /* ================= PORTAL ================= */
 function EmployeePortal({ authUid, onSignOut }) {
   const [employee, setEmployee] = useState(undefined); // undefined = loading, null = not found
   const [attendanceRecords, setAttendanceRecords] = useState([]);
   const [penalties, setPenalties] = useState([]);
   const [settings, setSettings] = useState({ leaveDefaultDays: 21 });
+  const [orgChart, setOrgChart] = useState({ ceoEmployeeId: null, departmentHeads: {} });
+  const [directory, setDirectory] = useState([]);
   const [tab, setTab] = useState("leave");
 
   useEffect(() => {
@@ -139,6 +441,16 @@ function EmployeePortal({ authUid, onSignOut }) {
 
   useEffect(() => {
     const unsub = onSnapshot(doc(db, "settings", "main"), (snap) => { if (snap.exists()) setSettings((s) => ({ ...s, ...snap.data() })); });
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "orgChart", "main"), (snap) => { if (snap.exists()) setOrgChart(snap.data()); });
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "publicDirectory"), (snap) => setDirectory(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
     return unsub;
   }, []);
 
@@ -159,10 +471,22 @@ function EmployeePortal({ authUid, onSignOut }) {
   const entitlement = employee.leaveEntitlement ?? settings.leaveDefaultDays ?? 21;
   const remaining = entitlement - takenLeave;
   const penaltiesTotal = penalties.filter((p) => p.actionType === "خصم مالي").reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  const isManager = employee.department && (orgChart.departmentHeads || {})[employee.department] === employee.id;
+
+  const TABS = [
+    ["leave", "الإجازات", <CalendarCheck size={14} />],
+    ["attendance", "الحضور", <Clock size={14} />],
+    ["penalties", "الجزاءات", <AlertTriangle size={14} />],
+    ["payroll", "المرتب", <Wallet size={14} />],
+    ["requests", "طلباتي", <ClipboardList size={14} />],
+    ["orgchart", "الهيكل التنظيمي", <Network size={14} />],
+    ...(isManager ? [["team", "طلبات الفريق", <Users size={14} />]] : []),
+  ];
 
   return (
-    <div dir="rtl" className="min-h-screen w-full bg-stone-50 font-sans text-slate-800">
-      <header className="border-b border-stone-200 bg-white">
+    <div dir="rtl" className="min-h-screen w-full bg-stone-50 font-sans text-slate-800 print:bg-white">
+      <style>{`@media print { .no-print { display: none !important; } .print-area { display: block !important; } }`}</style>
+      <header className="no-print border-b border-stone-200 bg-white">
         <div className="mx-auto flex max-w-3xl items-center justify-between px-5 py-4">
           <div>
             <div className="text-sm font-bold text-slate-800">{employee.name}</div>
@@ -175,8 +499,8 @@ function EmployeePortal({ authUid, onSignOut }) {
       </header>
 
       <main className="mx-auto max-w-3xl p-5">
-        <div className="mb-4 flex gap-2 border-b border-stone-200 pb-3">
-          {[["leave", "الإجازات", <CalendarCheck size={14} />], ["attendance", "الحضور", <Clock size={14} />], ["penalties", "الجزاءات", <AlertTriangle size={14} />]].map(([k, l, icon]) => (
+        <div className="no-print mb-4 flex flex-wrap gap-2 border-b border-stone-200 pb-3">
+          {TABS.map(([k, l, icon]) => (
             <button key={k} onClick={() => setTab(k)} className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium ${tab === k ? "bg-teal-800 text-white" : "text-slate-500 hover:bg-stone-100"}`}>{icon}{l}</button>
           ))}
         </div>
@@ -188,7 +512,7 @@ function EmployeePortal({ authUid, onSignOut }) {
               <div className="rounded-xl bg-sky-50 px-3 py-2.5 text-center"><div className="text-lg font-bold tabular-nums text-sky-700">{takenLeave}</div><div className="text-[11px] text-sky-600">مأخوذ هذا العام</div></div>
               <div className={`rounded-xl px-3 py-2.5 text-center ${remaining <= 2 ? "bg-rose-50" : "bg-emerald-50"}`}><div className={`text-lg font-bold tabular-nums ${remaining <= 2 ? "text-rose-700" : "text-emerald-700"}`}>{remaining}</div><div className={`text-[11px] ${remaining <= 2 ? "text-rose-600" : "text-emerald-600"}`}>الرصيد المتبقي</div></div>
             </div>
-            <p className="text-xs text-slate-400">الأيام المأخوذة بتتحسب تلقائي من أيام «إجازة» المسجلة في سجل حضورك خلال السنة الحالية.</p>
+            <p className="text-xs text-slate-400">الأيام المأخوذة بتتحسب تلقائي من أيام «إجازة» المسجلة في سجل حضورك خلال السنة الحالية. عايز تطلب إجازة جديدة؟ روح تاب «طلباتي».</p>
           </Card>
         )}
 
@@ -242,6 +566,11 @@ function EmployeePortal({ authUid, onSignOut }) {
             )}
           </div>
         )}
+
+        {tab === "payroll" && <PayrollSection employee={employee} />}
+        {tab === "requests" && <RequestsSection employee={employee} />}
+        {tab === "orgchart" && <OrgChartSection employee={employee} orgChart={orgChart} directory={directory} />}
+        {tab === "team" && isManager && <TeamRequestsSection employee={employee} />}
       </main>
     </div>
   );
