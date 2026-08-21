@@ -32,7 +32,8 @@ import {
   Plus, X, Search, Pencil, Trash2, Check, Clock, UserX,
   ChevronLeft, ChevronRight, FileText, Save, AlertCircle, TrendingDown,
   Loader2, Landmark, HandCoins, LogOut, ClipboardList, Star, Settings as SettingsIcon,
-  Printer, Cake, ShieldAlert, Bell, Info, Upload, ArrowRight, ArrowLeft, FileSpreadsheet
+  Printer, Cake, ShieldAlert, Bell, Info, Upload, ArrowRight, ArrowLeft, FileSpreadsheet,
+  Network, Crown, ChevronDown
 } from "lucide-react";
 import * as XLSX from "xlsx";
 
@@ -65,6 +66,14 @@ const DEFAULT_SETTINGS = {
     { upTo: null, rate: 25 },
   ],
   publicHolidays: [],
+};
+
+// The org chart is derived from each employee's existing "department" field, plus two
+// small choices the user makes: who is the CEO, and who heads each department. No new
+// per-employee field is required, so the chart is ready as soon as departments are filled in.
+const DEFAULT_ORG_CHART = {
+  ceoEmployeeId: null,
+  departmentHeads: {}, // { [departmentName]: employeeId }
 };
 
 function uid(p) { return `${p}_${Date.now()}_${Math.floor(Math.random() * 100000)}`; }
@@ -259,6 +268,8 @@ function HRSystem() {
   const [documents, setDocuments] = useState([]);
   const [reviews, setReviews] = useState([]);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [orgChart, setOrgChart] = useState(DEFAULT_ORG_CHART);
+  const [orgChartPrintOpen, setOrgChartPrintOpen] = useState(false);
 
   useEffect(() => {
     try {
@@ -270,6 +281,7 @@ function HRSystem() {
       const docs = localStorage.getItem("hr_documents");
       const rev = localStorage.getItem("hr_reviews");
       const sett = localStorage.getItem("hr_settings");
+      const org = localStorage.getItem("hr_orgchart");
       if (emp) setEmployees(JSON.parse(emp));
       if (att) setAttendance(JSON.parse(att));
       if (pen) setPenalties(JSON.parse(pen));
@@ -278,6 +290,7 @@ function HRSystem() {
       if (docs) setDocuments(JSON.parse(docs));
       if (rev) setReviews(JSON.parse(rev));
       if (sett) setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(sett) });
+      if (org) setOrgChart({ ...DEFAULT_ORG_CHART, ...JSON.parse(org) });
     } catch (e) { console.error(e); }
     finally { setLoading(false); }
   }, []);
@@ -298,6 +311,7 @@ function HRSystem() {
     documents: (n) => { setDocuments(n); persist("hr_documents", n); },
     reviews: (n) => { setReviews(n); persist("hr_reviews", n); },
     settings: (n) => { setSettings(n); persist("hr_settings", n); },
+    orgChart: (n) => { setOrgChart(n); persist("hr_orgchart", n); },
   };
 
   const activeEmployees = useMemo(() => employees.filter((e) => e.status === "active" || !e.status), [employees]);
@@ -331,6 +345,7 @@ function HRSystem() {
           <nav className="flex flex-col gap-1">
             <NavItem icon={<LayoutDashboard size={17} />} label="لوحة المتابعة" active={tab === "dashboard"} onClick={() => setTab("dashboard")} />
             <NavItem icon={<Users size={17} />} label="الموظفون والعقود" active={tab === "employees"} onClick={() => setTab("employees")} />
+            <NavItem icon={<Network size={17} />} label="الهيكل التنظيمي" active={tab === "orgchart"} onClick={() => setTab("orgchart")} />
             <NavItem icon={<CalendarCheck size={17} />} label="الحضور والانصراف" active={tab === "attendance"} onClick={() => setTab("attendance")} />
             <NavItem icon={<Wallet size={17} />} label="المرتبات" active={tab === "payroll"} onClick={() => setTab("payroll")} />
             <NavItem icon={<AlertTriangle size={17} />} label="الجزاءات والإنذارات" active={tab === "penalties"} onClick={() => setTab("penalties")} />
@@ -354,6 +369,7 @@ function HRSystem() {
             reviews={reviews} setReviews={upd.reviews}
             payrollMeta={payrollMeta} setPayrollMeta={upd.payrollMeta}
           />}
+          {tab === "orgchart" && <OrgChartTab employees={activeEmployees} orgChart={orgChart} setOrgChart={upd.orgChart} onPrint={() => setOrgChartPrintOpen(true)} />}
           {tab === "attendance" && <AttendanceTab employees={activeEmployees} attendance={attendance} setAttendance={upd.attendance} settings={settings} />}
           {tab === "payroll" && <PayrollTab employees={activeEmployees} attendance={attendance} penalties={penalties} payrollMeta={payrollMeta} setPayrollMeta={upd.payrollMeta} advances={advances} settings={settings} />}
           {tab === "penalties" && <PenaltiesTab employees={activeEmployees} penalties={penalties} setPenalties={upd.penalties} />}
@@ -371,6 +387,14 @@ function HRSystem() {
           documents={documents} setDocuments={upd.documents}
           reviews={reviews} setReviews={upd.reviews}
           settings={settings}
+        />
+      )}
+
+      {orgChartPrintOpen && (
+        <OrgChartPrintView
+          employees={activeEmployees}
+          orgChart={orgChart}
+          onClose={() => setOrgChartPrintOpen(false)}
         />
       )}
     </div>
@@ -607,8 +631,48 @@ function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, s
   );
 }
 
+// Arabic names typed by different people almost never match byte-for-byte even when
+// they're clearly "the same name": hamza on/off the alef (أحمد vs احمد), alef maksura vs
+// ya (يحيى vs يحيي), ta marbuta vs ha (سارة vs ساره), invisible tashkeel/tatweel/zero-width
+// characters pasted in from Word or a fingerprint-device export, extra spaces, etc.
+// A plain trim+lowercase (the old implementation) treats every one of those as a *different*
+// person, which is why the "دمج المكررات" button was staying hidden even with obvious
+// duplicates in the table. This normalizer folds all of that down to one comparable key.
 function normalizeNameKey(name) {
-  return (name || "").trim().replace(/\s+/g, " ").toLowerCase();
+  return String(name || "")
+    .normalize("NFKC")
+    // strip tashkeel / harakat / quranic annotation marks (U+064B-U+065F, U+0670)
+    .replace(/[\u064B-\u065F\u0670]/g, "")
+    // strip tatweel / kashida (U+0640)
+    .replace(/\u0640/g, "")
+    // strip zero-width & bidi control characters: ZWSP/ZWNJ/ZWJ/LRM/RLM (U+200B-U+200F) + BOM (U+FEFF)
+    .replace(/[\u200B-\u200F\uFEFF]/g, "")
+    // unify alef variants (U+0622 U+0623 U+0625 U+0671) -> alef (U+0627)
+    .replace(/[\u0622\u0623\u0625\u0671]/g, "\u0627")
+    // unify alef maksura (U+0649) -> ya (U+064A)
+    .replace(/\u0649/g, "\u064A")
+    // unify ta marbuta (U+0629) -> ha (U+0647) — common alt-spelling of the same name
+    .replace(/\u0629/g, "\u0647")
+    // drop standalone hamza (U+0621) — kept on ؤ/ئ since those change pronunciation
+    .replace(/\u0621/g, "")
+    // collapse all whitespace (incl. NBSP) and trim
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+const ARABIC_INDIC_DIGITS = "٠١٢٣٤٥٦٧٨٩";
+// Employee codes suffer the same kind of cosmetic mismatch: Arabic-Indic digits from a
+// fingerprint device export ("١٠٤٢") vs Western digits typed manually ("1042"), stray
+// spaces/dashes, or inconsistent leading zeros ("007" vs "7"). Normalize before comparing.
+function normalizeCode(code) {
+  if (code === null || code === undefined) return "";
+  let s = String(code).trim();
+  if (!s) return "";
+  s = s.replace(/[٠-٩]/g, (d) => String(ARABIC_INDIC_DIGITS.indexOf(d)));
+  s = s.replace(/[^a-zA-Z0-9؀-ۿ]/g, "").toLowerCase();
+  if (/^\d+$/.test(s)) s = String(parseInt(s, 10));
+  return s;
 }
 
 function findDuplicateGroups(employees) {
@@ -623,7 +687,7 @@ function findDuplicateGroups(employees) {
   employees.forEach((e) => {
     const nk = normalizeNameKey(e.name);
     if (nk) { if (byName[nk]) union(byName[nk], e.id); else byName[nk] = e.id; }
-    const ck = e.employeeCode ? String(e.employeeCode).trim().toLowerCase() : "";
+    const ck = normalizeCode(e.employeeCode);
     if (ck) { if (byCode[ck]) union(byCode[ck], e.id); else byCode[ck] = e.id; }
   });
 
@@ -1780,9 +1844,228 @@ function SettingsTab({ settings, setSettings }) {
 }
 
 
+/* ================= ORG CHART ================= */
+
+// Builds a 3-level tree (CEO -> department head -> rest of the department) purely from
+// each employee's existing "department" field plus the two choices made in OrgChartTab
+// (ceoEmployeeId, departmentHeads). No per-employee "manager" field needed.
+function buildOrgTree(employees, orgChart) {
+  const ceo = employees.find((e) => e.id === orgChart.ceoEmployeeId) || null;
+  const rest = employees.filter((e) => !ceo || e.id !== ceo.id);
+
+  const byDept = {};
+  rest.forEach((e) => {
+    const dept = (e.department || "").trim() || "بدون قسم";
+    (byDept[dept] = byDept[dept] || []).push(e);
+  });
+
+  const departmentHeads = orgChart.departmentHeads || {};
+  const departments = Object.keys(byDept)
+    .sort((a, b) => a.localeCompare(b, "ar"))
+    .map((dept) => {
+      const members = byDept[dept];
+      const headId = departmentHeads[dept];
+      const head = members.find((e) => e.id === headId) || null;
+      const others = members.filter((e) => !head || e.id !== head.id);
+      return { dept, head, others, total: members.length };
+    });
+
+  return { ceo, departments };
+}
+
+function PersonBox({ person, role, tone = "teal", placeholder, subtitle, crown }) {
+  const toneCls = {
+    teal: "border-teal-700 bg-teal-50",
+    amber: "border-amber-500 bg-amber-50",
+  }[tone];
+  const placeholderBorder = tone === "teal" ? "border-teal-300" : "border-amber-300";
+
+  if (!person) {
+    return (
+      <div className={`w-56 rounded-xl border-2 border-dashed ${placeholderBorder} bg-stone-50 p-3 text-center`}>
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{role}</div>
+        <div className="mt-1.5 text-xs text-slate-400">{placeholder}</div>
+      </div>
+    );
+  }
+  return (
+    <div className={`w-56 rounded-xl border-2 p-3 text-center shadow-sm ${toneCls}`}>
+      <div className="flex items-center justify-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+        {crown && <Crown size={12} className="text-amber-600" />}{role}
+      </div>
+      <div className="mt-1 text-sm font-bold text-slate-800">{person.name}</div>
+      <div className="text-xs text-slate-500">{person.position || "—"}</div>
+      {subtitle && <div className="mt-1 text-[11px] text-slate-400">{subtitle}</div>}
+    </div>
+  );
+}
+
+// Shared between the interactive tab and the print view — `forceExpanded` skips the
+// show/hide toggle and just renders every department's members (used for printing).
+function OrgChartTree({ tree, expanded, onToggle, forceExpanded }) {
+  const { ceo, departments } = tree;
+
+  return (
+    <div className="flex min-w-max flex-col items-center px-4">
+      <PersonBox person={ceo} role="الرئيس التنفيذي" tone="teal" placeholder="لم يتم تحديد الرئيس التنفيذي" crown />
+
+      {departments.length > 0 && (
+        <>
+          <div className="h-6 w-px bg-stone-300" />
+          <div className="flex items-start justify-center border-t border-stone-300 pt-6">
+            {departments.map((d) => {
+              const isOpen = forceExpanded || !!expanded[d.dept];
+              return (
+                <div key={d.dept} className="relative flex flex-col items-center px-4">
+                  <div className="absolute -top-6 h-6 w-px bg-stone-300" />
+                  <PersonBox
+                    person={d.head}
+                    role={d.dept}
+                    tone="amber"
+                    placeholder="لم يتم تحديد رئيس الإدارة"
+                    subtitle={`${d.total} ${d.total === 1 ? "موظف" : "موظفين"}`}
+                  />
+                  {d.others.length > 0 && (
+                    <>
+                      {!forceExpanded && (
+                        <button
+                          onClick={() => onToggle(d.dept)}
+                          className="mt-2 flex items-center gap-1 text-xs font-medium text-teal-700 hover:underline"
+                        >
+                          <ChevronDown size={13} className={`transition-transform ${isOpen ? "rotate-180" : ""}`} />
+                          {isOpen ? "إخفاء الموظفين" : `عرض الموظفين (${d.others.length})`}
+                        </button>
+                      )}
+                      {isOpen && (
+                        <div className="mt-2 flex flex-col items-center">
+                          <div className="h-4 w-px bg-stone-300" />
+                          <div className="flex w-56 flex-col gap-1.5 rounded-xl border border-dashed border-stone-300 bg-stone-50/70 p-2.5">
+                            {d.others.map((e) => (
+                              <div key={e.id} className="rounded-lg border border-stone-200 bg-white px-2.5 py-1.5 text-right">
+                                <div className="text-xs font-semibold text-slate-700">{e.name}</div>
+                                <div className="text-[11px] text-slate-400">{e.position || "—"}</div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function OrgChartTab({ employees, orgChart, setOrgChart, onPrint }) {
+  const [expanded, setExpanded] = useState({});
+  function toggle(dept) { setExpanded((s) => ({ ...s, [dept]: !s[dept] })); }
+
+  const usedDepartments = useMemo(() => {
+    const set = new Set();
+    employees.forEach((e) => { const d = (e.department || "").trim(); if (d) set.add(d); });
+    return Array.from(set).sort((a, b) => a.localeCompare(b, "ar"));
+  }, [employees]);
+
+  const tree = useMemo(() => buildOrgTree(employees, orgChart), [employees, orgChart]);
+  const unassignedCount = employees.filter((e) => !(e.department || "").trim()).length;
+
+  function setCeo(id) { setOrgChart({ ...orgChart, ceoEmployeeId: id || null }); }
+  function setDeptHead(dept, id) {
+    const heads = { ...(orgChart.departmentHeads || {}) };
+    if (id) heads[dept] = id; else delete heads[dept];
+    setOrgChart({ ...orgChart, departmentHeads: heads });
+  }
+
+  return (
+    <div>
+      <SectionTitle
+        eyebrow={`${employees.length} موظف نشط`}
+        title="الهيكل التنظيمي"
+        action={
+          <button onClick={onPrint} className="flex items-center gap-1.5 rounded-lg border border-teal-700 px-3.5 py-2 text-sm font-semibold text-teal-800 hover:bg-teal-50">
+            <Printer size={16} /> طباعة الهيكل
+          </button>
+        }
+      />
+
+      <Card className="mb-6 p-5">
+        <div className="mb-4 flex items-center gap-2"><Crown size={16} className="text-amber-600" /><h3 className="font-bold text-slate-800">تحديد المناصب القيادية</h3></div>
+
+        <div className="max-w-sm">
+          <Field label="الرئيس التنفيذي / صاحب الشركة">
+            <select className={inputCls} value={orgChart.ceoEmployeeId || ""} onChange={(e) => setCeo(e.target.value)}>
+              <option value="">— لم يتم التحديد —</option>
+              {employees.map((e) => <option key={e.id} value={e.id}>{e.name}{e.position ? ` — ${e.position}` : ""}</option>)}
+            </select>
+          </Field>
+        </div>
+
+        {usedDepartments.length > 0 ? (
+          <div className="mt-5 border-t border-stone-100 pt-4">
+            <div className="mb-2.5 text-sm font-medium text-slate-600">رئيس/مديرة كل إدارة</div>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+              {usedDepartments.map((dept) => {
+                const candidates = employees.filter((e) => (e.department || "").trim() === dept && e.id !== orgChart.ceoEmployeeId);
+                return (
+                  <label key={dept} className="block">
+                    <span className="mb-1 block text-xs font-medium text-slate-500">{dept}</span>
+                    <select className={`${inputCls} text-xs`} value={(orgChart.departmentHeads || {})[dept] || ""} onChange={(e) => setDeptHead(dept, e.target.value)}>
+                      <option value="">— بدون تحديد —</option>
+                      {candidates.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+                    </select>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <p className="mt-4 text-xs text-slate-400">مفيش أقسام متسجلة لسه — اكتب قسم كل موظف من تاب "الموظفون والعقود" الأول عشان الهيكل يتبني.</p>
+        )}
+        {unassignedCount > 0 && (
+          <p className="mt-3 text-xs text-amber-600">{unassignedCount} موظف من غير قسم محدد — هيظهروا تحت مجموعة "بدون قسم" في الهيكل.</p>
+        )}
+      </Card>
+
+      {employees.length === 0 ? <EmptyState text="لسه معملتش أي موظف." /> : (
+        <Card className="overflow-x-auto p-8">
+          <OrgChartTree tree={tree} expanded={expanded} onToggle={toggle} />
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function OrgChartPrintView({ employees, orgChart, onClose }) {
+  const tree = useMemo(() => buildOrgTree(employees, orgChart), [employees, orgChart]);
+  return (
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-white">
+      <div className="no-print sticky top-0 z-10 flex items-center justify-between border-b border-stone-200 bg-white px-6 py-4 shadow-sm">
+        <h3 className="text-lg font-bold text-slate-800">معاينة طباعة الهيكل التنظيمي</h3>
+        <div className="flex items-center gap-2">
+          <button onClick={() => window.print()} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Printer size={15} /> طباعة</button>
+          <button onClick={onClose} className="rounded-full p-1.5 text-slate-400 hover:bg-stone-100"><X size={18} /></button>
+        </div>
+      </div>
+      <div className="p-8">
+        <div className="mb-8 text-center">
+          <div className="text-lg font-bold text-slate-800">الهيكل التنظيمي</div>
+          <div className="text-xs text-slate-400">{new Date().toLocaleDateString("ar-EG", { year: "numeric", month: "long", day: "numeric" })}</div>
+        </div>
+        {employees.length === 0 ? <EmptyState text="لسه معملتش أي موظف." /> : (
+          <OrgChartTree tree={tree} expanded={{}} onToggle={() => {}} forceExpanded />
+        )}
+      </div>
+    </div>
+  );
+}
+
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(<HRSystem />);
-
 </script>
 </body>
 </html>
