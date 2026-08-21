@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>بوابة الموظف | شؤون الأفراد</title>
+<title>شؤون الأفراد | إدارة الموظفين والمرتبات</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script type="importmap">
 {
@@ -72,9 +72,13 @@ const REQUEST_KINDS = {
   late: { label: "تأخير / استئذان", icon: <Clock size={14} /> },
   advance: { label: "سلفة", icon: <HandCoins size={14} /> },
 };
-const REQUEST_STATUS_LABELS = { pending: "قيد المراجعة", approved: "متوافَق عليه", rejected: "مرفوض" };
+// "pending_ceo" is advance-only: a department head's "approve" on a teammate's advance
+// request never finalizes it - it reroutes the request to the CEO (see planAdvanceDecision
+// below) for a mandatory final sign-off, since advances directly cut into payroll.
+const REQUEST_STATUS_LABELS = { pending: "قيد المراجعة", pending_ceo: "بانتظار اعتماد الرئيس التنفيذي", approved: "متوافَق عليه", rejected: "مرفوض" };
 const REQUEST_STATUS_COLORS = {
   pending: "bg-amber-50 text-amber-700 border-amber-200",
+  pending_ceo: "bg-sky-50 text-sky-700 border-sky-200",
   approved: "bg-emerald-50 text-emerald-700 border-emerald-200",
   rejected: "bg-rose-50 text-rose-700 border-rose-200",
 };
@@ -110,6 +114,24 @@ function resolveApprover(employee, orgChart) {
   const amIHead = headId === employee.id;
   const approverId = amIHead ? orgChart.ceoEmployeeId : headId;
   return approverId && approverId !== employee.id ? approverId : null;
+}
+// Pure decision-planning for TeamRequestsSection's decide(id, status) - kept separate from
+// the actual Firestore calls so the branching (in particular the advance-escalates-to-CEO
+// rule) can be unit tested without a live database. `employee` is whoever is currently
+// deciding (i.e. req's current approver); `orgChart` is the live orgChart/main doc.
+//   - Rejecting is always final, at any stage, for any kind.
+//   - Approving a leave/late request is always final (single-stage, as before).
+//   - Approving an advance request is only final when the person deciding IS the org's CEO
+//     (either because the request was already routed straight to them - a department head's
+//     own request - or because it already went through the escalate step below once).
+//     Otherwise "approve" doesn't finalize anything - it reroutes the request to the CEO.
+function planAdvanceDecision(req, status, employee, orgChart) {
+  if (status === "rejected") return { action: "reject" };
+  if (req.kind === "advance" && orgChart.ceoEmployeeId !== employee.id) {
+    if (!orgChart.ceoEmployeeId) return { action: "blocked" };
+    return { action: "escalate", approverId: orgChart.ceoEmployeeId };
+  }
+  return { action: "finalize" };
 }
 
 const inputCls = "w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-100";
@@ -345,10 +367,13 @@ function RequestCard({ req, showEmployee, onDecide, decideBusy }) {
         {req.kind === "advance" && <span>{fmtMoney(req.amount)} ج.م</span>}
       </div>
       {req.reason && <p className="mt-1 text-xs text-slate-500">{req.reason}</p>}
-      {req.status !== "pending" && req.decidedByName && (
+      {req.status === "pending_ceo" && req.managerDecidedByName && (
+        <p className="mt-1.5 text-[11px] text-sky-600">وافق عليها {req.managerDecidedByName} — بانتظار اعتماد الرئيس التنفيذي.</p>
+      )}
+      {req.status !== "pending" && req.status !== "pending_ceo" && req.decidedByName && (
         <p className="mt-1.5 text-[11px] text-slate-400">تم البت بواسطة {req.decidedByName}{req.decidedAt ? ` — ${req.decidedAt.slice(0, 10)}` : ""}</p>
       )}
-      {onDecide && req.status === "pending" && (
+      {onDecide && (req.status === "pending" || req.status === "pending_ceo") && (
         <div className="mt-3 flex gap-2">
           <button disabled={decideBusy} onClick={() => onDecide(req, "approved")} className="flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"><Check size={13} /> موافقة</button>
           <button disabled={decideBusy} onClick={() => onDecide(req, "rejected")} className="flex items-center gap-1 rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-50"><X size={13} /> رفض</button>
@@ -410,17 +435,38 @@ function RequestsSection({ employee, orgChart, directory }) {
   );
 }
 
-function TeamRequestsSection({ employee, requests, loaded }) {
+function TeamRequestsSection({ employee, requests, loaded, orgChart }) {
   const [decideBusy, setDecideBusy] = useState(false);
 
   // Approving a leave/late request also writes the matching attendance record(s) - the same
   // `attendanceRecords` collection and doc-id shape (`${date}_${employeeId}`) the admin app
-  // uses, merged in so nothing else on that date gets overwritten. Approving an advance
-  // request does NOT create an advance automatically - that still needs the admin's review
-  // in the Advances tab, since it directly affects payroll deductions.
+  // uses, merged in so nothing else on that date gets overwritten.
+  // Approving an ADVANCE request goes through planAdvanceDecision first: a department head's
+  // "approve" only escalates it to the CEO (status -> "pending_ceo", approverId reassigned) -
+  // it never finalizes there. Only once the CEO approves does this write the matching
+  // `advances` doc automatically, with a deterministic id ("req_<requestId>") so it's tied
+  // 1:1 to the request Firestore rules already verified. Rejecting is always final, at
+  // either stage.
   async function decide(req, status) {
     setDecideBusy(true);
     try {
+      const plan = planAdvanceDecision(req, status, employee, orgChart);
+
+      if (plan.action === "blocked") {
+        alert("لازم يتحدد رئيس تنفيذي (CEO) في الهيكل التنظيمي الأول عشان تقدر توافق على طلبات السلف. كلّم شؤون الأفراد يظبطوا ده.");
+        return;
+      }
+      if (plan.action === "escalate") {
+        await updateDoc(doc(db, "requests", req.id), {
+          status: "pending_ceo",
+          approverId: plan.approverId,
+          managerDecidedByName: employee.name,
+          managerDecidedAt: new Date().toISOString(),
+        });
+        alert("تم إرسال طلب السلفة لاعتماد الرئيس التنفيذي (CEO) — هيختفي من قائمتك وهيتسجل تلقائي في تاب السلف بعد اعتماده.");
+        return;
+      }
+
       await updateDoc(doc(db, "requests", req.id), { status, decidedByName: employee.name, decidedAt: new Date().toISOString() });
       if (status === "approved") {
         if (req.kind === "leave") {
@@ -430,6 +476,14 @@ function TeamRequestsSection({ employee, requests, loaded }) {
           ));
         } else if (req.kind === "late") {
           await setDoc(doc(db, "attendanceRecords", `${req.date}_${req.employeeId}`), { date: req.date, employeeId: req.employeeId, status: "late" }, { merge: true });
+        } else if (req.kind === "advance") {
+          await setDoc(doc(db, "advances", `req_${req.id}`), {
+            employeeId: req.employeeId,
+            date: todayISO(),
+            totalAmount: Number(req.amount) || 0,
+            installments: 1,
+            notes: `سلفة معتمدة تلقائيًا من طلب بوابة الموظف (اعتماد الرئيس التنفيذي)${req.reason ? ` — ${req.reason}` : ""}`,
+          });
         }
       }
     } catch (err) {
@@ -437,14 +491,14 @@ function TeamRequestsSection({ employee, requests, loaded }) {
     } finally { setDecideBusy(false); }
   }
 
-  const pending = requests.filter((r) => r.status === "pending");
-  const decided = requests.filter((r) => r.status !== "pending");
+  const pending = requests.filter((r) => r.status === "pending" || r.status === "pending_ceo");
+  const decided = requests.filter((r) => r.status === "approved" || r.status === "rejected");
 
   if (!loaded) return <div className="flex justify-center py-10"><Loader2 className="animate-spin text-teal-700" size={22} /></div>;
 
   return (
     <div>
-      <p className="mb-4 flex items-start gap-1.5 rounded-lg bg-stone-50 px-3 py-2 text-xs text-slate-400"><Info size={13} className="mt-0.5 shrink-0" />الموافقة على إجازة أو تأخير بتسجّل الحضور تلقائي. الموافقة على سلفة لسه محتاجة تُضاف يدويًا في تاب السلف بنظام الأدمن.</p>
+      <p className="mb-4 flex items-start gap-1.5 rounded-lg bg-stone-50 px-3 py-2 text-xs text-slate-400"><Info size={13} className="mt-0.5 shrink-0" />الموافقة على إجازة أو تأخير بتسجّل الحضور تلقائي. طلب السلفة لما توافق عليه كمدير قسم بيروح لاعتماد نهائي من الرئيس التنفيذي (CEO)، وبعد اعتماده بيتسجل تلقائي في تاب السلف بنظام الأدمن.</p>
       <h3 className="mb-2 text-sm font-bold text-slate-700">طلبات قيد المراجعة ({pending.length})</h3>
       {pending.length === 0 ? <EmptyState text="مفيش طلبات محتاجة مراجعة دلوقتي." />
         : <div className="mb-6 space-y-2">{pending.map((r) => <RequestCard key={r.id} req={r} showEmployee onDecide={decide} decideBusy={decideBusy} />)}</div>}
@@ -535,7 +589,7 @@ function EmployeePortal({ authUid, onSignOut }) {
   const entitlement = employee.leaveEntitlement ?? settings.leaveDefaultDays ?? 21;
   const remaining = entitlement - takenLeave;
   const penaltiesTotal = penalties.filter((p) => p.actionType === "خصم مالي").reduce((s, p) => s + (Number(p.amount) || 0), 0);
-  const pendingTeamCount = teamRequests.filter((r) => r.status === "pending").length;
+  const pendingTeamCount = teamRequests.filter((r) => r.status === "pending" || r.status === "pending_ceo").length;
 
   const TABS = [
     ["leave", "الإجازات", <CalendarCheck size={14} />],
@@ -637,7 +691,7 @@ function EmployeePortal({ authUid, onSignOut }) {
         {tab === "payroll" && <PayrollSection employee={employee} />}
         {tab === "requests" && <RequestsSection employee={employee} orgChart={orgChart} directory={directory} />}
         {tab === "orgchart" && <OrgChartSection employee={employee} orgChart={orgChart} directory={directory} />}
-        {tab === "team" && canApproveRequests && <TeamRequestsSection employee={employee} requests={teamRequests} loaded={teamRequestsLoaded} />}
+        {tab === "team" && canApproveRequests && <TeamRequestsSection employee={employee} requests={teamRequests} loaded={teamRequestsLoaded} orgChart={orgChart} />}
       </main>
     </div>
   );
@@ -682,6 +736,7 @@ function EmployeePortalApp() {
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(<EmployeePortalApp />);
+
 </script>
 </body>
 </html>
