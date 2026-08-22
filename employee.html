@@ -27,8 +27,7 @@
 <body>
 <div id="root"></div>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<script type="text/babel" data-type="module" data-presets="react">
-import React, { useState, useEffect, useMemo, createContext, useContext } from "react";
+<script type="text/babel" data-type="module" data-presets="react">import React, { useState, useEffect, useMemo, createContext, useContext } from "react";
 import ReactDOM from "react-dom/client";
 import {
   CalendarCheck, Clock, AlertTriangle, LogOut, Loader2, User, Lock, LogIn,
@@ -286,6 +285,7 @@ function PayrollSection({ employee }) {
           {row.overtimePay > 0 && <div className="flex justify-between"><span className="text-slate-500">{t("وقت إضافي ({h} س)", { h: row.overtimeHours })}</span><span className="tabular-nums font-medium text-emerald-700">+{fmtMoney(row.overtimePay)}</span></div>}
           {row.bonus > 0 && <div className="flex justify-between"><span className="text-slate-500">{t("مكافأة")}</span><span className="tabular-nums font-medium text-emerald-700">+{fmtMoney(row.bonus)}</span></div>}
           {row.absenceDeduction > 0 && <div className="flex justify-between"><span className="text-slate-500">{t("خصم غياب ({n} يوم)", { n: row.absentDays })}</span><span className="tabular-nums font-medium text-rose-600">-{fmtMoney(row.absenceDeduction)}</span></div>}
+          {row.lateDeduction > 0 && <div className="flex justify-between"><span className="text-slate-500">{t("خصم تأخير ({n} دقيقة)", { n: row.lateMinutes })}</span><span className="tabular-nums font-medium text-rose-600">-{fmtMoney(row.lateDeduction)}</span></div>}
           {row.penaltyDeduction > 0 && <div className="flex justify-between"><span className="text-slate-500">{t("خصم جزاءات")}</span><span className="tabular-nums font-medium text-rose-600">-{fmtMoney(row.penaltyDeduction)}</span></div>}
           {row.advanceDeduction > 0 && <div className="flex justify-between"><span className="text-slate-500">{t("قسط سلفة")}</span><span className="tabular-nums font-medium text-rose-600">-{fmtMoney(row.advanceDeduction)}</span></div>}
           <div className="flex justify-between"><span className="text-slate-500">{t("التأمينات")}</span><span className="tabular-nums font-medium text-rose-600">-{fmtMoney(row.insuranceDeduction)}</span></div>
@@ -523,7 +523,11 @@ function TeamRequestsSection({ employee, requests, loaded, orgChart }) {
             setDoc(doc(db, "attendanceRecords", `${d}_${req.employeeId}`), { date: d, employeeId: req.employeeId, status: "leave" }, { merge: true })
           ));
         } else if (req.kind === "late") {
-          await setDoc(doc(db, "attendanceRecords", `${req.date}_${req.employeeId}`), { date: req.date, employeeId: req.employeeId, status: "late" }, { merge: true });
+          // Carries the employee's own self-reported minutes straight into the attendance
+          // record, so an approved late request actually deducts from payroll (see
+          // computePayrollRow's lateDeduction in the admin app) instead of only flipping the
+          // status badge with no minutes figure behind it.
+          await setDoc(doc(db, "attendanceRecords", `${req.date}_${req.employeeId}`), { date: req.date, employeeId: req.employeeId, status: "late", lateMinutes: Number(req.minutes) || 0 }, { merge: true });
         } else if (req.kind === "advance") {
           await setDoc(doc(db, "advances", `req_${req.id}`), {
             employeeId: req.employeeId,
@@ -696,7 +700,7 @@ function EmployeePortal({ authUid, onSignOut }) {
                 <table className="w-full text-sm">
                   <thead className="sticky top-0 bg-stone-50">
                     <tr className="border-b border-stone-200 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      <th className="px-4 py-2.5">{t("التاريخ")}</th><th className="px-4 py-2.5">{t("الحالة")}</th><th className="px-4 py-2.5">{t("وقت إضافي")}</th>
+                      <th className="px-4 py-2.5">{t("التاريخ")}</th><th className="px-4 py-2.5">{t("الحالة")}</th><th className="px-4 py-2.5">{t("دقايق التأخير")}</th><th className="px-4 py-2.5">{t("وقت إضافي")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -704,6 +708,7 @@ function EmployeePortal({ authUid, onSignOut }) {
                       <tr key={r.id} className="border-b border-stone-100 last:border-0">
                         <td className="px-4 py-2.5 tabular-nums text-slate-600">{r.date}</td>
                         <td className="px-4 py-2.5"><span className={`rounded-full border px-2.5 py-0.5 text-xs font-semibold ${STATUS_COLORS[r.status] || ""}`}>{t(STATUS_LABELS[r.status] || r.status)}</span></td>
+                        <td className="px-4 py-2.5 tabular-nums text-slate-500">{r.status === "late" && r.lateMinutes ? t("{n} د", { n: r.lateMinutes }) : "—"}</td>
                         <td className="px-4 py-2.5 tabular-nums text-slate-500">{r.overtimeHours ? t("{n} س", { n: r.overtimeHours }) : "—"}</td>
                       </tr>
                     ))}
@@ -799,6 +804,9 @@ function EmployeePortalApp() {
 
 const TRANSLATIONS = {
   "{n} س": "{n} h",
+  "{n} د": "{n} min",
+  "دقايق التأخير": "Late Minutes",
+  "خصم تأخير ({n} دقيقة)": "Late Deduction ({n} min)",
   "إجازة": "Leave",
   "إجمالي الخصومات المالية": "Total Financial Deductions",
   "إرسال الطلب": "Submit Request",
@@ -899,7 +907,6 @@ const TRANSLATIONS = {
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(<EmployeePortalApp />);
-
 </script>
 </body>
 </html>
