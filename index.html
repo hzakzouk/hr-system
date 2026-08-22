@@ -14,6 +14,7 @@
     "react-dom/client": "https://esm.sh/react-dom@18/client",
     "lucide-react": "https://esm.sh/lucide-react@0.383.0?external=react",
     "xlsx": "https://esm.sh/xlsx@0.18.5",
+    "@emailjs/browser": "https://esm.sh/@emailjs/browser@4",
     "firebase/app": "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js",
     "firebase/auth": "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js",
     "firebase/firestore": "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js"
@@ -36,9 +37,10 @@ import {
   Loader2, Landmark, HandCoins, LogOut, ClipboardList, Star, Settings as SettingsIcon,
   Printer, Cake, ShieldAlert, Bell, Info, Upload, ArrowRight, ArrowLeft, FileSpreadsheet,
   Network, Crown, ChevronDown, ChevronUp, Lock, LogIn, ShieldCheck, Languages, History, BarChart3,
-  UserPlus, Download
+  UserPlus, Download, Mail
 } from "lucide-react";
 import * as XLSX from "xlsx";
+import emailjs from "@emailjs/browser";
 import { initializeApp, deleteApp } from "firebase/app";
 import {
   getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut,
@@ -307,6 +309,30 @@ async function syncAttendanceRecords(nextAttendance, currentRecords) {
   await commitOpsChunked(ops);
 }
 
+// Writes ONLY the specific (date, employeeId) records in `patch` - never re-syncs the full
+// known attendance history the way syncAttendanceRecords above does. This matters because
+// day-to-day attendance edits (one status click, one overtime-hours edit) happen constantly,
+// while syncAttendanceRecords' full-object diff re-"set"s every record currently held in the
+// admin's local `attendance` snapshot on every single edit. If that local snapshot is even one
+// render cycle stale - e.g. the browser tab was backgrounded (browsers throttle timers on
+// inactive tabs) right when a department head approved an employee's "late" request from the
+// portal (which merges { status: "late" } straight into this same attendanceRecords doc) - the
+// admin's very next click anywhere in the Attendance tab would blindly re-"set" that employee's
+// record back to its stale (pre-approval) status, silently clobbering the portal's write. That
+// exact symptom - an approved "late" request whose attendance record still reads "present" - is
+// what this patch-based path exists to make impossible: a record nobody touched this call is
+// never sent to Firestore at all, so it can never be overwritten with stale data. A falsy
+// `status` deletes the record (matches the toggle-off behavior below).
+async function syncAttendancePatch(patch) {
+  const ops = patch.map(({ date, employeeId, status, overtimeHours }) => {
+    const ref = doc(db, "attendanceRecords", `${date}_${employeeId}`);
+    return status
+      ? { type: "set", ref, data: { date, employeeId, status, overtimeHours: Number(overtimeHours) || 0 } }
+      : { type: "delete", ref };
+  });
+  await commitOpsChunked(ops);
+}
+
 // payrollMeta used to be one blob shaped { [yearMonth]: { [employeeId]: meta } }; each
 // year-month is now its own doc (id = "YYYY-MM") so it stays a manageable document size.
 async function syncPayrollMeta(nextObj, currentDocs) {
@@ -465,6 +491,15 @@ const DEFAULT_SETTINGS = {
 const DEFAULT_ORG_CHART = {
   ceoEmployeeId: null,
   departmentHeads: {}, // { [departmentName]: employeeId }
+};
+
+// EmailJS config for the Dashboard's "إرسال التنبيهات بالإيميل" button - a client-only send (no
+// Cloud Functions / Blaze plan needed). Kept in its OWN doc (settings/notifications), separate
+// from settings/main, and locked to admin-only read in firestore.rules - main's leaveDefaultDays
+// etc. are meant to be readable by any signed-in employee (the portal needs them), but there's
+// no reason to hand every employee the EmailJS service/template ids too.
+const DEFAULT_NOTIFY_SETTINGS = {
+  notifyServiceId: "", notifyTemplateId: "", notifyPublicKey: "", notifyRecipientEmail: "",
 };
 
 function uid(p) { return `${p}_${Date.now()}_${Math.floor(Math.random() * 100000)}`; }
@@ -825,6 +860,7 @@ function HRSystem({ adminUser }) {
   const [reviews, reviewsLoaded] = useFirestoreCollection("reviews");
   const [settings, settingsLoaded] = useFirestoreDoc("settings", "main", DEFAULT_SETTINGS);
   const [orgChart, orgChartLoaded] = useFirestoreDoc("orgChart", "main", DEFAULT_ORG_CHART);
+  const [notifySettings] = useFirestoreDoc("settings", "notifications", DEFAULT_NOTIFY_SETTINGS);
   const [publicDirectory, publicDirectoryLoaded] = useFirestoreCollection("publicDirectory");
   const [payslipDocs, payslipsLoaded] = useFirestoreCollection("payslips");
   const [auditLog] = useFirestoreCollection("auditLog");
@@ -884,6 +920,20 @@ function HRSystem({ adminUser }) {
       track(syncAttendanceRecords(n, attendanceRecords));
       track(writeAuditLog(adminUser, "attendance", diffSummary(flattenAttendanceForDiff(attendance), flattenAttendanceForDiff(n))));
     },
+    // Used by AttendanceTab (day-to-day status/overtime edits + file import) instead of
+    // `attendance` above - see syncAttendancePatch's comment for why: it writes only the exact
+    // records this call actually touched, so it can never clobber a concurrent write (e.g. a
+    // "late" request just approved from the employee portal) with a stale local snapshot.
+    attendancePatch: (patch) => {
+      track(syncAttendancePatch(patch));
+      const before = {}, after = {};
+      patch.forEach(({ date, employeeId, status, overtimeHours }) => {
+        const cur = getAttEntry(attendance, date, employeeId);
+        if (cur && cur.status) { if (!before[date]) before[date] = {}; before[date][employeeId] = cur; }
+        if (status) { if (!after[date]) after[date] = {}; after[date][employeeId] = { status, overtimeHours }; }
+      });
+      track(writeAuditLog(adminUser, "attendance", diffSummary(flattenAttendanceForDiff(before), flattenAttendanceForDiff(after))));
+    },
     penalties: (n) => {
       track(syncCollection("penalties", penalties, n));
       track(writeAuditLog(adminUser, "penalties", diffSummary(penalties, n, (p) => `${employeeNameById[p.employeeId] || p.employeeId} - ${p.actionType || ""}`)));
@@ -911,6 +961,10 @@ function HRSystem({ adminUser }) {
     orgChart: (n) => {
       track(setDoc(doc(db, "orgChart", "main"), n));
       track(writeAuditLog(adminUser, "orgChart", diffDocKeys(orgChart, n)));
+    },
+    notifySettings: (n) => {
+      track(setDoc(doc(db, "settings", "notifications"), n));
+      track(writeAuditLog(adminUser, "notifySettings", diffDocKeys(notifySettings, n)));
     },
     payslips: (ym, rows) => track(syncPayslipsForMonth(ym, rows, payslipDocs.filter((d) => d.id.startsWith(`${ym}_`)))),
     candidates: (n) => {
@@ -1040,7 +1094,7 @@ function HRSystem({ adminUser }) {
         </aside>
 
         <main className="no-print min-w-0 flex-1">
-          {tab === "dashboard" && <Dashboard employees={activeEmployees} attendance={attendance} penalties={penalties} advances={advances} settings={settings} documents={documents} />}
+          {tab === "dashboard" && <Dashboard employees={activeEmployees} attendance={attendance} penalties={penalties} advances={advances} settings={settings} documents={documents} notifySettings={notifySettings} />}
           {tab === "employees" && <EmployeesTab
             employees={employees} setEmployees={upd.employees} settings={settings} onOpen={setOpenEmployeeId}
             attendance={attendance} setAttendance={upd.attendance}
@@ -1054,7 +1108,7 @@ function HRSystem({ adminUser }) {
             onCandidateConverted={handleCandidateConverted}
           />}
           {tab === "orgchart" && <OrgChartTab employees={activeEmployees} orgChart={orgChart} setOrgChart={upd.orgChart} onPrint={() => setOrgChartPrintOpen(true)} />}
-          {tab === "attendance" && <AttendanceTab employees={activeEmployees} attendance={attendance} setAttendance={upd.attendance} settings={settings} />}
+          {tab === "attendance" && <AttendanceTab employees={activeEmployees} attendance={attendance} patchAttendance={upd.attendancePatch} settings={settings} />}
           {tab === "payroll" && <PayrollTab employees={activeEmployees} attendance={attendance} penalties={penalties} payrollMeta={payrollMeta} setPayrollMeta={upd.payrollMeta} advances={advances} settings={settings} payslipDocs={payslipDocs} onSyncPayslips={upd.payslips} />}
           {tab === "penalties" && <PenaltiesTab employees={activeEmployees} penalties={penalties} setPenalties={upd.penalties} />}
           {tab === "advances" && <AdvancesTab employees={activeEmployees} advances={advances} setAdvances={upd.advances} />}
@@ -1064,6 +1118,7 @@ function HRSystem({ adminUser }) {
           {tab === "auditLog" && <AuditLogTab auditLog={auditLog} />}
           {tab === "settings" && <SettingsTab
             settings={settings} setSettings={upd.settings}
+            notifySettings={notifySettings} setNotifySettings={upd.notifySettings}
             backupProps={{ employees, attendance, penalties, payrollMeta, advances, documents, reviews, settings, orgChart, upd }}
           />}
         </main>
@@ -1093,7 +1148,89 @@ function HRSystem({ adminUser }) {
 }
 
 /* ================= DASHBOARD ================= */
-function Dashboard({ employees, attendance, penalties, advances, settings, documents }) {
+/* ---------- dashboard alerts + email notifications (pure, testable helpers) ---------- */
+
+// Same "contract ending / low leave balance / upcoming birthday / advance almost paid off /
+// document expiring" scan the Dashboard has always done, pulled out as a standalone function
+// so it can feed BOTH the Dashboard's JSX list (via ALERT_META below) and the plain-text email
+// digest (via formatAlertLine) from one source of truth, instead of two copies drifting apart.
+// Returns structured data only - no icons, no translated text.
+function computeAlerts(employees, attendance, advances, documents, settings, todayISOStr) {
+  const alerts = [];
+  const today = new Date(todayISOStr);
+  const in30 = new Date(today); in30.setDate(in30.getDate() + 30);
+  employees.forEach((e) => {
+    if (e.contractEnd) {
+      const end = new Date(e.contractEnd);
+      if (end >= today && end <= in30) alerts.push({ type: "contractEnd", employeeName: e.name, date: e.contractEnd });
+    }
+    const takenLeave = Object.keys(attendance).filter((d) => yearKey(d) === yearKey(todayISOStr) && getAttEntry(attendance, d, e.id)?.status === "leave").length;
+    const remaining = (e.leaveEntitlement ?? settings.leaveDefaultDays) - takenLeave;
+    if (remaining <= 2) alerts.push({ type: "leaveLow", employeeName: e.name, remaining });
+    if (e.birthDate) {
+      const bd = new Date(e.birthDate);
+      const thisYearBd = new Date(today.getFullYear(), bd.getMonth(), bd.getDate());
+      const diffDays = Math.round((thisYearBd - today) / 86400000);
+      if (diffDays >= 0 && diffDays <= 7) alerts.push({ type: "birthday", employeeName: e.name, diffDays });
+    }
+  });
+  advances.forEach((a) => {
+    const remaining = advanceRemaining(a);
+    const emp = employees.find((e) => e.id === a.employeeId);
+    if (remaining > 0 && remaining <= Math.round(a.totalAmount / a.installments)) {
+      alerts.push({ type: "advanceAlmostDone", employeeName: emp?.name || "" });
+    }
+  });
+  documents.forEach((d) => {
+    if (d.expiryDate) {
+      const exp = new Date(d.expiryDate);
+      if (exp >= today && exp <= in30) {
+        const emp = employees.find((e) => e.id === d.employeeId);
+        alerts.push({ type: "docExpiry", employeeName: emp?.name || "", docName: d.name, date: d.expiryDate });
+      }
+    }
+  });
+  return alerts;
+}
+
+// One Arabic plain-text line per alert, used by the email digest - deliberately NOT run
+// through t()/TRANSLATIONS: the digest is Arabic-only regardless of the admin's current UI
+// language toggle, since this is an outbound message (like the rest of the app's stored HR
+// data) rather than on-screen UI text.
+function formatAlertLine(a) {
+  switch (a.type) {
+    case "contractEnd": return `- عقد ${a.employeeName} بينتهي في ${a.date}`;
+    case "leaveLow": return `- رصيد إجازات ${a.employeeName} باقيله ${a.remaining} يوم بس`;
+    case "birthday": return `- عيد ميلاد ${a.employeeName} بعد ${a.diffDays === 0 ? "النهاردة" : `${a.diffDays} يوم`}`;
+    case "advanceAlmostDone": return `- سلفة ${a.employeeName} هتخلص القسط الجاي`;
+    case "docExpiry": return `- ${a.docName} بتاع ${a.employeeName} بينتهي في ${a.date}`;
+    default: return "";
+  }
+}
+function formatAlertsForEmail(alerts) {
+  return alerts.map(formatAlertLine).filter(Boolean).join("\n");
+}
+
+// Sends the current alert list as one digest email via EmailJS (client-only - no Cloud
+// Functions / Blaze plan needed). Throws a descriptive error (surfaced by the Dashboard button)
+// rather than calling emailjs.send with obviously-incomplete config, or silently doing nothing.
+async function sendAlertsEmail(alerts, notifySettings) {
+  const { notifyServiceId, notifyTemplateId, notifyPublicKey, notifyRecipientEmail } = notifySettings;
+  if (!notifyServiceId || !notifyTemplateId || !notifyPublicKey) {
+    throw new Error("NOT_CONFIGURED");
+  }
+  if (!notifyRecipientEmail) throw new Error("NO_RECIPIENT");
+  if (alerts.length === 0) throw new Error("NO_ALERTS");
+  const templateParams = {
+    to_email: notifyRecipientEmail,
+    subject: `تنبيهات شؤون الأفراد - ${todayISO()}`,
+    alerts_count: alerts.length,
+    alerts_text: formatAlertsForEmail(alerts),
+  };
+  await emailjs.send(notifyServiceId, notifyTemplateId, templateParams, { publicKey: notifyPublicKey });
+}
+
+function Dashboard({ employees, attendance, penalties, advances, settings, documents, notifySettings }) {
   const { t, lang } = useLang();
   const today = todayISO();
   const presentToday = employees.filter((e) => getAttEntry(attendance, today, e.id)?.status === "present").length;
@@ -1103,39 +1240,35 @@ function Dashboard({ employees, attendance, penalties, advances, settings, docum
   const thisMonth = monthKey(today);
   const penaltiesTotal = penalties.filter((p) => monthKey(p.date) === thisMonth && p.actionType === "خصم مالي").reduce((s, p) => s + (Number(p.amount) || 0), 0);
 
-  const alerts = [];
-  const in30 = new Date(); in30.setDate(in30.getDate() + 30);
-  employees.forEach((e) => {
-    if (e.contractEnd) {
-      const end = new Date(e.contractEnd);
-      if (end >= new Date() && end <= in30) alerts.push({ tone: "amber", icon: <FileText size={14} />, text: t("عقد {name} بينتهي في {date}", { name: e.name, date: e.contractEnd }) });
+  const rawAlerts = useMemo(() => computeAlerts(employees, attendance, advances, documents, settings, today), [employees, attendance, advances, documents, settings, today]);
+  const alerts = rawAlerts.map((a) => {
+    switch (a.type) {
+      case "contractEnd": return { tone: "amber", icon: <FileText size={14} />, text: t("عقد {name} بينتهي في {date}", { name: a.employeeName, date: a.date }) };
+      case "leaveLow": return { tone: "rose", icon: <CalendarCheck size={14} />, text: t("رصيد إجازات {name} باقيله {n} يوم بس", { name: a.employeeName, n: a.remaining }) };
+      case "birthday": return { tone: "teal", icon: <Cake size={14} />, text: t("عيد ميلاد {name} بعد {when}", { name: a.employeeName, when: a.diffDays === 0 ? t("النهاردة") : t("{n} يوم", { n: a.diffDays }) }) };
+      case "advanceAlmostDone": return { tone: "emerald", icon: <HandCoins size={14} />, text: t("سلفة {name} هتخلص القسط الجاي", { name: a.employeeName }) };
+      case "docExpiry": return { tone: "amber", icon: <ShieldAlert size={14} />, text: t("{doc} بتاع {name} بينتهي في {date}", { doc: a.docName, name: a.employeeName, date: a.date }) };
+      default: return null;
     }
-    const takenLeave = Object.keys(attendance).filter((d) => yearKey(d) === yearKey(today) && getAttEntry(attendance, d, e.id)?.status === "leave").length;
-    const remaining = (e.leaveEntitlement ?? settings.leaveDefaultDays) - takenLeave;
-    if (remaining <= 2) alerts.push({ tone: "rose", icon: <CalendarCheck size={14} />, text: t("رصيد إجازات {name} باقيله {n} يوم بس", { name: e.name, n: remaining }) });
-    if (e.birthDate) {
-      const bd = new Date(e.birthDate);
-      const thisYearBd = new Date(new Date().getFullYear(), bd.getMonth(), bd.getDate());
-      const diffDays = Math.round((thisYearBd - new Date()) / 86400000);
-      if (diffDays >= 0 && diffDays <= 7) alerts.push({ tone: "teal", icon: <Cake size={14} />, text: t("عيد ميلاد {name} بعد {when}", { name: e.name, when: diffDays === 0 ? t("النهاردة") : t("{n} يوم", { n: diffDays }) }) });
+  }).filter(Boolean);
+
+  const [emailState, setEmailState] = useState("idle"); // idle | sending | sent | error
+  const [emailError, setEmailError] = useState("");
+  async function handleSendAlertsEmail() {
+    setEmailState("sending");
+    setEmailError("");
+    try {
+      await sendAlertsEmail(rawAlerts, notifySettings);
+      setEmailState("sent");
+      setTimeout(() => setEmailState("idle"), 4000);
+    } catch (err) {
+      const key = err?.message === "NOT_CONFIGURED" ? t("إعدادات إشعارات الإيميل لسه فاضية — كمّلها من تاب «الإعدادات» الأول.")
+        : err?.message === "NO_RECIPIENT" ? t("لازم تحدد إيميل المستلم في تاب «الإعدادات» الأول.")
+        : t("تعذّر إرسال الإيميل — راجع إعدادات الإشعارات وجرب تاني.");
+      setEmailError(key);
+      setEmailState("error");
     }
-  });
-  advances.forEach((a) => {
-    const remaining = advanceRemaining(a);
-    const emp = employees.find((e) => e.id === a.employeeId);
-    if (remaining > 0 && remaining <= Math.round(a.totalAmount / a.installments)) {
-      alerts.push({ tone: "emerald", icon: <HandCoins size={14} />, text: t("سلفة {name} هتخلص القسط الجاي", { name: emp?.name || "" }) });
-    }
-  });
-  documents.forEach((d) => {
-    if (d.expiryDate) {
-      const exp = new Date(d.expiryDate);
-      if (exp >= new Date() && exp <= in30) {
-        const emp = employees.find((e) => e.id === d.employeeId);
-        alerts.push({ tone: "amber", icon: <ShieldAlert size={14} />, text: t("{doc} بتاع {name} بينتهي في {date}", { doc: d.name, name: emp?.name || "", date: d.expiryDate }) });
-      }
-    }
-  });
+  }
 
   return (
     <div>
@@ -1170,7 +1303,22 @@ function Dashboard({ employees, attendance, penalties, advances, settings, docum
 
         <div className="space-y-6">
           <Card className="p-5">
-            <div className="mb-3 flex items-center gap-2"><Bell size={16} className="text-amber-600" /><h3 className="font-bold text-slate-800">{t("تنبيهات")}</h3></div>
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2"><Bell size={16} className="text-amber-600" /><h3 className="font-bold text-slate-800">{t("تنبيهات")}</h3></div>
+              {alerts.length > 0 && (
+                <button
+                  onClick={handleSendAlertsEmail}
+                  disabled={emailState === "sending"}
+                  title={t("إرسال التنبيهات بالإيميل")}
+                  className="flex shrink-0 items-center gap-1 rounded-md border border-teal-700 px-2 py-1 text-[11px] font-semibold text-teal-800 hover:bg-teal-50 disabled:opacity-50"
+                >
+                  {emailState === "sending" ? <Loader2 size={12} className="animate-spin" /> : <Mail size={12} />}
+                  {t("إرسال بالإيميل")}
+                </button>
+              )}
+            </div>
+            {emailState === "sent" && <p className="mb-2 flex items-center gap-1 text-xs font-medium text-emerald-700"><Check size={12} /> {t("اتبعت التنبيهات بالإيميل.")}</p>}
+            {emailState === "error" && <p className="mb-2 text-xs font-medium text-rose-600">{emailError}</p>}
             {alerts.length === 0 ? <p className="text-sm text-slate-400">{t("مفيش تنبيهات دلوقتي.")}</p> : (
               <div className="space-y-2.5 max-h-64 overflow-y-auto">
                 {alerts.map((a, i) => (
@@ -1952,18 +2100,23 @@ function EmployeeProfileModal({ employee, onClose, attendance, documents, setDoc
 }
 
 /* ================= ATTENDANCE ================= */
-function AttendanceTab({ employees, attendance, setAttendance, settings }) {
+function AttendanceTab({ employees, attendance, patchAttendance, settings }) {
   const { t } = useLang();
   const [date, setDate] = useState(todayISO());
   const [importOpen, setImportOpen] = useState(false);
   const dayRecord = attendance[date] || {};
 
+  // Builds a sparse patch - only the (date, employeeId) pairs this import actually names, plus
+  // whatever isNonWorkday-eligible gaps fillAbsence explicitly marks absent - rather than
+  // spreading the full known `attendance` history the way this used to. See
+  // syncAttendancePatch's comment (near its definition) for why that distinction matters.
   function importBulk(entries, fillAbsence, fromDate, toDate) {
-    const next = { ...attendance };
+    const patch = [];
+    const touched = new Set();
     entries.forEach(({ empId, date: d, status, overtimeHours }) => {
-      next[d] = { ...(next[d] || {}) };
-      const current = next[d][empId] || { status: null, overtimeHours: 0 };
-      next[d][empId] = { status: status || current.status, overtimeHours: overtimeHours ?? current.overtimeHours };
+      const current = getAttEntry(attendance, d, empId) || { status: null, overtimeHours: 0 };
+      patch.push({ date: d, employeeId: empId, status: status || current.status, overtimeHours: overtimeHours ?? current.overtimeHours });
+      touched.add(`${d}_${empId}`);
     });
     if (fillAbsence && fromDate && toDate) {
       let d = new Date(fromDate);
@@ -1972,29 +2125,29 @@ function AttendanceTab({ employees, attendance, setAttendance, settings }) {
         const ds = d.toISOString().slice(0, 10);
         employees.forEach((e) => {
           if (isNonWorkday(e, ds, settings.publicHolidays)) return;
-          const existing = (next[ds] || {})[e.id];
+          const key = `${ds}_${e.id}`;
+          if (touched.has(key)) return;
+          const existing = getAttEntry(attendance, ds, e.id);
           if (!existing || !existing.status) {
-            next[ds] = { ...(next[ds] || {}) };
-            next[ds][e.id] = { status: "absent", overtimeHours: existing?.overtimeHours || 0 };
+            patch.push({ date: ds, employeeId: e.id, status: "absent", overtimeHours: existing?.overtimeHours || 0 });
+            touched.add(key);
           }
         });
         d.setDate(d.getDate() + 1);
       }
     }
-    setAttendance(next);
+    patchAttendance(patch);
     setImportOpen(false);
   }
 
   function setStatus(empId, status) {
     const current = getAttEntry(attendance, date, empId) || { status: null, overtimeHours: 0 };
-    const nextDay = { ...dayRecord };
-    if (current.status === status) nextDay[empId] = { status: null, overtimeHours: current.overtimeHours };
-    else nextDay[empId] = { status, overtimeHours: current.overtimeHours };
-    setAttendance({ ...attendance, [date]: nextDay });
+    const nextStatus = current.status === status ? null : status;
+    patchAttendance([{ date, employeeId: empId, status: nextStatus, overtimeHours: current.overtimeHours }]);
   }
   function setOvertime(empId, hours) {
     const current = getAttEntry(attendance, date, empId) || { status: null, overtimeHours: 0 };
-    setAttendance({ ...attendance, [date]: { ...dayRecord, [empId]: { status: current.status, overtimeHours: Number(hours) || 0 } } });
+    patchAttendance([{ date, employeeId: empId, status: current.status, overtimeHours: Number(hours) || 0 }]);
   }
   function shiftDay(delta) { const d = new Date(date); d.setDate(d.getDate() + delta); setDate(d.toISOString().slice(0, 10)); }
 
@@ -2697,6 +2850,7 @@ const AUDIT_COLLECTION_LABELS = {
   settings: "الإعدادات",
   orgChart: "الهيكل التنظيمي",
   candidates: "التعيين والتوظيف",
+  notifySettings: "إعدادات إشعارات الإيميل",
 };
 
 // Display label for a raw field key inside an "updated" entry's changes[] (e.g. "stage" ->
@@ -2718,6 +2872,8 @@ const AUDIT_FIELD_LABELS = {
   insuranceRate: "نسبة التأمينات", overtimeMultiplier: "مضاعف الإضافي", workStartTime: "بداية الدوام الرسمي",
   lateGraceMinutes: "فترة سماح التأخير", personalExemptionAnnual: "الإعفاء الشخصي السنوي",
   taxBrackets: "شرائح الضريبة", publicHolidays: "الإجازات الرسمية",
+  notifyServiceId: "معرّف خدمة الإيميل", notifyTemplateId: "معرّف قالب الإيميل",
+  notifyPublicKey: "المفتاح العام", notifyRecipientEmail: "إيميل المستلم",
 };
 
 // Turns one changed field's raw value (from or to) into short displayable text - passed
@@ -3157,7 +3313,38 @@ function RecruitmentTab({ candidates, setCandidates, onConvert }) {
   );
 }
 
-function SettingsTab({ settings, setSettings, backupProps }) {
+function NotificationSettingsSection({ notifySettings, setNotifySettings }) {
+  const { t } = useLang();
+  const [form, setForm] = useState(notifySettings);
+  const [msg, setMsg] = useState(null);
+  function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
+  function save(e) {
+    e.preventDefault();
+    setNotifySettings(form);
+    setMsg(t("تم حفظ إعدادات إشعارات الإيميل."));
+    setTimeout(() => setMsg(null), 4000);
+  }
+  return (
+    <Card className="mb-6 p-5">
+      <h3 className="mb-1 flex items-center gap-2 font-bold text-slate-800"><Mail size={16} /> {t("إشعارات الإيميل")}</h3>
+      <p className="mb-4 text-xs text-slate-500">
+        {t("لازم تعمل حساب مجاني على EmailJS، تربطه بإيميلك، وتعمل قالب رسالة، عشان زرار «إرسال بالإيميل» في لوحة المتابعة يشتغل. القيم دي متخزنة في مستند منفصل يقدر يقراه الأدمن بس.")}
+      </p>
+      <form onSubmit={save} className="grid grid-cols-2 gap-4">
+        <Field label="Service ID"><input className={inputCls} value={form.notifyServiceId} onChange={(e) => set("notifyServiceId", e.target.value)} placeholder="service_xxxxxxx" /></Field>
+        <Field label="Template ID"><input className={inputCls} value={form.notifyTemplateId} onChange={(e) => set("notifyTemplateId", e.target.value)} placeholder="template_xxxxxxx" /></Field>
+        <Field label="Public Key"><input className={inputCls} value={form.notifyPublicKey} onChange={(e) => set("notifyPublicKey", e.target.value)} placeholder="xxxxxxxxxxxxxxxx" /></Field>
+        <Field label="إيميل المستلم (ممكن أكتر من إيميل مفصولين بفاصلة)"><input className={inputCls} value={form.notifyRecipientEmail} onChange={(e) => set("notifyRecipientEmail", e.target.value)} placeholder="hr@example.com" /></Field>
+        <div className="col-span-2 flex items-center gap-2">
+          <button type="submit" className="rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900">{t("حفظ إعدادات الإشعارات")}</button>
+          {msg && <span className="text-xs font-medium text-emerald-700">{msg}</span>}
+        </div>
+      </form>
+    </Card>
+  );
+}
+
+function SettingsTab({ settings, setSettings, notifySettings, setNotifySettings, backupProps }) {
   const { t } = useLang();
   const [form, setForm] = useState(settings);
   const [holidayForm, setHolidayForm] = useState({ date: "", name: "" });
@@ -3182,6 +3369,8 @@ function SettingsTab({ settings, setSettings, backupProps }) {
     <div>
       <SectionTitle eyebrow={t("نسب وقيم قابلة للتعديل")} title={t("الإعدادات")} />
       <p className="mb-5 flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700"><Info size={14} className="mt-0.5 shrink-0" />{t("النسب دي تقديرية ومسؤوليتك تراجعها وتحدّثها مع محاسب أو مستشار قانوني، خصوصًا إن قوانين التأمينات والضرايب بتتغير كل فترة.")}</p>
+
+      <NotificationSettingsSection notifySettings={notifySettings} setNotifySettings={setNotifySettings} />
 
       <BackupSection {...backupProps} />
 
@@ -3573,6 +3762,22 @@ function AdminAuthGate() {
 }
 
 const TRANSLATIONS = {
+  "إرسال بالإيميل": "Send by Email",
+  "إرسال التنبيهات بالإيميل": "Send Alerts by Email",
+  "اتبعت التنبيهات بالإيميل.": "Alerts were sent by email.",
+  "إعدادات إشعارات الإيميل لسه فاضية — كمّلها من تاب «الإعدادات» الأول.": "Email notification settings aren't filled in yet — complete them in the \"Settings\" tab first.",
+  "لازم تحدد إيميل المستلم في تاب «الإعدادات» الأول.": "You need to set a recipient email in the \"Settings\" tab first.",
+  "تعذّر إرسال الإيميل — راجع إعدادات الإشعارات وجرب تاني.": "Couldn't send the email — check the notification settings and try again.",
+  "إشعارات الإيميل": "Email Notifications",
+  "لازم تعمل حساب مجاني على EmailJS، تربطه بإيميلك، وتعمل قالب رسالة، عشان زرار «إرسال بالإيميل» في لوحة المتابعة يشتغل. القيم دي متخزنة في مستند منفصل يقدر يقراه الأدمن بس.": "You need a free EmailJS account, connected to your email, with a message template set up, for the \"Send by Email\" button on the Dashboard to work. These values are stored in a separate document only admins can read.",
+  "إيميل المستلم (ممكن أكتر من إيميل مفصولين بفاصلة)": "Recipient Email (multiple emails can be comma-separated)",
+  "حفظ إعدادات الإشعارات": "Save Notification Settings",
+  "تم حفظ إعدادات إشعارات الإيميل.": "Email notification settings saved.",
+  "إعدادات إشعارات الإيميل": "Email Notification Settings",
+  "معرّف خدمة الإيميل": "Email Service ID",
+  "معرّف قالب الإيميل": "Email Template ID",
+  "المفتاح العام": "Public Key",
+  "إيميل المستلم": "Recipient Email",
   "نعم": "Yes",
   "لا": "No",
   "كود الموظف": "Employee Code",
