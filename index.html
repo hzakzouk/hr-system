@@ -1813,7 +1813,11 @@ function EmployeeImportWizard({ employees, onImport, onCancel }) {
       const rec = {};
       EMPLOYEE_IMPORT_FIELDS.forEach((f) => {
         const idx = mapping[f.key];
-        const raw = idx !== undefined && idx !== "" ? r[idx] : "";
+        // عمود مش متربط بأي حاجة في الملف ده = محدش قال حاجة عنه، فمنسيبوش يمسح قيمة
+        // موجودة فعلاً للموظف (زي القسم أو تاريخ التعيين) لمجرد إن ملف التحديث ده كان
+        // بس عن المرتب مثلًا. لو الحقل ده اتربط فعلاً بعمود، بياخد قيمته حتى لو فاضية.
+        if (idx === undefined || idx === "") return;
+        const raw = r[idx];
         if (f.key === "salary") rec.salary = Number(raw) || 0;
         else if (f.key === "hireDate") rec.hireDate = excelSerialToISODate(raw) || todayISO();
         else if (f.key === "weeklyOffDaysText") rec.weeklyOffDays = raw ? String(raw).split(/[,،]/).map((s) => s.trim()).filter((d) => WEEKDAYS.includes(d)) : ["الجمعة"];
@@ -1957,7 +1961,7 @@ function EmployeeForm({ initial, settings, onSave, onCancel }) {
 /* ---- Employee profile (leave / documents / reviews) ---- */
 function EmployeeProfileModal({ employee, onClose, attendance, documents, setDocuments, reviews, setReviews, settings, employees, setEmployees }) {
   const { t } = useLang();
-  const [sub, setSub] = useState("leave");
+  const [sub, setSub] = useState("info");
   const [pin, setPin] = useState("");
   const [portalBusy, setPortalBusy] = useState(false);
   const [portalMsg, setPortalMsg] = useState(null);
@@ -2010,10 +2014,40 @@ function EmployeeProfileModal({ employee, onClose, attendance, documents, setDoc
   return (
     <Modal open onClose={onClose} title={t("ملف {name}", { name: employee.name })} wide>
       <div className="mb-4 flex gap-2 border-b border-stone-200 pb-3">
-        {[["leave", "الإجازات", <CalendarCheck size={14} />], ["documents", "المستندات", <FileText size={14} />], ["reviews", "التقييمات", <Star size={14} />], ["portal", "بوابة الموظف", <Lock size={14} />]].map(([k, l, icon]) => (
+        {[["info", "البيانات الأساسية", <UserPlus size={14} />], ["leave", "الإجازات", <CalendarCheck size={14} />], ["documents", "المستندات", <FileText size={14} />], ["reviews", "التقييمات", <Star size={14} />], ["portal", "بوابة الموظف", <Lock size={14} />]].map(([k, l, icon]) => (
           <button key={k} onClick={() => setSub(k)} className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium ${sub === k ? "bg-teal-800 text-white" : "text-slate-500 hover:bg-stone-100"}`}>{icon}{t(l)}</button>
         ))}
       </div>
+
+      {sub === "info" && (
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+          {[
+            ["كود الموظف", employee.employeeCode || "—"],
+            ["الاسم", employee.name],
+            ["القسم", employee.department || "—"],
+            ["الوظيفة", employee.position || "—"],
+            ["معاد بداية الدوام الرسمي", settings.workStartTime || "—"],
+            ["عدد أيام العمل / الأسبوع", 7 - getWeeklyOffDays(employee).length],
+            ["رصيد الإجازة السنوي", entitlement],
+            ["الراتب الأساسي", `${fmtMoney(employee.salary)} ${t("ج.م")}`],
+            ["أجر اليوم", `${fmtMoney((Number(employee.salary) || 0) / 30)} ${t("ج.م")}`],
+            ["أجر الساعة", `${fmtMoney((Number(employee.salary) || 0) / (30 * 8))} ${t("ج.م")}`],
+            ["تاريخ الميلاد", employee.birthDate || "—"],
+            ["رقم الموبايل", employee.phone || "—"],
+            ["الرقم القومي", employee.nationalId || "—"],
+            ["تاريخ التعيين", employee.hireDate || "—"],
+            ["نوع العقد", employee.contractType ? t(employee.contractType) : "—"],
+            ["بداية العقد", employee.contractStart || "—"],
+            ["نهاية العقد", employee.contractEnd || t("غير محدد")],
+            ["أيام الإجازة الأسبوعية", getWeeklyOffDays(employee).map((d) => t(d)).join("، ")],
+          ].map(([label, value]) => (
+            <div key={label} className="rounded-lg border border-stone-100 px-3 py-2">
+              <div className="text-[11px] text-slate-400">{t(label)}</div>
+              <div className="mt-0.5 text-sm font-medium text-slate-700">{value}</div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {sub === "leave" && (
         <div>
@@ -4176,6 +4210,10 @@ const TRANSLATIONS = {
   "مجموعة موظفين مكررين (بنفس الاسم أو نفس الكود). اختار مين يفضل من كل مجموعة — والبيانات (حضور، جزاءات، سلف...) هتتنقل تلقائي للي هيفضل.": "A group of duplicate employees (same name or same code). Choose who stays from each group — data (attendance, penalties, advances...) will automatically transfer to the one who stays.",
   "مزامنة مع بوابة الموظفين": "Sync with Employee Portal",
   "مستحق سنويًا": "Due Annually",
+  "عدد أيام العمل / الأسبوع": "Work Days / Week",
+  "أجر اليوم": "Daily Wage",
+  "أجر الساعة": "Hourly Wage",
+  "البيانات الأساسية": "Basic Info",
   "مضاعف أجر الوقت الإضافي": "Overtime Pay Multiplier",
   "معاد بداية الدوام الرسمي": "Official Work Start Time",
   "معاينة": "Preview",
