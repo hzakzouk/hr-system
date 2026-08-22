@@ -144,7 +144,11 @@ function dateRange(from, to) {
 // THEY are the department head, escalate to the CEO instead - a department head can never be
 // the one who approves their own request (also enforced server-side in firestore.rules).
 function resolveApprover(employee, orgChart) {
-  const dept = employee.department || "";
+  // .trim() هنا لازم يتطابق بالظبط مع نفس المنطق في تطبيق الإدارة (resolveDirectManager/
+  // buildOrgTree) - وإلا أي مسافة زيادة/ناقصة في حقل القسم بتاع الموظف تخلي المطابقة مع مفتاح
+  // departmentHeads تفشل بصمت، والطلب يتسجل من غير مسؤول (approverId = null) رغم إن الموظف
+  // متحدد صح كرئيس قسم في الهيكل التنظيمي.
+  const dept = (employee.department || "").trim();
   const headId = (orgChart.departmentHeads || {})[dept];
   const amIHead = headId === employee.id;
   const approverId = amIHead ? orgChart.ceoEmployeeId : headId;
