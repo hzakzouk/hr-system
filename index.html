@@ -1202,7 +1202,7 @@ function HRSystem({ adminUser }) {
         </aside>
 
         <main className="no-print min-w-0 flex-1">
-          {tab === "dashboard" && <CommandCenterTab employees={activeEmployees} allEmployees={employees} attendance={attendance} penalties={penalties} advances={advances} documents={documents} settings={settings} reviews={reviews} candidates={candidates} requests={requests} checklistItems={checklistItems} onOpenEmployee={setOpenEmployeeId} onGoToTab={setTab} />}
+          {tab === "dashboard" && <CommandCenterTab employees={activeEmployees} allEmployees={employees} orgChart={orgChart} attendance={attendance} penalties={penalties} advances={advances} documents={documents} settings={settings} reviews={reviews} candidates={candidates} requests={requests} checklistItems={checklistItems} onOpenEmployee={setOpenEmployeeId} onGoToTab={setTab} />}
           {tab === "employees" && <EmployeesTab
             employees={employees} setEmployees={upd.employees} settings={settings} onOpen={setOpenEmployeeId}
             attendance={attendance} setAttendance={upd.attendance}
@@ -1244,6 +1244,7 @@ function HRSystem({ adminUser }) {
           employees={employees} setEmployees={upd.employees}
           assets={assets} setAssets={upd.assets}
           checklistItems={checklistItems} setChecklistItems={upd.checklistItems}
+          orgChart={orgChart}
         />
       )}
 
@@ -1420,7 +1421,7 @@ function CommandCenterSection({ title, icon, tone, items, emptyText, children })
 // محتاجة قرار أو تنبيه من الـ Head of HR في مكان واحد (كانت شاشتين منفصلتين - "لوحة المتابعة"
 // القديمة و"المعلقات" - اتدمجوا في واحدة بعد ما اتقالنا إن قائمة أسامي الحضور مش مهمة وإن
 // التنبيهات محتاجة تبقى فيها زرار أكشن مباشر بدل ما تبقى نص بس).
-function CommandCenterTab({ employees, allEmployees, attendance, penalties, advances, documents, settings, reviews, candidates, requests, checklistItems, onOpenEmployee, onGoToTab }) {
+function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penalties, advances, documents, settings, reviews, candidates, requests, checklistItems, onOpenEmployee, onGoToTab }) {
   const { t, lang } = useLang();
   const today = todayISO();
 
@@ -1521,13 +1522,22 @@ function CommandCenterTab({ employees, allEmployees, attendance, penalties, adva
         <CommandCenterSection title="تقييمات دورية مستحقة" icon={<Star size={16} />} tone="teal" items={byType("reviewDue")} emptyText="مفيش تقييمات مستحقة دلوقتي.">
           {(a, i) => {
             const emp = findEmployeeByName(a.employeeName);
+            // التقييم الدوري بيعمله مدير الموظف المباشر (رئيس قسمه) مش الـ HR نفسه - فالتنبيه
+            // بيروح للمدير، زي بالظبط طلبات الموظفين المعلّقة.
+            const manager = emp ? resolveDirectManager(emp, orgChart, allEmployees || employees) : null;
+            const msg = manager && emp ? `مرحبًا ${manager.name}،\nحان موعد التقييم الدوري لـ ${emp.name} (${a.overdue ? "متأخر - كان مستحق" : "مستحق"} ${a.date}) - يا ريت تتابعه.` : "";
             return (
               <div key={i} className="flex items-center justify-between rounded-lg border border-stone-100 px-3 py-2 text-sm">
                 <div>
                   <div className="font-medium text-slate-700">{a.employeeName}</div>
-                  <StampBadge tone={a.overdue ? "rose" : "teal"}>{a.overdue ? t("متأخر - كان مستحق {date}", { date: a.date }) : t("مستحق {date}", { date: a.date })}</StampBadge>
+                  <div className="mt-1 flex items-center gap-2">
+                    <StampBadge tone={a.overdue ? "rose" : "teal"}>{a.overdue ? t("متأخر - كان مستحق {date}", { date: a.date }) : t("مستحق {date}", { date: a.date })}</StampBadge>
+                    {manager && <span className="text-xs text-slate-400">- {manager.name}</span>}
+                  </div>
                 </div>
-                <ReviewButton onClick={() => emp && onOpenEmployee(emp.id)} />
+                {manager
+                  ? <RemindButton href={buildAlertWhatsAppLink(manager, msg)} />
+                  : <span className="shrink-0 text-[11px] text-amber-600">{t("تعذّر تحديد المسؤول - راجع الهيكل التنظيمي")}</span>}
               </div>
             );
           }}
@@ -2267,7 +2277,7 @@ function EmployeeForm({ initial, settings, employees = [], onSave, onCancel }) {
 }
 
 /* ---- Employee profile (leave / documents / reviews) ---- */
-function EmployeeProfileModal({ employee, onClose, attendance, documents, setDocuments, reviews, setReviews, settings, employees, setEmployees, assets, setAssets, checklistItems, setChecklistItems }) {
+function EmployeeProfileModal({ employee, onClose, attendance, documents, setDocuments, reviews, setReviews, settings, employees, setEmployees, assets, setAssets, checklistItems, setChecklistItems, orgChart }) {
   const { t } = useLang();
   const [sub, setSub] = useState("info");
   const [pin, setPin] = useState("");
@@ -2432,6 +2442,34 @@ function EmployeeProfileModal({ employee, onClose, attendance, documents, setDoc
                 {t("تثبيت الموظف الآن")}
               </button>
             )}
+          </div>
+        );
+      })()}
+      {sub === "info" && (() => {
+        const manager = resolveDirectManager(employee, orgChart, employees);
+        const reports = resolveDirectReports(employee, orgChart, employees);
+        const isCeo = employee.id === orgChart.ceoEmployeeId;
+        return (
+          <div className="mt-4 rounded-xl border border-stone-200 bg-stone-50 p-4">
+            <h4 className="mb-3 flex items-center gap-2 text-sm font-bold text-slate-700"><Network size={14} /> {t("الموقع في الهيكل التنظيمي")}</h4>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <div className="text-[11px] text-slate-400">{t("المدير المباشر")}</div>
+                <div className="mt-1 text-sm font-medium text-slate-700">
+                  {manager ? manager.name : isCeo ? t("لا يوجد - الرئيس التنفيذي") : t("غير محدد في الهيكل التنظيمي")}
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] text-slate-400">{t("الفريق تحت إدارته ({n})", { n: reports.length })}</div>
+                {reports.length === 0 ? (
+                  <div className="mt-1 text-sm text-slate-400">{t("لا يوجد")}</div>
+                ) : (
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    {reports.map((r) => <StampBadge key={r.id} tone="slate">{r.name}</StampBadge>)}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         );
       })()}
@@ -4308,6 +4346,38 @@ function buildOrgTree(employees, orgChart) {
   return { ceo, departments };
 }
 
+// نفس منطق resolveApprover في بوابة الموظف (رئيس القسم، أو الرئيس التنفيذي لو الموظف نفسه
+// رئيس قسم، أو محدش لو هو الرئيس التنفيذي نفسه) - بس هنا لأي استخدام عام محتاج يعرف "مين
+// المدير المباشر" (زي بروفايل الموظف وتنبيه التقييمات الدورية)، مش بس توجيه الطلبات. بتدوّر في
+// كل الموظفين المُمرَّرة من غير فلترة حالة، عشان مايتكررش نفس باگ "المسؤول مش نشط فاختفى".
+function resolveDirectManager(employee, orgChart, employees) {
+  if (!employee) return null;
+  if (employee.id === orgChart.ceoEmployeeId) return null; // الرئيس التنفيذي مالوش حد فوقه
+  const dept = employee.department || "";
+  const headId = (orgChart.departmentHeads || {})[dept];
+  if (headId === employee.id) {
+    // الموظف نفسه رئيس القسم - مديره المباشر هو الرئيس التنفيذي
+    return employees.find((e) => e.id === orgChart.ceoEmployeeId) || null;
+  }
+  return employees.find((e) => e.id === headId) || null;
+}
+// عكس resolveDirectManager: مين تحت إدارة الموظف ده مباشرة. الرئيس التنفيذي تحته كل رؤساء
+// الأقسام، رئيس القسم تحته باقي أفراد قسمه، وأي موظف عادي تاني مفيش حد تحته (هيكل من 3 مستويات
+// بس، زي buildOrgTree بالظبط).
+function resolveDirectReports(employee, orgChart, employees) {
+  if (!employee) return [];
+  if (employee.id === orgChart.ceoEmployeeId) {
+    const headIds = new Set(Object.values(orgChart.departmentHeads || {}));
+    return employees.filter((e) => headIds.has(e.id) && e.id !== employee.id);
+  }
+  const dept = employee.department || "";
+  const headId = (orgChart.departmentHeads || {})[dept];
+  if (headId === employee.id) {
+    return employees.filter((e) => (e.department || "") === dept && e.id !== employee.id);
+  }
+  return [];
+}
+
 function PersonBox({ person, role, tone = "teal", placeholder, subtitle, crown }) {
   const { t } = useLang();
   const toneCls = {
@@ -4619,6 +4689,12 @@ const TRANSLATIONS = {
   "مفيش طلبات معلّقة دلوقتي.": "No pending requests right now.",
   "مفيش رقم موبايل": "No phone number",
   "تعذّر تحديد المسؤول - راجع الهيكل التنظيمي": "Couldn't identify who's responsible - check the Org Chart",
+  "الموقع في الهيكل التنظيمي": "Position in the Org Chart",
+  "المدير المباشر": "Direct Manager",
+  "لا يوجد - الرئيس التنفيذي": "None - this is the CEO",
+  "غير محدد في الهيكل التنظيمي": "Not set in the Org Chart",
+  "الفريق تحت إدارته ({n})": "Team They Manage ({n})",
+  "لا يوجد": "None",
   "فترة اختبار محتاجة قرار": "Probation Needing a Decision",
   "مفيش فترات اختبار قربت تخلص دلوقتي.": "No probation periods ending soon.",
   "خلصت في {date}": "Ended on {date}",
@@ -5119,7 +5195,6 @@ const TRANSLATIONS = {
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(<AdminAuthGate />);
-
 </script>
 </body>
 </html>
