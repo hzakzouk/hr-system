@@ -2242,6 +2242,10 @@ function AttendanceTab({ employees, attendance, patchAttendance, settings }) {
   function shiftDay(delta) { const d = new Date(date); d.setDate(d.getDate() + delta); setDate(d.toISOString().slice(0, 10)); }
 
   const counts = employees.reduce((acc, e) => { const st = getAttEntry(attendance, date, e.id)?.status; if (st) acc[st] = (acc[st] || 0) + 1; return acc; }, { present: 0, absent: 0, late: 0, leave: 0 });
+  // المتأخر لسه حاضر فعليًا - نفس القاعدة المتبعة في لوحة المتابعة وتقرير معدل الحضور:
+  // كارت "حاضر" هنا لازم يشمل المتأخرين، و"متأخر" بيبقى بس توضيح لكام واحد من الحاضرين
+  // ده كان متأخر (مش فئة منفصلة بتتشال من العدد).
+  const presentIncludingLate = counts.present + counts.late;
 
   return (
     <div>
@@ -2257,7 +2261,7 @@ function AttendanceTab({ employees, attendance, patchAttendance, settings }) {
       } />
 
       <div className="mb-5 grid grid-cols-4 gap-3">
-        <div className="rounded-xl bg-emerald-50 px-4 py-3 text-emerald-700"><div className="text-xl font-bold tabular-nums">{counts.present}</div><div className="text-xs font-medium">{t("حاضر")}</div></div>
+        <div className="rounded-xl bg-emerald-50 px-4 py-3 text-emerald-700"><div className="text-xl font-bold tabular-nums">{presentIncludingLate}</div><div className="text-xs font-medium">{t("حاضر")}</div></div>
         <div className="rounded-xl bg-rose-50 px-4 py-3 text-rose-700"><div className="text-xl font-bold tabular-nums">{counts.absent}</div><div className="text-xs font-medium">{t("غايب")}</div></div>
         <div className="rounded-xl bg-amber-50 px-4 py-3 text-amber-700"><div className="text-xl font-bold tabular-nums">{counts.late}</div><div className="text-xs font-medium">{t("متأخر")}</div></div>
         <div className="rounded-xl bg-sky-50 px-4 py-3 text-sky-700"><div className="text-xl font-bold tabular-nums">{counts.leave}</div><div className="text-xs font-medium">{t("إجازة")}</div></div>
