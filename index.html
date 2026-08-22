@@ -696,12 +696,14 @@ function computeAttendanceRateForMonth(employeeIds, attendance, ym) {
     Object.entries(attendance[date] || {}).forEach(([empId, entry]) => {
       if (!idSet.has(empId)) return;
       const status = typeof entry === "string" ? entry : entry?.status;
+      // المتأخر لسه حاضر فعليًا - بيتحسب جوه present زي لوحة المتابعة بالظبط، و late
+      // بتتعد لوحدها كمان للتوضيح بس، مش بتتحسب مرتين في total.
       if (status === "present") present++;
+      else if (status === "late") { present++; late++; }
       else if (status === "absent") absent++;
-      else if (status === "late") late++;
     });
   });
-  const total = present + absent + late;
+  const total = present + absent;
   return { present, absent, late, rate: total === 0 ? null : Math.round((present / total) * 1000) / 10 };
 }
 
@@ -1245,7 +1247,10 @@ async function sendAlertsEmail(alerts, notifySettings) {
 function Dashboard({ employees, attendance, penalties, advances, settings, documents, notifySettings }) {
   const { t, lang } = useLang();
   const today = todayISO();
-  const presentToday = employees.filter((e) => getAttEntry(attendance, today, e.id)?.status === "present").length;
+  // المتأخر لسه حاضر فعليًا (جه الشغل بس متأخر) - يتحسب جوه "حاضر النهاردة"، و"متأخر
+  // النهاردة" بيبقى بس توضيح لكام واحد من الحاضرين ده كان متأخر (مش فئة منفصلة بتتشال
+  // من إجمالي الحاضرين). عشان كده حاضر + غايب لازم يساووا إجمالي الموظفين دايمًا.
+  const presentToday = employees.filter((e) => { const s = getAttEntry(attendance, today, e.id)?.status; return s === "present" || s === "late"; }).length;
   const absentToday = employees.filter((e) => getAttEntry(attendance, today, e.id)?.status === "absent").length;
   const lateToday = employees.filter((e) => getAttEntry(attendance, today, e.id)?.status === "late").length;
 
