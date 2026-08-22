@@ -1202,7 +1202,7 @@ function HRSystem({ adminUser }) {
         </aside>
 
         <main className="no-print min-w-0 flex-1">
-          {tab === "dashboard" && <CommandCenterTab employees={activeEmployees} attendance={attendance} penalties={penalties} advances={advances} documents={documents} settings={settings} notifySettings={notifySettings} reviews={reviews} candidates={candidates} requests={requests} checklistItems={checklistItems} onOpenEmployee={setOpenEmployeeId} onGoToTab={setTab} />}
+          {tab === "dashboard" && <CommandCenterTab employees={activeEmployees} attendance={attendance} penalties={penalties} advances={advances} documents={documents} settings={settings} reviews={reviews} candidates={candidates} requests={requests} checklistItems={checklistItems} onOpenEmployee={setOpenEmployeeId} onGoToTab={setTab} />}
           {tab === "employees" && <EmployeesTab
             employees={employees} setEmployees={upd.employees} settings={settings} onOpen={setOpenEmployeeId}
             attendance={attendance} setAttendance={upd.attendance}
@@ -1420,7 +1420,7 @@ function CommandCenterSection({ title, icon, tone, items, emptyText, children })
 // محتاجة قرار أو تنبيه من الـ Head of HR في مكان واحد (كانت شاشتين منفصلتين - "لوحة المتابعة"
 // القديمة و"المعلقات" - اتدمجوا في واحدة بعد ما اتقالنا إن قائمة أسامي الحضور مش مهمة وإن
 // التنبيهات محتاجة تبقى فيها زرار أكشن مباشر بدل ما تبقى نص بس).
-function CommandCenterTab({ employees, attendance, penalties, advances, documents, settings, notifySettings, reviews, candidates, requests, checklistItems, onOpenEmployee, onGoToTab }) {
+function CommandCenterTab({ employees, attendance, penalties, advances, documents, settings, reviews, candidates, requests, checklistItems, onOpenEmployee, onGoToTab }) {
   const { t, lang } = useLang();
   const today = todayISO();
 
@@ -1454,24 +1454,6 @@ function CommandCenterTab({ employees, attendance, penalties, advances, document
   function findEmployee(id) { return employees.find((e) => e.id === id); }
   function findEmployeeByName(name) { return employees.find((e) => e.name === name); }
 
-  const [emailState, setEmailState] = useState("idle"); // idle | sending | sent | error
-  const [emailError, setEmailError] = useState("");
-  async function handleSendAlertsEmail() {
-    setEmailState("sending");
-    setEmailError("");
-    try {
-      await sendAlertsEmail(alerts, notifySettings);
-      setEmailState("sent");
-      setTimeout(() => setEmailState("idle"), 4000);
-    } catch (err) {
-      const key = err?.message === "NOT_CONFIGURED" ? t("إعدادات إشعارات الإيميل لسه فاضية — كمّلها من تاب «الإعدادات» الأول.")
-        : err?.message === "NO_RECIPIENT" ? t("لازم تحدد إيميل المستلم في تاب «الإعدادات» الأول.")
-        : t("تعذّر إرسال الإيميل — راجع إعدادات الإشعارات وجرب تاني.");
-      setEmailError(key);
-      setEmailState("error");
-    }
-  }
-
   return (
     <div>
       <SectionTitle eyebrow={new Date().toLocaleDateString(lang === "en" ? "en-GB" : "ar-EG", { weekday: "long", year: "numeric", month: "long", day: "numeric" })} title="لوحة المتابعة" />
@@ -1489,37 +1471,25 @@ function CommandCenterTab({ employees, attendance, penalties, advances, document
           <span className="text-slate-500">{t("خصومات الجزاءات هذا الشهر:")}</span>
           <span className="font-bold text-slate-800 tabular-nums">{fmtMoney(penaltiesTotal)} {t("ج.م")}</span>
         </div>
-        {alerts.length > 0 && (
-          <div className="flex items-center gap-2">
-            {emailState === "sent" && <span className="flex items-center gap-1 text-xs font-medium text-emerald-700"><Check size={12} /> {t("اتبعت التنبيهات بالإيميل.")}</span>}
-            {emailState === "error" && <span className="text-xs font-medium text-rose-600">{emailError}</span>}
-            <button
-              onClick={handleSendAlertsEmail}
-              disabled={emailState === "sending"}
-              title={t("إرسال كل التنبيهات بالإيميل")}
-              className="flex shrink-0 items-center gap-1 rounded-md border border-teal-700 px-2.5 py-1.5 text-xs font-semibold text-teal-800 hover:bg-teal-50 disabled:opacity-50"
-            >
-              {emailState === "sending" ? <Loader2 size={13} className="animate-spin" /> : <Mail size={13} />}
-              {t("إرسال كل التنبيهات بالإيميل")}
-            </button>
-          </div>
-        )}
       </Card>
 
       <div className="mt-6 grid grid-cols-1 gap-5 lg:grid-cols-2">
         <CommandCenterSection title="طلبات الموظفين المعلّقة" icon={<ClipboardList size={16} />} tone="rose" items={pendingRequests} emptyText="مفيش طلبات معلّقة دلوقتي.">
           {(r) => {
-            const emp = findEmployee(r.employeeId);
+            // approverId بيتحدث أوتوماتيك لما الطلب يتصعّد لـ pending_ceo (بيبقى id الرئيس
+            // التنفيذي بدل رئيس القسم) - فهو دايمًا المسؤول الحالي عن القرار، مهما كانت الحالة.
+            const responsible = findEmployee(r.approverId);
+            const msg = `مرحبًا ${responsible?.name || ""}،\nطلب ${REQUEST_KIND_LABELS[r.kind] || r.kind} من ${r.employeeName} مستني قرارك من ${daysBetween(r.createdAt.slice(0, 10), today)} يوم - يا ريت تراجعه من بوابة الموظف.`;
             return (
               <div key={r.id} className="flex items-center justify-between rounded-lg border border-stone-100 px-3 py-2 text-sm">
                 <div>
                   <div className="font-medium text-slate-700">{r.employeeName}</div>
                   <div className="mt-1 flex items-center gap-2">
                     <StampBadge tone="amber">{t(REQUEST_KIND_LABELS[r.kind] || r.kind)}</StampBadge>
-                    <span className="text-xs text-slate-400">{t(REQUEST_STATUS_LABELS[r.status] || r.status)}</span>
+                    <span className="text-xs text-slate-400">{t(REQUEST_STATUS_LABELS[r.status] || r.status)}{responsible ? ` - ${responsible.name}` : ""}</span>
                   </div>
                 </div>
-                <ReviewButton onClick={() => emp && onOpenEmployee(emp.id)} />
+                <RemindButton href={responsible ? buildAlertWhatsAppLink(responsible, msg) : null} />
               </div>
             );
           }}
