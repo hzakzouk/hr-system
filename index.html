@@ -222,7 +222,7 @@ function flattenAttendanceForDiff(nextAttendance) {
   Object.entries(nextAttendance || {}).forEach(([date, dayRec]) => {
     Object.entries(dayRec || {}).forEach(([employeeId, entry]) => {
       if (!entry || !entry.status) return;
-      out.push({ id: `${date}_${employeeId}`, status: entry.status, overtimeHours: Number(entry.overtimeHours) || 0 });
+      out.push({ id: `${date}_${employeeId}`, status: entry.status, overtimeHours: Number(entry.overtimeHours) || 0, lateMinutes: Number(entry.lateMinutes) || 0 });
     });
   });
   return out;
@@ -299,7 +299,7 @@ async function syncAttendanceRecords(nextAttendance, currentRecords) {
       if (!entry || !entry.status) return;
       const id = `${date}_${employeeId}`;
       nextIds.add(id);
-      ops.push({ type: "set", ref: doc(db, "attendanceRecords", id), data: { date, employeeId, status: entry.status, overtimeHours: Number(entry.overtimeHours) || 0 } });
+      ops.push({ type: "set", ref: doc(db, "attendanceRecords", id), data: { date, employeeId, status: entry.status, overtimeHours: Number(entry.overtimeHours) || 0, lateMinutes: Number(entry.lateMinutes) || 0 } });
     });
   });
   currentRecords.forEach((r) => {
@@ -324,10 +324,10 @@ async function syncAttendanceRecords(nextAttendance, currentRecords) {
 // never sent to Firestore at all, so it can never be overwritten with stale data. A falsy
 // `status` deletes the record (matches the toggle-off behavior below).
 async function syncAttendancePatch(patch) {
-  const ops = patch.map(({ date, employeeId, status, overtimeHours }) => {
+  const ops = patch.map(({ date, employeeId, status, overtimeHours, lateMinutes }) => {
     const ref = doc(db, "attendanceRecords", `${date}_${employeeId}`);
     return status
-      ? { type: "set", ref, data: { date, employeeId, status, overtimeHours: Number(overtimeHours) || 0 } }
+      ? { type: "set", ref, data: { date, employeeId, status, overtimeHours: Number(overtimeHours) || 0, lateMinutes: Number(lateMinutes) || 0 } }
       : { type: "delete", ref };
   });
   await commitOpsChunked(ops);
@@ -355,9 +355,11 @@ function payslipRowToDoc(ym, r) {
     base: Number(r.emp.salary) || 0,
     absentDays: r.absentDays,
     overtimeHours: r.overtimeHours,
+    lateMinutes: r.lateMinutes,
     absenceDeduction: r.absenceDeduction,
     penaltyDeduction: r.penaltyDeduction,
     advanceDeduction: r.advanceDeduction,
+    lateDeduction: r.lateDeduction,
     insuranceDeduction: r.insuranceDeduction,
     taxDeduction: r.taxDeduction,
     overtimePay: r.overtimePay,
@@ -592,8 +594,8 @@ function normalizeStatusText(val) {
 function getAttEntry(attendance, date, empId) {
   const raw = (attendance[date] || {})[empId];
   if (!raw) return null;
-  if (typeof raw === "string") return { status: raw, overtimeHours: 0 };
-  return raw;
+  if (typeof raw === "string") return { status: raw, overtimeHours: 0, lateMinutes: 0 };
+  return { lateMinutes: 0, ...raw };
 }
 
 function advanceDeductionForMonth(adv, ym) {
@@ -623,12 +625,18 @@ function advanceRemaining(adv) {
 // inside PayrollTab) specifically so ReportsTab can reuse the exact same math instead of
 // drifting out of sync with a second copy of it.
 function computePayrollRow(e, ym, attendance, penalties, advances, settings, meta) {
-  let absentDays = 0, overtimeHours = 0;
+  let absentDays = 0, overtimeHours = 0, lateMinutes = 0;
   Object.keys(attendance).forEach((date) => {
     if (monthKey(date) !== ym) return;
     const entry = getAttEntry(attendance, date, e.id);
     if (!entry) return;
     if (entry.status === "absent") absentDays++;
+    // Late-minute deductions only ever come from a day actually marked "late" - AttendanceTab
+    // and the file importer both clear lateMinutes back to 0 whenever a record's status moves
+    // away from "late" (see AttendanceTab.setStatus / AttendanceImportWizard.buildResult), but
+    // this guard is the belt-and-suspenders backstop against any older/imported record that
+    // happens to carry a stray lateMinutes value under a different status.
+    if (entry.status === "late") lateMinutes += Number(entry.lateMinutes) || 0;
     overtimeHours += Number(entry.overtimeHours) || 0;
   });
   const base = Number(e.salary) || 0;
@@ -640,6 +648,10 @@ function computePayrollRow(e, ym, attendance, penalties, advances, settings, met
   const advanceDeduction = empAdvances.reduce((s, a) => s + advanceDeductionForMonth(a, ym), 0);
   const hourlyRate = base / (30 * 8);
   const overtimePay = Math.round(hourlyRate * settings.overtimeMultiplier * overtimeHours);
+  // Same per-hour basis as overtimePay above (base / (30 days * 8 hours)), just further divided
+  // into a per-minute rate - so an hour of lateness costs exactly as much as an hour of
+  // overtime pays, before the overtime multiplier.
+  const lateDeduction = Math.round((hourlyRate / 60) * lateMinutes);
   const empMeta = (meta || {})[e.id] || {};
   const bonus = Number(empMeta.bonus) || 0;
 
@@ -647,8 +659,8 @@ function computePayrollRow(e, ym, attendance, penalties, advances, settings, met
   const annualTaxable = Math.max(0, base * 12 - insuranceDeduction * 12 - settings.personalExemptionAnnual);
   const taxDeduction = Math.round(computeTax(annualTaxable, settings.taxBrackets) / 12);
 
-  const net = base - absenceDeduction - penaltyDeduction - advanceDeduction - insuranceDeduction - taxDeduction + overtimePay + bonus;
-  return { emp: e, absentDays, overtimeHours, absenceDeduction, penaltyDeduction, advanceDeduction, insuranceDeduction, taxDeduction, overtimePay, bonus, net, paid: !!empMeta.paid };
+  const net = base - absenceDeduction - penaltyDeduction - advanceDeduction - insuranceDeduction - taxDeduction - lateDeduction + overtimePay + bonus;
+  return { emp: e, absentDays, overtimeHours, lateMinutes, absenceDeduction, penaltyDeduction, advanceDeduction, lateDeduction, insuranceDeduction, taxDeduction, overtimePay, bonus, net, paid: !!empMeta.paid };
 }
 
 /* ---------- reports (pure, testable helpers - see ReportsTab for the tab that renders them) ---------- */
@@ -882,7 +894,7 @@ function HRSystem({ adminUser }) {
     const out = {};
     attendanceRecords.forEach((r) => {
       if (!out[r.date]) out[r.date] = {};
-      out[r.date][r.employeeId] = { status: r.status, overtimeHours: r.overtimeHours || 0 };
+      out[r.date][r.employeeId] = { status: r.status, overtimeHours: r.overtimeHours || 0, lateMinutes: r.lateMinutes || 0 };
     });
     return out;
   }, [attendanceRecords]);
@@ -927,10 +939,10 @@ function HRSystem({ adminUser }) {
     attendancePatch: (patch) => {
       track(syncAttendancePatch(patch));
       const before = {}, after = {};
-      patch.forEach(({ date, employeeId, status, overtimeHours }) => {
+      patch.forEach(({ date, employeeId, status, overtimeHours, lateMinutes }) => {
         const cur = getAttEntry(attendance, date, employeeId);
         if (cur && cur.status) { if (!before[date]) before[date] = {}; before[date][employeeId] = cur; }
-        if (status) { if (!after[date]) after[date] = {}; after[date][employeeId] = { status, overtimeHours }; }
+        if (status) { if (!after[date]) after[date] = {}; after[date][employeeId] = { status, overtimeHours, lateMinutes }; }
       });
       track(writeAuditLog(adminUser, "attendance", diffSummary(flattenAttendanceForDiff(before), flattenAttendanceForDiff(after))));
     },
@@ -2113,9 +2125,9 @@ function AttendanceTab({ employees, attendance, patchAttendance, settings }) {
   function importBulk(entries, fillAbsence, fromDate, toDate) {
     const patch = [];
     const touched = new Set();
-    entries.forEach(({ empId, date: d, status, overtimeHours }) => {
-      const current = getAttEntry(attendance, d, empId) || { status: null, overtimeHours: 0 };
-      patch.push({ date: d, employeeId: empId, status: status || current.status, overtimeHours: overtimeHours ?? current.overtimeHours });
+    entries.forEach(({ empId, date: d, status, overtimeHours, lateMinutes }) => {
+      const current = getAttEntry(attendance, d, empId) || { status: null, overtimeHours: 0, lateMinutes: 0 };
+      patch.push({ date: d, employeeId: empId, status: status || current.status, overtimeHours: overtimeHours ?? current.overtimeHours, lateMinutes: lateMinutes ?? current.lateMinutes });
       touched.add(`${d}_${empId}`);
     });
     if (fillAbsence && fromDate && toDate) {
@@ -2129,7 +2141,7 @@ function AttendanceTab({ employees, attendance, patchAttendance, settings }) {
           if (touched.has(key)) return;
           const existing = getAttEntry(attendance, ds, e.id);
           if (!existing || !existing.status) {
-            patch.push({ date: ds, employeeId: e.id, status: "absent", overtimeHours: existing?.overtimeHours || 0 });
+            patch.push({ date: ds, employeeId: e.id, status: "absent", overtimeHours: existing?.overtimeHours || 0, lateMinutes: 0 });
             touched.add(key);
           }
         });
@@ -2141,13 +2153,30 @@ function AttendanceTab({ employees, attendance, patchAttendance, settings }) {
   }
 
   function setStatus(empId, status) {
-    const current = getAttEntry(attendance, date, empId) || { status: null, overtimeHours: 0 };
+    const current = getAttEntry(attendance, date, empId) || { status: null, overtimeHours: 0, lateMinutes: 0 };
     const nextStatus = current.status === status ? null : status;
-    patchAttendance([{ date, employeeId: empId, status: nextStatus, overtimeHours: current.overtimeHours }]);
+    // Moving away from "late" (including toggling it off) clears any lateMinutes left over -
+    // a day that isn't marked "late" should never carry a leftover minutes figure into payroll.
+    const nextLateMinutes = nextStatus === "late" ? current.lateMinutes : 0;
+    patchAttendance([{ date, employeeId: empId, status: nextStatus, overtimeHours: current.overtimeHours, lateMinutes: nextLateMinutes }]);
   }
   function setOvertime(empId, hours) {
-    const current = getAttEntry(attendance, date, empId) || { status: null, overtimeHours: 0 };
-    patchAttendance([{ date, employeeId: empId, status: current.status, overtimeHours: Number(hours) || 0 }]);
+    const current = getAttEntry(attendance, date, empId) || { status: null, overtimeHours: 0, lateMinutes: 0 };
+    patchAttendance([{ date, employeeId: empId, status: current.status, overtimeHours: Number(hours) || 0, lateMinutes: current.lateMinutes }]);
+  }
+  // Entering minutes late auto-promotes the status to "late" (when it's currently unset or
+  // "present") - this is the same rule the file importer applies (see buildResult below), so
+  // "متأخر" and a real minutes figure can never disagree with each other inside this app, no
+  // matter whether the number came from a click here or from an imported spreadsheet. An
+  // explicit "غائب"/"إجازة" status is left alone - lateness doesn't apply to a day off, so a
+  // number typed here while one of those is set is discarded (mirrors setStatus's own rule of
+  // never letting a non-"late" record carry a stray lateMinutes value into payroll).
+  function setLateMinutes(empId, minutes) {
+    const current = getAttEntry(attendance, date, empId) || { status: null, overtimeHours: 0, lateMinutes: 0 };
+    const mins = Number(minutes) || 0;
+    const nextStatus = mins > 0 && (!current.status || current.status === "present") ? "late" : current.status;
+    const nextLateMinutes = nextStatus === "late" ? mins : 0;
+    patchAttendance([{ date, employeeId: empId, status: nextStatus, overtimeHours: current.overtimeHours, lateMinutes: nextLateMinutes }]);
   }
   function shiftDay(delta) { const d = new Date(date); d.setDate(d.getDate() + delta); setDate(d.toISOString().slice(0, 10)); }
 
@@ -2178,7 +2207,7 @@ function AttendanceTab({ employees, attendance, patchAttendance, settings }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-                <th className="px-4 py-3">{t("الموظف")}</th><th className="px-4 py-3">{t("الحالة")}</th><th className="px-4 py-3">{t("ساعات إضافي")}</th>
+                <th className="px-4 py-3">{t("الموظف")}</th><th className="px-4 py-3">{t("الحالة")}</th><th className="px-4 py-3">{t("دقايق التأخير")}</th><th className="px-4 py-3">{t("ساعات إضافي")}</th>
               </tr>
             </thead>
             <tbody>
@@ -2196,6 +2225,9 @@ function AttendanceTab({ employees, attendance, patchAttendance, settings }) {
                           ))}
                         </div>
                       )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <input type="number" min="0" step="1" className="w-20 rounded-md border border-stone-200 px-2 py-1 text-xs tabular-nums outline-none focus:border-teal-500" value={entry?.lateMinutes || ""} onChange={(e2) => setLateMinutes(e.id, e2.target.value)} placeholder="0" />
                     </td>
                     <td className="px-4 py-3">
                       <input type="number" min="0" step="0.5" className="w-20 rounded-md border border-stone-200 px-2 py-1 text-xs tabular-nums outline-none focus:border-teal-500" value={entry?.overtimeHours || ""} onChange={(e2) => setOvertime(e.id, e2.target.value)} placeholder="0" />
@@ -2222,6 +2254,8 @@ const ATTENDANCE_IMPORT_FIELDS = [
   { key: "timeIn", label: "وقت الحضور (لو متاح)" },
   { key: "timeOut", label: "وقت الانصراف (لو متاح، اختياري)" },
   { key: "statusText", label: "الحالة الجاهزة (لو الملف بيقولها مباشرة)" },
+  { key: "lateMinutes", label: "دقايق التأخير (لو الملف فيه عمود بيها — بتلغي أي حالة \"حاضر\" متضاربة معاها)" },
+  { key: "overtimeHours", label: "ساعات إضافي (لو متاحة)" },
 ];
 
 function AttendanceImportWizard({ employees, settings, onImport, onCancel }) {
@@ -2251,6 +2285,8 @@ function AttendanceImportWizard({ employees, settings, onImport, onCancel }) {
           if (f.key === "timeIn") return hl.includes("in") || h.includes("حضور") || h.includes("دخول");
           if (f.key === "timeOut") return hl.includes("out") || h.includes("انصراف") || h.includes("خروج");
           if (f.key === "statusText") return hl.includes("status") || h.includes("حالة");
+          if (f.key === "lateMinutes") return hl.includes("late") || h.includes("دقائق") || h.includes("تأخير");
+          if (f.key === "overtimeHours") return hl.includes("overtime") || h.includes("إضافي");
           return false;
         });
         if (idx !== -1) auto[f.key] = idx;
@@ -2295,20 +2331,50 @@ function AttendanceImportWizard({ employees, settings, onImport, onCancel }) {
       if (!maxDate || isoDate > maxDate) maxDate = isoDate;
       if (!empId) { unmatchedNames.add(displayLabel || "—"); return; }
 
+      let lateMinutes;
+      if (mapping.lateMinutes !== undefined) {
+        const rawLate = r[mapping.lateMinutes];
+        const n = Number(rawLate);
+        if (rawLate !== null && rawLate !== "" && !isNaN(n)) lateMinutes = n;
+      }
+      let overtimeHours;
+      if (mapping.overtimeHours !== undefined) {
+        const rawOt = r[mapping.overtimeHours];
+        const n = Number(rawOt);
+        if (rawOt !== null && rawOt !== "" && !isNaN(n)) overtimeHours = n;
+      }
+
       let status = null;
-      if (mapping.statusText !== undefined) {
+      // A real "late minutes" figure is ground truth and wins over whatever a separate
+      // "Status"/statusText column says - a raw attendance export commonly marks someone
+      // "Present" for having clocked in at all, even on a day they clocked in late, which is
+      // exactly the mismatch reported live (an employee showing "present, not late" in this
+      // app while a device export's own late-minutes column said 60). Trusting the minutes
+      // column instead of the status text column resolves that at the source.
+      if (lateMinutes > 0) {
+        status = "late";
+      } else if (mapping.statusText !== undefined) {
         status = normalizeStatusText(r[mapping.statusText]);
       }
       if (!status && mapping.timeIn !== undefined) {
         const inMin = parseTimeToMinutes(r[mapping.timeIn]);
         if (inMin !== null) {
           const startMin = parseTimeToMinutes(settings.workStartTime) ?? 540;
-          status = inMin > startMin + (settings.lateGraceMinutes || 0) ? "late" : "present";
+          const diff = inMin - startMin;
+          if (diff > (settings.lateGraceMinutes || 0)) {
+            status = "late";
+            // No explicit Late Mins column was mapped - derive an actual minutes-late figure
+            // from the real clock-in time instead of leaving it blank, so payroll still sees a
+            // number to deduct against.
+            if (lateMinutes === undefined) lateMinutes = diff;
+          } else {
+            status = "present";
+          }
         }
       }
       if (!status) status = "present"; // a punch/row exists, so treat as present by default
 
-      results.push({ empId, date: isoDate, status, overtimeHours: undefined });
+      results.push({ empId, date: isoDate, status, overtimeHours, lateMinutes: status === "late" ? (lateMinutes || 0) : 0 });
     });
 
     return { results, unmatchedNames: [...unmatchedNames], minDate, maxDate };
@@ -2333,7 +2399,7 @@ function AttendanceImportWizard({ employees, settings, onImport, onCancel }) {
       )}
       {step === 2 && (
         <div>
-          <p className="mb-3 text-sm text-slate-500">{t("حدد الأعمدة. لازم التاريخ + (كود الموظف أو اسمه على الأقل) — بعد كده إما \"الحالة الجاهزة\" أو \"وقت الحضور\" (عشان نحسب متأخر تلقائي).")}</p>
+          <p className="mb-3 text-sm text-slate-500">{t("حدد الأعمدة. لازم التاريخ + (كود الموظف أو اسمه على الأقل) — بعد كده إما \"الحالة الجاهزة\" أو \"وقت الحضور\" (عشان نحسب متأخر تلقائي). لو حددت عمود \"دقايق التأخير\" هيبقى هو الأساس دايمًا (حتى لو عمود \"الحالة\" في نفس الملف بيقول \"حاضر\")، وهيتحسب منه خصم في المرتب تلقائي زي ساعات الإضافي بالظبط.")}</p>
           <div className="space-y-2">
             {ATTENDANCE_IMPORT_FIELDS.map((f) => (
               <div key={f.key} className="flex items-center gap-3">
@@ -2625,7 +2691,7 @@ function PayrollTab({ employees, attendance, penalties, payrollMeta, setPayrollM
   const syncedCount = payslipDocs.filter((d) => d.id.startsWith(`${ym}_`)).length;
   const totals = rows.reduce((acc, r) => {
     acc.base += Number(r.emp.salary) || 0;
-    acc.deductions += r.absenceDeduction + r.penaltyDeduction + r.advanceDeduction + r.insuranceDeduction + r.taxDeduction;
+    acc.deductions += r.absenceDeduction + r.lateDeduction + r.penaltyDeduction + r.advanceDeduction + r.insuranceDeduction + r.taxDeduction;
     acc.additions += r.overtimePay + r.bonus;
     acc.net += r.net;
     return acc;
@@ -2671,7 +2737,7 @@ function PayrollTab({ employees, attendance, penalties, payrollMeta, setPayrollM
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-                <th className="px-3 py-3">{t("الموظف")}</th><th className="px-3 py-3">{t("الأساسي")}</th><th className="px-3 py-3">{t("غياب")}</th><th className="px-3 py-3">{t("جزاءات")}</th>
+                <th className="px-3 py-3">{t("الموظف")}</th><th className="px-3 py-3">{t("الأساسي")}</th><th className="px-3 py-3">{t("غياب")}</th><th className="px-3 py-3">{t("خصم تأخير")}</th><th className="px-3 py-3">{t("جزاءات")}</th>
                 <th className="px-3 py-3">{t("سلف")}</th><th className="px-3 py-3">{t("تأمينات")}</th><th className="px-3 py-3">{t("ضريبة")}</th><th className="px-3 py-3">{t("إضافي")}</th>
                 <th className="px-3 py-3">{t("مكافأة")}</th><th className="px-3 py-3">{t("الصافي")}</th><th className="px-3 py-3">{t("الحالة")}</th><th className="px-3 py-3"></th>
               </tr></thead>
@@ -2681,6 +2747,7 @@ function PayrollTab({ employees, attendance, penalties, payrollMeta, setPayrollM
                     <td className="px-3 py-3 font-medium text-slate-800 whitespace-nowrap">{r.emp.name}</td>
                     <td className="px-3 py-3 tabular-nums text-slate-600">{fmtMoney(r.emp.salary)}</td>
                     <td className="px-3 py-3 tabular-nums text-rose-600">-{fmtMoney(r.absenceDeduction)}</td>
+                    <td className="px-3 py-3 tabular-nums text-rose-600">-{fmtMoney(r.lateDeduction)}</td>
                     <td className="px-3 py-3 tabular-nums text-rose-600">-{fmtMoney(r.penaltyDeduction)}</td>
                     <td className="px-3 py-3 tabular-nums text-rose-600">-{fmtMoney(r.advanceDeduction)}</td>
                     <td className="px-3 py-3 tabular-nums text-rose-600">-{fmtMoney(r.insuranceDeduction)}</td>
@@ -2728,6 +2795,7 @@ function PayslipModal({ row, ym, onClose }) {
             <tbody>
               <Row label="الراتب الأساسي" value={row.emp.salary} />
               <Row label="خصم أيام الغياب" value={-row.absenceDeduction} />
+              {row.lateDeduction > 0 && <Row label="خصم تأخير ({n} دقيقة)" vars={{ n: row.lateMinutes }} value={-row.lateDeduction} />}
               <Row label="خصم الجزاءات" value={-row.penaltyDeduction} />
               <Row label="خصم قسط السلفة" value={-row.advanceDeduction} />
               <Row label="التأمينات الاجتماعية" value={-row.insuranceDeduction} />
@@ -2745,12 +2813,12 @@ function PayslipModal({ row, ym, onClose }) {
     </div>
   );
 }
-function Row({ label, value }) {
+function Row({ label, value, vars }) {
   const { t } = useLang();
   const neg = value < 0;
   return (
     <tr className="border-b border-stone-100">
-      <td className="py-2 text-slate-600">{t(label)}</td>
+      <td className="py-2 text-slate-600">{t(label, vars)}</td>
       <td className={`py-2 text-left tabular-nums font-medium ${neg ? "text-rose-600" : "text-slate-700"}`}>{neg ? "-" : value > 0 ? "+" : ""}{fmtMoney(Math.abs(value))} {t("ج.م")}</td>
     </tr>
   );
@@ -2863,7 +2931,7 @@ const AUDIT_FIELD_LABELS = {
   leaveEntitlement: "رصيد الإجازة السنوي", weeklyOffDays: "أيام الإجازة الأسبوعية", status: "الحالة",
   resignationDate: "تاريخ الاستقالة", lastWorkingDay: "آخر يوم عمل",
   settlementAmount: "قيمة تسوية نهاية الخدمة", settlementNotes: "ملاحظات التسوية",
-  overtimeHours: "ساعات إضافي", actionType: "نوع الإجراء", reason: "السبب", amount: "قيمة الخصم", notes: "ملاحظات",
+  overtimeHours: "ساعات إضافي", lateMinutes: "دقايق التأخير", actionType: "نوع الإجراء", reason: "السبب", amount: "قيمة الخصم", notes: "ملاحظات",
   totalAmount: "قيمة السلفة", installments: "عدد الأقساط", expiryDate: "تاريخ الانتهاء",
   score: "التقييم", bonus: "المكافأة", paid: "تم الصرف",
   source: "مصدر الترشيح", appliedDate: "تاريخ التقديم", stage: "مرحلة التوظيف",
@@ -4019,11 +4087,14 @@ const TRANSLATIONS = {
   "حفظ الإعدادات": "Save Settings",
   "خروج": "Sign Out",
   "خصم أيام الغياب": "Absence Deduction",
+  "خصم تأخير": "Late Deduction",
+  "خصم تأخير ({n} دقيقة)": "Late Deduction ({n} min)",
   "خصم الجزاءات": "Penalty Deduction",
   "خصم قسط السلفة": "Advance Installment Deduction",
   "خصم مالي": "Financial Deduction",
   "خصومات التأمينات والضريبة تقديرية حسب النسب في تاب «الإعدادات» — راجعها مع محاسبك قبل الاعتماد عليها فعليًا.": "Insurance and tax deductions are estimated from the rates in the \"Settings\" tab — review them with your accountant before relying on them.",
   "خصومات الجزاءات هذا الشهر": "This Month's Penalty Deductions",
+  "حدد الأعمدة. لازم التاريخ + (كود الموظف أو اسمه على الأقل) — بعد كده إما \"الحالة الجاهزة\" أو \"وقت الحضور\" (عشان نحسب متأخر تلقائي). لو حددت عمود \"دقايق التأخير\" هيبقى هو الأساس دايمًا (حتى لو عمود \"الحالة\" في نفس الملف بيقول \"حاضر\")، وهيتحسب منه خصم في المرتب تلقائي زي ساعات الإضافي بالظبط.": "Pick the columns. You need Date + (employee code or name at least) — then either a ready-made \"Status\" column or a \"Time In\" column (so lateness can be calculated automatically). If you pick a \"Late Minutes\" column, it always wins (even if a \"Status\" column in the same file says \"Present\"), and it's automatically deducted from payroll exactly like overtime hours are added.",
   "دائم": "Permanent",
   "دخول": "Sign In",
   "دمج المكررات ({n})": "Merge Duplicates ({n})",
@@ -4033,6 +4104,8 @@ const TRANSLATIONS = {
   "دور بالاسم أو الوظيفة أو القسم...": "Search by name, position, or department...",
   "دوس هنا أو اسحب ملف Excel / CSV": "Click here or drag an Excel / CSV file",
   "دول بيتستخدموا لما تستورد بيانات حضور بوقت دخول بس (من جهاز البصمة) عشان نحدد تلقائي مين \"متأخر\".": "These are used when you import attendance data with just a time-in (from a fingerprint device) so we can automatically determine who's \"late\".",
+  "دقايق التأخير": "Late Minutes",
+  "دقايق التأخير (لو الملف فيه عمود بيها — بتلغي أي حالة \"حاضر\" متضاربة معاها)": "Late Minutes (if the file has a column for it — overrides any conflicting \"Present\" status)",
   "رئيس/مديرة كل إدارة": "Head of Each Department",
   "رجوع": "Back",
   "رصيد إجازات {name} باقيله {n} يوم بس": "{name}'s leave balance has only {n} day(s) left",
@@ -4041,6 +4114,7 @@ const TRANSLATIONS = {
   "رقم الموبايل": "Mobile Number",
   "رقم سري للموظف (6-8 أرقام)": "Employee PIN (6-8 digits)",
   "ساعات إضافي": "Overtime Hours",
+  "ساعات إضافي (لو متاحة)": "Overtime Hours (if available)",
   "سجل حضور.": "attendance record.",
   "سجل يومي": "Daily Log",
   "سلف": "Advances",
