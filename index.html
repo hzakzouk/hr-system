@@ -1775,9 +1775,13 @@ const EMPLOYEE_IMPORT_FIELDS = [
   { key: "department", label: "القسم" },
   { key: "phone", label: "رقم الموبايل" },
   { key: "nationalId", label: "الرقم القومي" },
+  { key: "birthDate", label: "تاريخ الميلاد (تاريخ)" },
   { key: "hireDate", label: "تاريخ التعيين (تاريخ)" },
   { key: "salary", label: "الراتب الأساسي (رقم)" },
   { key: "contractType", label: "نوع العقد" },
+  { key: "contractStart", label: "بداية العقد (تاريخ)" },
+  { key: "contractEnd", label: "نهاية العقد (تاريخ، اختياري)" },
+  { key: "leaveEntitlement", label: "رصيد الإجازة السنوي (رقم، اختياري)" },
   { key: "weeklyOffDaysText", label: "أيام الإجازة الأسبوعية (مفصولة بفاصلة)" },
 ];
 
@@ -1819,8 +1823,18 @@ function EmployeeImportWizard({ employees, onImport, onCancel }) {
         if (idx === undefined || idx === "") return;
         const raw = r[idx];
         if (f.key === "salary") rec.salary = Number(raw) || 0;
+        else if (f.key === "leaveEntitlement") { const n = parseInt(String(raw).match(/\d+/)?.[0], 10); if (!isNaN(n)) rec.leaveEntitlement = n; }
         else if (f.key === "hireDate") rec.hireDate = excelSerialToISODate(raw) || todayISO();
-        else if (f.key === "weeklyOffDaysText") rec.weeklyOffDays = raw ? String(raw).split(/[,،]/).map((s) => s.trim()).filter((d) => WEEKDAYS.includes(d)) : ["الجمعة"];
+        else if (f.key === "birthDate" || f.key === "contractStart" || f.key === "contractEnd") rec[f.key] = excelSerialToISODate(raw) || "";
+        else if (f.key === "weeklyOffDaysText") {
+          // بيقبل فواصل عادية أو "و" أو مسافات، وبيتسامح مع اختلاف رسم الألف/الهمزة وآخر الكلمة
+          // (الجمعه/الجمعة) اللي بيحصل كتير في ملفات الإكسيل المكتوبة يدويًا.
+          const norm = (s) => s.trim().replace(/[إأآ]/g, "ا").replace(/ة$/, "ه");
+          const dayByNorm = {}; WEEKDAYS.forEach((d) => { dayByNorm[norm(d)] = d; });
+          const parts = raw ? String(raw).split(/[,،\s]+/).map((s) => s.trim()).filter((s) => s && s !== "و") : [];
+          const matched = parts.map((s) => dayByNorm[norm(s)]).filter(Boolean);
+          rec.weeklyOffDays = matched.length ? matched : ["الجمعة"];
+        }
         else rec[f.key] = String(raw || "").trim();
       });
       return rec;
