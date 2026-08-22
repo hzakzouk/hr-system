@@ -2113,7 +2113,7 @@ function EmployeeProfileModal({ employee, onClose, attendance, documents, setDoc
 
 /* ================= ATTENDANCE ================= */
 function AttendanceTab({ employees, attendance, patchAttendance, settings }) {
-  const { t } = useLang();
+  const { t, lang } = useLang();
   const [date, setDate] = useState(todayISO());
   const [importOpen, setImportOpen] = useState(false);
   const dayRecord = attendance[date] || {};
@@ -2189,9 +2189,9 @@ function AttendanceTab({ employees, attendance, patchAttendance, settings }) {
           <button onClick={() => setImportOpen(true)} className="flex items-center gap-1.5 rounded-lg border border-teal-700 px-3 py-2 text-sm font-semibold text-teal-800 hover:bg-teal-50">
             <Upload size={15} /> {t("استيراد من ملف")}
           </button>
-          <button onClick={() => shiftDay(-1)} className="rounded-lg border border-stone-300 p-2 hover:bg-stone-50"><ChevronRight size={16} /></button>
+          <button onClick={() => shiftDay(-1)} className="rounded-lg border border-stone-300 p-2 hover:bg-stone-50">{lang === "en" ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}</button>
           <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={`${inputCls} w-auto`} />
-          <button onClick={() => shiftDay(1)} className="rounded-lg border border-stone-300 p-2 hover:bg-stone-50"><ChevronLeft size={16} /></button>
+          <button onClick={() => shiftDay(1)} className="rounded-lg border border-stone-300 p-2 hover:bg-stone-50">{lang === "en" ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}</button>
         </div>
       } />
 
@@ -2680,7 +2680,7 @@ function SettlementForm({ emp, onSave, onCancel }) {
 
 /* ================= PAYROLL ================= */
 function PayrollTab({ employees, attendance, penalties, payrollMeta, setPayrollMeta, advances, settings, payslipDocs, onSyncPayslips }) {
-  const { t } = useLang();
+  const { t, lang } = useLang();
   const [ym, setYm] = useState(todayISO().slice(0, 7));
   const [payslipEmp, setPayslipEmp] = useState(null);
   const meta = payrollMeta[ym] || {};
@@ -2707,9 +2707,9 @@ function PayrollTab({ employees, attendance, penalties, payrollMeta, setPayrollM
     <div>
       <SectionTitle eyebrow={t("كشف رواتب شهري")} title={t("المرتبات")} action={
         <div className="flex items-center gap-2">
-          <button onClick={() => shiftMonth(-1)} className="rounded-lg border border-stone-300 p-2 hover:bg-stone-50"><ChevronRight size={16} /></button>
+          <button onClick={() => shiftMonth(-1)} className="rounded-lg border border-stone-300 p-2 hover:bg-stone-50">{lang === "en" ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}</button>
           <input type="month" value={ym} onChange={(e) => setYm(e.target.value)} className={`${inputCls} w-auto`} />
-          <button onClick={() => shiftMonth(1)} className="rounded-lg border border-stone-300 p-2 hover:bg-stone-50"><ChevronLeft size={16} /></button>
+          <button onClick={() => shiftMonth(1)} className="rounded-lg border border-stone-300 p-2 hover:bg-stone-50">{lang === "en" ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}</button>
         </div>
       } />
 
