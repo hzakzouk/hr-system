@@ -1202,7 +1202,7 @@ function HRSystem({ adminUser }) {
         </aside>
 
         <main className="no-print min-w-0 flex-1">
-          {tab === "dashboard" && <CommandCenterTab employees={activeEmployees} attendance={attendance} penalties={penalties} advances={advances} documents={documents} settings={settings} reviews={reviews} candidates={candidates} requests={requests} checklistItems={checklistItems} onOpenEmployee={setOpenEmployeeId} onGoToTab={setTab} />}
+          {tab === "dashboard" && <CommandCenterTab employees={activeEmployees} allEmployees={employees} attendance={attendance} penalties={penalties} advances={advances} documents={documents} settings={settings} reviews={reviews} candidates={candidates} requests={requests} checklistItems={checklistItems} onOpenEmployee={setOpenEmployeeId} onGoToTab={setTab} />}
           {tab === "employees" && <EmployeesTab
             employees={employees} setEmployees={upd.employees} settings={settings} onOpen={setOpenEmployeeId}
             attendance={attendance} setAttendance={upd.attendance}
@@ -1420,7 +1420,7 @@ function CommandCenterSection({ title, icon, tone, items, emptyText, children })
 // محتاجة قرار أو تنبيه من الـ Head of HR في مكان واحد (كانت شاشتين منفصلتين - "لوحة المتابعة"
 // القديمة و"المعلقات" - اتدمجوا في واحدة بعد ما اتقالنا إن قائمة أسامي الحضور مش مهمة وإن
 // التنبيهات محتاجة تبقى فيها زرار أكشن مباشر بدل ما تبقى نص بس).
-function CommandCenterTab({ employees, attendance, penalties, advances, documents, settings, reviews, candidates, requests, checklistItems, onOpenEmployee, onGoToTab }) {
+function CommandCenterTab({ employees, allEmployees, attendance, penalties, advances, documents, settings, reviews, candidates, requests, checklistItems, onOpenEmployee, onGoToTab }) {
   const { t, lang } = useLang();
   const today = todayISO();
 
@@ -1453,6 +1453,10 @@ function CommandCenterTab({ employees, attendance, penalties, advances, document
 
   function findEmployee(id) { return employees.find((e) => e.id === id); }
   function findEmployeeByName(name) { return employees.find((e) => e.name === name); }
+  // بيدوّر في كل الموظفين (بما فيهم أي حد مش "نشط" حاليًا) - مش بس النشطين زي findEmployee.
+  // مستخدمة تحديدًا لتحليل المسؤول عن قرار معلّق (رئيس قسم أو الرئيس التنفيذي)، عشان أي فلترة
+  // بحالة الموظف ميبقاش سبب إن السيستم "يفقد" حد لسه مسؤول عن قرارات فعليًا.
+  function findAnyEmployee(id) { return (allEmployees || employees).find((e) => e.id === id); }
 
   return (
     <div>
@@ -1478,7 +1482,9 @@ function CommandCenterTab({ employees, attendance, penalties, advances, document
           {(r) => {
             // approverId بيتحدث أوتوماتيك لما الطلب يتصعّد لـ pending_ceo (بيبقى id الرئيس
             // التنفيذي بدل رئيس القسم) - فهو دايمًا المسؤول الحالي عن القرار، مهما كانت الحالة.
-            const responsible = findEmployee(r.approverId);
+            // بندوّر في كل الموظفين (findAnyEmployee) مش النشطين بس - المسؤول (رئيس قسم أو رئيس
+            // تنفيذي) ممكن يكون حالته في السيستم مش "نشط" بالظبط، وده لازم مايمنعش ظهور اسمه هنا.
+            const responsible = findAnyEmployee(r.approverId);
             const msg = `مرحبًا ${responsible?.name || ""}،\nطلب ${REQUEST_KIND_LABELS[r.kind] || r.kind} من ${r.employeeName} مستني قرارك من ${daysBetween(r.createdAt.slice(0, 10), today)} يوم - يا ريت تراجعه من بوابة الموظف.`;
             return (
               <div key={r.id} className="flex items-center justify-between rounded-lg border border-stone-100 px-3 py-2 text-sm">
@@ -1489,7 +1495,9 @@ function CommandCenterTab({ employees, attendance, penalties, advances, document
                     <span className="text-xs text-slate-400">{t(REQUEST_STATUS_LABELS[r.status] || r.status)}{responsible ? ` - ${responsible.name}` : ""}</span>
                   </div>
                 </div>
-                <RemindButton href={responsible ? buildAlertWhatsAppLink(responsible, msg) : null} />
+                {responsible
+                  ? <RemindButton href={buildAlertWhatsAppLink(responsible, msg)} />
+                  : <span className="shrink-0 text-[11px] text-amber-600">{t("تعذّر تحديد المسؤول - راجع الهيكل التنظيمي")}</span>}
               </div>
             );
           }}
@@ -4609,6 +4617,8 @@ const TRANSLATIONS = {
   "كل حاجة محتاجة قرارك في مكان واحد": "Everything needing your decision, in one place",
   "طلبات الموظفين المعلّقة": "Pending Employee Requests",
   "مفيش طلبات معلّقة دلوقتي.": "No pending requests right now.",
+  "مفيش رقم موبايل": "No phone number",
+  "تعذّر تحديد المسؤول - راجع الهيكل التنظيمي": "Couldn't identify who's responsible - check the Org Chart",
   "فترة اختبار محتاجة قرار": "Probation Needing a Decision",
   "مفيش فترات اختبار قربت تخلص دلوقتي.": "No probation periods ending soon.",
   "خلصت في {date}": "Ended on {date}",
