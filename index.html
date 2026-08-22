@@ -1202,7 +1202,7 @@ function HRSystem({ adminUser }) {
         </aside>
 
         <main className="no-print min-w-0 flex-1">
-          {tab === "dashboard" && <CommandCenterTab employees={activeEmployees} allEmployees={employees} orgChart={orgChart} attendance={attendance} penalties={penalties} advances={advances} documents={documents} settings={settings} reviews={reviews} candidates={candidates} requests={requests} checklistItems={checklistItems} onOpenEmployee={setOpenEmployeeId} onGoToTab={setTab} />}
+          {tab === "dashboard" && <CommandCenterTab employees={activeEmployees} allEmployees={employees} orgChart={orgChart} attendance={attendance} penalties={penalties} advances={advances} documents={documents} settings={settings} reviews={reviews} candidates={candidates} requests={requests} checklistItems={checklistItems} assets={assets} onOpenEmployee={setOpenEmployeeId} onGoToTab={setTab} />}
           {tab === "employees" && <EmployeesTab
             employees={employees} setEmployees={upd.employees} settings={settings} onOpen={setOpenEmployeeId}
             attendance={attendance} setAttendance={upd.attendance}
@@ -1421,7 +1421,7 @@ function CommandCenterSection({ title, icon, tone, items, emptyText, children })
 // محتاجة قرار أو تنبيه من الـ Head of HR في مكان واحد (كانت شاشتين منفصلتين - "لوحة المتابعة"
 // القديمة و"المعلقات" - اتدمجوا في واحدة بعد ما اتقالنا إن قائمة أسامي الحضور مش مهمة وإن
 // التنبيهات محتاجة تبقى فيها زرار أكشن مباشر بدل ما تبقى نص بس).
-function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penalties, advances, documents, settings, reviews, candidates, requests, checklistItems, onOpenEmployee, onGoToTab }) {
+function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penalties, advances, documents, settings, reviews, candidates, requests, checklistItems, assets, onOpenEmployee, onGoToTab }) {
   const { t, lang } = useLang();
   const today = todayISO();
 
@@ -1444,13 +1444,23 @@ function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penal
   const pendingRequests = requests.filter((r) => r.status === "pending" || r.status === "pending_ceo")
     .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
 
+  // بنجمّع بمفتاح (الموظف + نوع الخطوة) مش الموظف لوحده - عشان لو نفس الموظف كان عنده خطوات
+  // ضم ناقصة وخروج ناقصة في نفس الوقت (نادر بس ممكن)، الاتنين يظهروا كصفين منفصلين بدل ما
+  // واحد يمسح التاني. بنحتفظ بنص كل خطوة ناقصة (texts) عشان يظهر جوه القسم، مش بس العدد.
   const incompleteChecklists = useMemo(() => {
-    const byEmp = {};
+    const byKey = {};
     checklistItems.filter((c) => !c.done).forEach((c) => {
-      (byEmp[c.employeeId] = byEmp[c.employeeId] || { type: c.type, count: 0 }).count++;
+      const key = `${c.employeeId}__${c.type}`;
+      if (!byKey[key]) byKey[key] = { employeeId: c.employeeId, type: c.type, count: 0, texts: [] };
+      byKey[key].count++;
+      byKey[key].texts.push(c.text);
     });
-    return Object.entries(byEmp).map(([employeeId, v]) => ({ employeeId, ...v }));
+    return Object.values(byKey);
   }, [checklistItems]);
+
+  // أي عهدة (لابتوب، يونيفورم...) لسه ما اتسجّلش استرجاعها - لأي موظف حتى لو لسه شغال، مش بس
+  // اللي استقالوا (المستخدم طلب كده صراحة: "أي عهدة لسه مش مرجّعة، لأي موظف").
+  const outstandingAssets = useMemo(() => (assets || []).filter((a) => !a.returnedDate), [assets]);
 
   function findEmployee(id) { return employees.find((e) => e.id === id); }
   function findEmployeeByName(name) { return employees.find((e) => e.name === name); }
@@ -1598,12 +1608,33 @@ function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penal
           {(c) => {
             const emp = findEmployee(c.employeeId);
             return (
-              <div key={c.employeeId} className="flex items-center justify-between rounded-lg border border-stone-100 px-3 py-2 text-sm">
+              <div key={`${c.employeeId}_${c.type}`} className="flex items-center justify-between rounded-lg border border-stone-100 px-3 py-2 text-sm">
                 <div>
                   <div className="font-medium text-slate-700">{emp?.name || c.employeeId}</div>
-                  <StampBadge tone="slate">{c.type === "onboarding" ? t("ضم") : t("خروج")} - {t("{n} خطوة ناقصة", { n: c.count })}</StampBadge>
+                  <div className="mt-1 flex items-center gap-2">
+                    <StampBadge tone="slate">{c.type === "onboarding" ? t("ضم") : t("خروج")} - {t("{n} خطوة ناقصة", { n: c.count })}</StampBadge>
+                  </div>
+                  <div className="mt-1 text-xs text-slate-400">{c.texts.join(lang === "en" ? ", " : "، ")}</div>
                 </div>
                 <ReviewButton onClick={() => emp && onOpenEmployee(c.employeeId)} />
+              </div>
+            );
+          }}
+        </CommandCenterSection>
+
+        <CommandCenterSection title="عهدة لسه مش مرجّعة" icon={<Landmark size={16} />} tone="slate" items={outstandingAssets} emptyText="مفيش عهدة واقفة دلوقتي، كل حاجة اترجعت.">
+          {(a) => {
+            const emp = findAnyEmployee(a.employeeId);
+            return (
+              <div key={a.id} className="flex items-center justify-between rounded-lg border border-stone-100 px-3 py-2 text-sm">
+                <div>
+                  <div className="font-medium text-slate-700">{emp?.name || a.employeeId}</div>
+                  <div className="mt-1 flex items-center gap-2">
+                    <StampBadge tone="slate">{a.name}</StampBadge>
+                    <span className="text-xs text-slate-400">{t("اتسلّمت في {date}", { date: a.assignedDate })}</span>
+                  </div>
+                </div>
+                <ReviewButton onClick={() => emp && onOpenEmployee(emp.id)} />
               </div>
             );
           }}
@@ -4726,6 +4757,8 @@ const TRANSLATIONS = {
   "ضم": "Onboarding",
   "خروج": "Offboarding",
   "{n} خطوة ناقصة": "{n} step(s) left",
+  "عهدة لسه مش مرجّعة": "Assets Not Yet Returned",
+  "مفيش عهدة واقفة دلوقتي، كل حاجة اترجعت.": "No outstanding assets right now, everything's been returned.",
   "رصيد إجازة منخفض": "Low Leave Balance",
   "مفيش موظفين رصيدهم منخفض.": "No employees with a low balance.",
   "{n} يوم باقي": "{n} day(s) left",
