@@ -1768,21 +1768,25 @@ function FileDropZone({ onFile, fileName }) {
   );
 }
 
+// ملحوظة: match بتحدد الكلمة (أو الكلمات) اللي بيتقارن بيها اسم عمود الملف عشان
+// يتربط تلقائيًا بالحقل ده - لازم تكون كلمة مميزة للحقل ده بس، مش أول كلمة في label
+// (لو استخدمنا أول كلمة في label هتلاقي "تاريخ الميلاد" و"تاريخ التعيين" الاتنين
+// بيبدأوا بـ"تاريخ" فيتلخبطوا مع بعض ويتربطوا غلط بنفس العمود - ده كان باگ حقيقي حصل).
 const EMPLOYEE_IMPORT_FIELDS = [
-  { key: "employeeCode", label: "كود الموظف" },
-  { key: "name", label: "الاسم", required: true },
-  { key: "position", label: "الوظيفة" },
-  { key: "department", label: "القسم" },
-  { key: "phone", label: "رقم الموبايل" },
-  { key: "nationalId", label: "الرقم القومي" },
-  { key: "birthDate", label: "تاريخ الميلاد (تاريخ)" },
-  { key: "hireDate", label: "تاريخ التعيين (تاريخ)" },
-  { key: "salary", label: "الراتب الأساسي (رقم)" },
-  { key: "contractType", label: "نوع العقد" },
-  { key: "contractStart", label: "بداية العقد (تاريخ)" },
-  { key: "contractEnd", label: "نهاية العقد (تاريخ، اختياري)" },
-  { key: "leaveEntitlement", label: "رصيد الإجازة السنوي (رقم، اختياري)" },
-  { key: "weeklyOffDaysText", label: "أيام الإجازة الأسبوعية (مفصولة بفاصلة)" },
+  { key: "employeeCode", label: "كود الموظف", match: ["كود"] },
+  { key: "name", label: "الاسم", required: true, match: ["الاسم", "اسم الموظف"] },
+  { key: "position", label: "الوظيفة", match: ["الوظيفة"] },
+  { key: "department", label: "القسم", match: ["القسم"] },
+  { key: "phone", label: "رقم الموبايل", match: ["موبايل", "الهاتف", "تليفون"] },
+  { key: "nationalId", label: "الرقم القومي", match: ["الرقم القومي", "قومي"] },
+  { key: "birthDate", label: "تاريخ الميلاد (تاريخ)", match: ["الميلاد"] },
+  { key: "hireDate", label: "تاريخ التعيين (تاريخ)", match: ["التعيين"] },
+  { key: "salary", label: "الراتب الأساسي (رقم)", match: ["الراتب", "المرتب"] },
+  { key: "contractType", label: "نوع العقد", match: ["نوع العقد"] },
+  { key: "contractStart", label: "بداية العقد (تاريخ)", match: ["بداية العقد", "بداية"] },
+  { key: "contractEnd", label: "نهاية العقد (تاريخ، اختياري)", match: ["نهاية العقد", "نهاية"] },
+  { key: "leaveEntitlement", label: "رصيد الإجازة السنوي (رقم، اختياري)", match: ["رصيد"] },
+  { key: "weeklyOffDaysText", label: "أيام الإجازة الأسبوعية (مفصولة بفاصلة)", match: ["الإجازة الأسبوعية", "أسبوعية"] },
 ];
 
 function EmployeeImportWizard({ employees, onImport, onCancel }) {
@@ -1801,11 +1805,15 @@ function EmployeeImportWizard({ employees, onImport, onCancel }) {
       const { headers, dataRows } = await parseSpreadsheetFile(file);
       setHeaders(headers);
       setRows(dataRows);
-      // best-effort auto-mapping by matching header text
+      // best-effort auto-mapping by matching header text - كل عمود بيتربط مرة واحدة بس
+      // (usedIdx) عشان حقلين مختلفين (زي تاريخ الميلاد وتاريخ التعيين) ميتلخبطوش
+      // ويتربطوا غلط بنفس العمود لمجرد إنهم بيبدأوا بنفس الكلمة الأولى.
       const auto = {};
+      const usedIdx = new Set();
       EMPLOYEE_IMPORT_FIELDS.forEach((f) => {
-        const idx = headers.findIndex((h) => h.toLowerCase().includes(f.key.toLowerCase()) || h.includes(f.label.split(" ")[0]));
-        if (idx !== -1) auto[f.key] = idx;
+        const words = f.match || [f.label.split(" ")[0]];
+        const idx = headers.findIndex((h, i) => !usedIdx.has(i) && words.some((w) => h.includes(w)));
+        if (idx !== -1) { auto[f.key] = idx; usedIdx.add(idx); }
       });
       setMapping(auto);
       setStep(2);
