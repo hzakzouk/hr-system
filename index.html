@@ -4353,7 +4353,11 @@ function buildOrgTree(employees, orgChart) {
 function resolveDirectManager(employee, orgChart, employees) {
   if (!employee) return null;
   if (employee.id === orgChart.ceoEmployeeId) return null; // الرئيس التنفيذي مالوش حد فوقه
-  const dept = employee.department || "";
+  // لازم .trim() هنا زي بالظبط buildOrgTree وOrgChartTab (usedDepartments/setDeptHead) - وإلا
+  // أي مسافة زيادة/ناقصة في حقل القسم بتاع الموظف (حتى لو مش ظاهرة للعين) تخلي المطابقة مع
+  // مفتاح departmentHeads تفشل بصمت، والموظف يظهر "غير محدد في الهيكل التنظيمي" رغم إنه فعلاً
+  // متحدد كرئيس قسم صح في تاب الهيكل التنظيمي.
+  const dept = (employee.department || "").trim();
   const headId = (orgChart.departmentHeads || {})[dept];
   if (headId === employee.id) {
     // الموظف نفسه رئيس القسم - مديره المباشر هو الرئيس التنفيذي
@@ -4370,10 +4374,10 @@ function resolveDirectReports(employee, orgChart, employees) {
     const headIds = new Set(Object.values(orgChart.departmentHeads || {}));
     return employees.filter((e) => headIds.has(e.id) && e.id !== employee.id);
   }
-  const dept = employee.department || "";
+  const dept = (employee.department || "").trim();
   const headId = (orgChart.departmentHeads || {})[dept];
   if (headId === employee.id) {
-    return employees.filter((e) => (e.department || "") === dept && e.id !== employee.id);
+    return employees.filter((e) => (e.department || "").trim() === dept && e.id !== employee.id);
   }
   return [];
 }
