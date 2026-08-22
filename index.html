@@ -1485,7 +1485,15 @@ function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penal
             // التنفيذي بدل رئيس القسم) - فهو دايمًا المسؤول الحالي عن القرار، مهما كانت الحالة.
             // بندوّر في كل الموظفين (findAnyEmployee) مش النشطين بس - المسؤول (رئيس قسم أو رئيس
             // تنفيذي) ممكن يكون حالته في السيستم مش "نشط" بالظبط، وده لازم مايمنعش ظهور اسمه هنا.
-            const responsible = findAnyEmployee(r.approverId);
+            // لو approverId المسجّل على الطلب نفسه (وقت إنشائه) مبقاش بيتطابق مع حد موجود دلوقتي
+            // (بيانات قديمة، أو الهيكل التنظيمي اتغيّر بعد كده) - بنرجع نحسب المسؤول لايف من
+            // الهيكل التنظيمي الحالي بدل ما نسيب الطلب من غير مسؤول للأبد.
+            const responsible = findAnyEmployee(r.approverId) || (() => {
+              const requester = findAnyEmployee(r.employeeId) || findEmployeeByName(r.employeeName);
+              if (!requester) return null;
+              if (r.status === "pending_ceo") return findAnyEmployee(orgChart.ceoEmployeeId);
+              return resolveDirectManager(requester, orgChart, allEmployees || employees);
+            })();
             const msg = `مرحبًا ${responsible?.name || ""}،\nطلب ${REQUEST_KIND_LABELS[r.kind] || r.kind} من ${r.employeeName} مستني قرارك من ${daysBetween(r.createdAt.slice(0, 10), today)} يوم - يا ريت تراجعه من بوابة الموظف.`;
             return (
               <div key={r.id} className="flex items-center justify-between rounded-lg border border-stone-100 px-3 py-2 text-sm">
