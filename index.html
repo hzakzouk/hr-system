@@ -1488,7 +1488,7 @@ function Dashboard({ employees, attendance, penalties, advances, settings, docum
 // يدوّر في كل تاب لوحده أو يدخل بوابة الموظف عشان يشوف الطلبات. بيجمع: طلبات الموظفين
 // المعلّقة، فترات اختبار محتاجة قرار تثبيت، تقييمات دورية مستحقة، عقود قربت تنتهي، عروض عمل
 // واقفة (تعيينات متأخرة)، مستندات قربت تنتهي، وتشيك ليست ضم/خروج لسه ناقصة.
-function CommandCenterSection({ title, icon, tone, items, emptyText, renderItem }) {
+function CommandCenterSection({ title, icon, tone, items, emptyText, children }) {
   const { t } = useLang();
   const toneCls = { rose: "text-rose-700", amber: "text-amber-700", teal: "text-teal-700", slate: "text-slate-700" }[tone] || "text-slate-700";
   return (
@@ -1498,7 +1498,7 @@ function CommandCenterSection({ title, icon, tone, items, emptyText, renderItem 
         <span className="rounded-full bg-stone-100 px-2 py-0.5 text-xs font-semibold tabular-nums text-slate-500">{items.length}</span>
       </div>
       {items.length === 0 ? <p className="text-sm text-slate-400">{t(emptyText)}</p> : (
-        <div className="max-h-72 space-y-2 overflow-y-auto">{items.map(renderItem)}</div>
+        <div className="max-h-72 space-y-2 overflow-y-auto">{items.map(children)}</div>
       )}
     </Card>
   );
