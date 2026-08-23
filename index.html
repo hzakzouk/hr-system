@@ -2006,6 +2006,20 @@ function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, s
       if (rec.employeeCode) matchId = byCode[String(rec.employeeCode).trim().toLowerCase()];
       if (!matchId && rec.name) matchId = byName[rec.name.trim().toLowerCase()];
 
+      // موظف مستورد ومعاه تاريخ تعيين خلّصت فترة اختباره بالفعل (زي ما هي محسوبة من
+      // settings.probationMonths) - نعتبره متثبّت تلقائي بدل ما يفضل يظهر "محتاجة قرار" غلط
+      // في بروفايله ولوحة المتابعة، لأن الاستيراد الجماعي غالبًا بيانات موظفين قدامى موجودين
+      // فعلاً (زي ملف قاعدة بيانات الموظفين اللي رفعه المستخدم) مش تعيينات جديدة محتاجة قرار
+      // تثبيت حقيقي. لو الموظف ده موجود بالفعل وعنده تاريخ تثبيت حقيقي متسجّل قبل كده، مبنلمسوش
+      // - مانكتبش فوقه بتاريخ تخميني.
+      if (rec.hireDate) {
+        const existing = matchId ? updated.find((e) => e.id === matchId) : null;
+        if (!existing?.probationConfirmedAt) {
+          const probationEnd = addMonthsISO(rec.hireDate, settings.probationMonths ?? 3);
+          if (todayISO() >= probationEnd) rec.probationConfirmedAt = probationEnd;
+        }
+      }
+
       if (matchId) {
         updated = updated.map((e) => (e.id === matchId ? { ...e, ...rec } : e));
         updatedCount++;
