@@ -32,7 +32,7 @@ import ReactDOM from "react-dom/client";
 import {
   CalendarCheck, Clock, AlertTriangle, LogOut, Loader2, User, Lock, LogIn,
   Check, UserX, Wallet, Printer, Network, Crown, HandCoins, Plus, ClipboardList,
-  X, Info, Users, Languages,
+  X, Info, Users, Languages, Star, Trash2,
 } from "lucide-react";
 import { initializeApp } from "firebase/app";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
@@ -171,6 +171,61 @@ function planAdvanceDecision(req, status, employee, orgChart) {
     return { action: "escalate", approverId: orgChart.ceoEmployeeId };
   }
   return { action: "finalize" };
+}
+
+/* ================= التقييم الدوري (نصف سنوي/سنوي) - نسخة مطابقة تمامًا لنفس الثوابت
+   ومعادلات الحساب الموجودة في تطبيق الإدارة (hr-system.jsx: REVIEW_TYPES/PERIODIC_REVIEW_TYPES/
+   COMPETENCY_ITEMS/REVIEW_RATING_BANDS/computeReviewScore). الملفين ملهمش أي imports مشتركة،
+   فالنسخة دي لازم تتحدّث يدويًا لو أي حاجة اتغيرت في النسخة الأصلية بالإدارة. ================= */
+const REVIEW_TYPES = ["نصف سنوي", "سنوي", "منتصف فترة الاختبار", "نهاية فترة الاختبار"];
+const PERIODIC_REVIEW_TYPES = ["نصف سنوي", "سنوي"];
+const COMPETENCY_ITEMS = [
+  { key: "discipline", title: "الالتزام والانضباط", desc: "الالتزام بمواعيد العمل واللوائح" },
+  { key: "teamwork", title: "العمل الجماعي والتعاون", desc: "العمل مع الفريق وتسهيل المهام" },
+  { key: "problemSolving", title: "حل المشكلات والتفكير التحليلي", desc: "التعامل مع التحديات" },
+  { key: "communication", title: "التواصل الفعال", desc: "وضوح الرسائل مع الزملاء والإدارة" },
+  { key: "initiative", title: "المبادرة والتطوير الذاتي", desc: "السعي لتعلم مهارات جديدة" },
+];
+const REVIEW_RATING_BANDS = [
+  { min: 90, label: "ممتاز (Exceeds)" },
+  { min: 75, label: "جيد جداً (Meets)" },
+  { min: 60, label: "مرضي (Needs Improvement)" },
+  { min: -Infinity, label: "ضعيف (Below)" },
+];
+function reviewRatingForPercentage(pct) {
+  return (REVIEW_RATING_BANDS.find((b) => pct >= b.min) || REVIEW_RATING_BANDS[REVIEW_RATING_BANDS.length - 1]).label;
+}
+function computeReviewScore(kpis, competencies) {
+  const kpiList = kpis || [];
+  const compList = competencies || [];
+  const kpiWeightTotal = kpiList.reduce((s, k) => s + (Number(k.weight) || 0), 0);
+  const kpiContribution = kpiList.reduce((s, k) => s + (Number(k.weight) || 0) * (Number(k.managerScore) || 0), 0);
+  const competencyCount = compList.length || 1;
+  const competencySum = compList.reduce((s, c) => s + (Number(c.managerScore) || 0), 0);
+  const competencyContribution = (competencySum / competencyCount) * 0.4;
+  const finalScoreOutOf5 = kpiContribution + competencyContribution;
+  const finalPercentage = (finalScoreOutOf5 / 5) * 100;
+  const finalRating = reviewRatingForPercentage(finalPercentage);
+  return { kpiWeightTotal, kpiContribution, competencySum, competencyContribution, finalScoreOutOf5, finalPercentage, finalRating };
+}
+// المدير المباشر اللي هيكمّل تقييم الموظف ده - بنفس منطق resolveApprover بالظبط (رئيس القسم،
+// أو الرئيس التنفيذي لو الموظف نفسه رئيس قسم)، لأن ده نفس سؤال "مين المسؤول عن الموظف ده"
+// بتاع الطلبات بالظبط. لو رجعت null (مفيش رئيس قسم/تنفيذي محدد)، التقييم بيتسجل من غير
+// managerId - وهيفضل "awaiting_manager" لحد ما شؤون الأفراد تكمّله يدويًا من تطبيق الإدارة.
+function resolveReviewManagerId(employee, orgChart) {
+  return resolveApprover(employee, orgChart);
+}
+function uid(p) { return `${p}_${Date.now()}_${Math.floor(Math.random() * 100000)}`; }
+const RATING_TONE_CLS = {
+  emerald: "border-emerald-300 bg-emerald-50 text-emerald-700",
+  teal: "border-teal-300 bg-teal-50 text-teal-700",
+  amber: "border-amber-300 bg-amber-50 text-amber-700",
+  rose: "border-rose-300 bg-rose-50 text-rose-700",
+  slate: "border-stone-200 bg-stone-50 text-slate-500",
+};
+function ratingToneFor(rating) {
+  const r = rating || "";
+  return r.includes("ممتاز") ? "emerald" : r.includes("جيد جداً") ? "teal" : r.includes("مرضي") ? "amber" : r ? "rose" : "slate";
 }
 
 const inputCls = "w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-100";
@@ -569,6 +624,378 @@ function TeamRequestsSection({ employee, requests, loaded, orgChart }) {
   );
 }
 
+/* ================= التقييم الدوري - "تقييماتي" (Self Appraisal) ================= */
+// الموظف بيبدأ تقييم نفسه (نصف سنوي/سنوي) من هنا: بيختار النوع والسنة، يسجّل مؤشرات الأداء
+// (KPIs - قابلة للإضافة/التعديل منه، وزنها الإجمالي 60%) بأوزانها ودرجة نفسه، ودرجة نفسه في
+// بنود الجدارات السلوكية الخمسة الثابتة (Competencies - 40%). بعد ما يبعت التقييم بيبقى للقراءة
+// بس (status: "awaiting_manager") لحد ما مديره المباشر يكمّله من حسابه هو (تاب "تقييمات الفريق")
+// أو شؤون الأفراد تكمّله من تطبيق الإدارة - نفس فلسفة "HR عندها override كامل" المستخدمة هناك.
+function blankAppraisalDraft(employee, settings, type) {
+  const matchedKpis = (settings.kpiTemplates || []).filter((k) =>
+    (k.scope === "department" && k.scopeValue === employee.department) || (k.scope === "position" && k.scopeValue === employee.position)
+  );
+  return {
+    reviewType: type || PERIODIC_REVIEW_TYPES[0],
+    year: String(new Date().getFullYear()),
+    kpis: matchedKpis.map((k) => ({ id: k.id || uid("kpi"), title: k.title, weight: matchedKpis.length ? Math.round((0.6 / matchedKpis.length) * 100) / 100 : 0, target: k.target || "", selfScore: "" })),
+    competencies: COMPETENCY_ITEMS.map((c) => ({ key: c.key, selfScore: "", notes: "" })),
+    employeeNotes: "",
+  };
+}
+
+function MyReviewCard({ r }) {
+  const { t } = useLang();
+  const isCompleted = r.status === "completed";
+  const tone = ratingToneFor(r.finalRating);
+  return (
+    <Card className="p-3.5">
+      <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm font-semibold text-slate-700">{t(r.reviewType)} {r.year}</span>
+          {isCompleted ? (
+            <span className={`rounded-full border px-2.5 py-0.5 text-xs font-semibold ${RATING_TONE_CLS[tone]}`}>{t(r.finalRating)}</span>
+          ) : (
+            <span className="rounded-full border border-amber-300 bg-amber-50 px-2.5 py-0.5 text-xs font-semibold text-amber-700">{t("بانتظار تقييم المدير")}</span>
+          )}
+          {isCompleted && Number.isFinite(r.finalPercentage) && <span className="text-xs font-semibold tabular-nums text-slate-500">{Math.round(r.finalPercentage)}%</span>}
+        </div>
+        {r.date && <span className="text-xs text-slate-400">{r.date}</span>}
+      </div>
+      {r.managerNotes && <p className="mt-1 text-xs text-slate-500">{t("ملاحظات المدير: {n}", { n: r.managerNotes })}</p>}
+    </Card>
+  );
+}
+
+function MySelfAppraisalSection({ employee, orgChart, settings }) {
+  const { t } = useLang();
+  const [reviews, setReviews] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [draft, setDraft] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  useEffect(() => {
+    const q = query(collection(db, "reviews"), where("employeeId", "==", employee.id));
+    const unsub = onSnapshot(q, (snap) => {
+      setReviews(
+        snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+          .filter((r) => PERIODIC_REVIEW_TYPES.includes(r.reviewType))
+          .sort((a, b) => ((a.submittedAt || a.date || "") < (b.submittedAt || b.date || "") ? 1 : -1))
+      );
+      setLoaded(true);
+    }, () => setLoaded(true));
+    return unsub;
+  }, [employee.id]);
+
+  function startNew(type) { setMsg(null); setDraft(blankAppraisalDraft(employee, settings, type)); }
+  function addKpi() { setDraft((d) => ({ ...d, kpis: [...d.kpis, { id: uid("kpi"), title: "", weight: 0, target: "", selfScore: "" }] })); }
+  function updateKpi(id, field, value) { setDraft((d) => ({ ...d, kpis: d.kpis.map((k) => (k.id === id ? { ...k, [field]: value } : k)) })); }
+  function removeKpi(id) { setDraft((d) => ({ ...d, kpis: d.kpis.filter((k) => k.id !== id) })); }
+  function updateCompetency(key, field, value) { setDraft((d) => ({ ...d, competencies: d.competencies.map((c) => (c.key === key ? { ...c, [field]: value } : c)) })); }
+
+  async function submit(e) {
+    e.preventDefault();
+    setMsg(null);
+    const already = reviews.find((r) => r.reviewType === draft.reviewType && r.year === draft.year);
+    if (already) {
+      setMsg({ tone: "rose", text: t("عندك تقييم {type} لسنة {year} مسجل بالفعل - لو محتاج تعديل كلّم شؤون الأفراد.", { type: t(draft.reviewType), year: draft.year }) });
+      return;
+    }
+    const managerId = resolveReviewManagerId(employee, orgChart);
+    setBusy(true);
+    try {
+      await setDoc(doc(collection(db, "reviews")), {
+        employeeId: employee.id,
+        employeeName: employee.name,
+        department: employee.department || "",
+        reviewType: draft.reviewType,
+        year: draft.year,
+        status: "awaiting_manager",
+        managerId: managerId || null,
+        kpis: draft.kpis.map((k) => ({ id: k.id, title: k.title, weight: Number(k.weight) || 0, target: k.target || "", selfScore: k.selfScore === "" ? null : Number(k.selfScore), managerScore: null })),
+        competencies: draft.competencies.map((c) => ({ key: c.key, notes: c.notes || "", selfScore: c.selfScore === "" ? null : Number(c.selfScore), managerScore: null })),
+        employeeNotes: draft.employeeNotes,
+        submittedAt: new Date().toISOString(),
+      });
+      setMsg({ tone: "teal", text: managerId ? t("تم إرسال تقييمك - هيوصل لمديرك المباشر لإكماله.") : t("تم تسجيل تقييمك - مفيش مدير مباشر محدد حاليًا، شؤون الأفراد هتكمّله يدويًا.") });
+      setDraft(null);
+    } catch (err) {
+      setMsg({ tone: "rose", text: t("تعذّر إرسال التقييم. جرب تاني.") });
+    } finally { setBusy(false); }
+  }
+
+  if (!loaded) return <div className="flex justify-center py-10"><Loader2 className="animate-spin text-teal-700" size={22} /></div>;
+
+  return (
+    <div>
+      <p className="mb-4 flex items-start gap-1.5 rounded-lg bg-stone-50 px-3 py-2 text-xs text-slate-400"><Info size={13} className="mt-0.5 shrink-0" />{t("تقييمك بيتكوّن من مؤشرات أداء (KPIs - 60%) تقدر تضيفها وتعدّلها، وجدارات سلوكية ثابتة (Competencies - 40%). بعد ما تبعت تقييمك، بيوصل لمديرك المباشر يكمّله، والتقدير النهائي بيتحسب تلقائي.")}</p>
+
+      {!draft && (
+        <div className="mb-5 flex gap-2">
+          {PERIODIC_REVIEW_TYPES.map((pt) => (
+            <button key={pt} onClick={() => startNew(pt)} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Plus size={14} /> {t("تقييم {type} جديد", { type: t(pt) })}</button>
+          ))}
+        </div>
+      )}
+
+      {draft && (() => {
+        const weightTotal = draft.kpis.reduce((s, k) => s + (Number(k.weight) || 0), 0);
+        const weightOk = Math.abs(weightTotal - 0.6) < 1e-9;
+        return (
+          <Card className="mb-5 p-4">
+            <form onSubmit={submit} className="space-y-3">
+              <div className="grid grid-cols-3 gap-2">
+                <select className={inputCls} value={draft.reviewType} onChange={(e) => setDraft({ ...draft, reviewType: e.target.value })}>
+                  {PERIODIC_REVIEW_TYPES.map((pt) => <option key={pt} value={pt}>{t(pt)}</option>)}
+                </select>
+                <input placeholder={t("السنة")} className={inputCls} value={draft.year} onChange={(e) => setDraft({ ...draft, year: e.target.value })} />
+                <div className={`flex items-center justify-center rounded-lg px-2 text-center text-xs font-semibold ${weightOk ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+                  {t("مجموع أوزان الـ KPIs: {n}% (المطلوب 60%)", { n: Math.round(weightTotal * 100) })}
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-stone-200 p-2">
+                <div className="mb-1.5 flex items-center justify-between">
+                  <span className="text-[11px] font-semibold text-slate-500">{t("مؤشرات الأداء (KPIs)")}</span>
+                  <button type="button" onClick={addKpi} className="flex items-center gap-1 text-[11px] font-semibold text-teal-700 hover:text-teal-900"><Plus size={12} /> {t("إضافة مؤشر")}</button>
+                </div>
+                <div className="space-y-1.5">
+                  {draft.kpis.map((k) => (
+                    <div key={k.id} className="grid grid-cols-12 items-center gap-1.5 text-xs">
+                      <input placeholder={t("اسم المؤشر")} className={`${inputCls} col-span-5`} value={k.title} onChange={(e) => updateKpi(k.id, "title", e.target.value)} />
+                      <input type="number" step="0.01" min="0" max="1" placeholder={t("الوزن")} className={`${inputCls} col-span-2`} value={k.weight} onChange={(e) => updateKpi(k.id, "weight", e.target.value)} />
+                      <input placeholder={t("المستهدف")} className={`${inputCls} col-span-2`} value={k.target} onChange={(e) => updateKpi(k.id, "target", e.target.value)} />
+                      <select className={`${inputCls} col-span-2`} value={k.selfScore} onChange={(e) => updateKpi(k.id, "selfScore", e.target.value)}>
+                        <option value="">{t("تقييمي")}</option>{[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}
+                      </select>
+                      <button type="button" onClick={() => removeKpi(k.id)} className="col-span-1 flex justify-center text-slate-300 hover:text-rose-600"><Trash2 size={13} /></button>
+                    </div>
+                  ))}
+                  {draft.kpis.length === 0 && <p className="text-[11px] text-slate-400">{t("مفيش مؤشرات مضافة لسه - دوس «إضافة مؤشر».")}</p>}
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-stone-200 p-2">
+                <div className="mb-1.5 text-[11px] font-semibold text-slate-500">{t("الجدارات السلوكية (Competencies)")}</div>
+                <div className="space-y-1.5">
+                  {draft.competencies.map((c) => {
+                    const meta = COMPETENCY_ITEMS.find((ci) => ci.key === c.key);
+                    return (
+                      <div key={c.key} className="grid grid-cols-12 items-center gap-1.5 text-xs">
+                        <span className="col-span-7 text-slate-600" title={meta?.desc ? t(meta.desc) : ""}>{meta ? t(meta.title) : c.key}</span>
+                        <select className={`${inputCls} col-span-2`} value={c.selfScore} onChange={(e) => updateCompetency(c.key, "selfScore", e.target.value)}>
+                          <option value="">{t("تقييمي")}</option>{[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}
+                        </select>
+                        <input placeholder={t("ملاحظة")} className={`${inputCls} col-span-3`} value={c.notes} onChange={(e) => updateCompetency(c.key, "notes", e.target.value)} />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <Field label="ملاحظاتي"><textarea rows={2} className={inputCls} value={draft.employeeNotes} onChange={(e) => setDraft({ ...draft, employeeNotes: e.target.value })} /></Field>
+
+              {msg && <p className={`text-xs font-medium ${msg.tone === "rose" ? "text-rose-600" : "text-teal-700"}`}>{msg.text}</p>}
+              <div className="flex justify-end gap-2">
+                <button type="button" onClick={() => { setDraft(null); setMsg(null); }} className="rounded-lg border border-stone-300 px-3.5 py-2 text-sm font-semibold text-slate-500 hover:bg-stone-100">{t("إلغاء")}</button>
+                <button disabled={busy} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900 disabled:opacity-50">
+                  {busy ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} {t("إرسال التقييم")}
+                </button>
+              </div>
+            </form>
+          </Card>
+        );
+      })()}
+
+      <h3 className="mb-2 text-sm font-bold text-slate-700">{t("تقييماتي السابقة")}</h3>
+      {reviews.length === 0 ? <EmptyState text="لسه معملتش أي تقييم دوري." /> : (
+        <div className="space-y-2">{reviews.map((r) => <MyReviewCard key={r.id} r={r} />)}</div>
+      )}
+    </div>
+  );
+}
+
+/* ================= التقييم الدوري - "تقييمات الفريق" (المدير بيكمّل تقييمات فريقه) ================= */
+// نفس نمط TeamRequestsSection فوق بالظبط: كويري على reviews فلترة بـ managerId == حساب المدير
+// الحالي (نفس اعتبارات Firestore rules بتاعة requests/approverId - لازم الفلتر يبقى على نفس
+// الحقل اللي rule التاني بيتحقق منه عشان الـ list query يتقبل). المدير بيكمّل بس التقييمات
+// اللي الموظف بدأها من نفسه (status: "awaiting_manager") - بدء تقييم من الصفر لموظف لسه ما
+// قيّمش نفسه مقصور على تطبيق الإدارة (شؤون الأفراد) بقصد، مطابقة لتدفق العمل اللي المستخدم
+// طلبه بالظبط (Self ثم Manager).
+function TeamReviewsSection({ employee }) {
+  const { t } = useLang();
+  const [reviews, setReviews] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [editDraft, setEditDraft] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    const q = query(collection(db, "reviews"), where("managerId", "==", employee.id));
+    const unsub = onSnapshot(q, (snap) => {
+      setReviews(snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => ((a.submittedAt || a.date || "") < (b.submittedAt || b.date || "") ? 1 : -1)));
+      setLoaded(true);
+    }, () => setLoaded(true));
+    return unsub;
+  }, [employee.id]);
+
+  function startEdit(r) {
+    setEditingId(r.id);
+    setEditDraft({
+      kpis: (r.kpis || []).map((k) => ({ ...k })),
+      competencies: COMPETENCY_ITEMS.map((c) => {
+        const existing = (r.competencies || []).find((x) => x.key === c.key);
+        return existing ? { ...existing } : { key: c.key, selfScore: "", managerScore: "", notes: "" };
+      }),
+      managerNotes: r.managerNotes || "",
+    });
+  }
+  function updateKpi(id, field, value) { setEditDraft((d) => ({ ...d, kpis: d.kpis.map((k) => (k.id === id ? { ...k, [field]: value } : k)) })); }
+  function addKpi() { setEditDraft((d) => ({ ...d, kpis: [...d.kpis, { id: uid("kpi"), title: "", weight: 0, target: "", selfScore: "", managerScore: "" }] })); }
+  function removeKpi(id) { setEditDraft((d) => ({ ...d, kpis: d.kpis.filter((k) => k.id !== id) })); }
+  function updateCompetency(key, field, value) { setEditDraft((d) => ({ ...d, competencies: d.competencies.map((c) => (c.key === key ? { ...c, [field]: value } : c)) })); }
+
+  async function submitCompletion(r, e) {
+    e.preventDefault();
+    const cleanKpis = editDraft.kpis.map((k) => ({
+      id: k.id, title: k.title, weight: Number(k.weight) || 0, target: k.target || "",
+      selfScore: k.selfScore === "" || k.selfScore == null ? null : Number(k.selfScore),
+      managerScore: k.managerScore === "" || k.managerScore == null ? null : Number(k.managerScore),
+    }));
+    const cleanCompetencies = editDraft.competencies.map((c) => ({
+      key: c.key, notes: c.notes || "",
+      selfScore: c.selfScore === "" || c.selfScore == null ? null : Number(c.selfScore),
+      managerScore: c.managerScore === "" || c.managerScore == null ? null : Number(c.managerScore),
+    }));
+    const scored = computeReviewScore(cleanKpis, cleanCompetencies);
+    setBusy(true);
+    try {
+      await updateDoc(doc(db, "reviews", r.id), {
+        status: "completed",
+        kpis: cleanKpis,
+        competencies: cleanCompetencies,
+        managerNotes: editDraft.managerNotes,
+        ...scored,
+        date: todayISO(),
+        completedAt: todayISO(),
+        completedByName: employee.name,
+      });
+      setEditingId(null);
+      setEditDraft(null);
+    } catch (err) {
+      alert(t("تعذّر حفظ التقييم — راجع اتصالك بالإنترنت وجرب تاني."));
+    } finally { setBusy(false); }
+  }
+
+  const pending = reviews.filter((r) => r.status === "awaiting_manager");
+  const completed = reviews.filter((r) => r.status === "completed");
+
+  if (!loaded) return <div className="flex justify-center py-10"><Loader2 className="animate-spin text-teal-700" size={22} /></div>;
+
+  return (
+    <div>
+      <p className="mb-4 flex items-start gap-1.5 rounded-lg bg-stone-50 px-3 py-2 text-xs text-slate-400"><Info size={13} className="mt-0.5 shrink-0" />{t("لما أي حد من فريقك يبعت تقييم نفسه (نصف سنوي/سنوي)، هيظهر هنا عشان تكمّله بتقييمك (KPIs + الجدارات السلوكية)، والتقدير النهائي هيتحسب تلقائي.")}</p>
+
+      <h3 className="mb-2 text-sm font-bold text-slate-700">{t("تقييمات مستنية إكمالك ({n})", { n: pending.length })}</h3>
+      {pending.length === 0 ? <EmptyState text="مفيش تقييمات مستنية دلوقتي." /> : (
+        <div className="mb-6 space-y-2">
+          {pending.map((r) => (
+            <Card key={r.id} className="p-3.5">
+              <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+                <span className="text-sm font-semibold text-slate-700">{r.employeeName} — {t(r.reviewType)} {r.year}</span>
+                {editingId !== r.id && (
+                  <button onClick={() => startEdit(r)} className="flex items-center gap-1 rounded-lg bg-teal-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-900"><Check size={13} /> {t("إكمال التقييم")}</button>
+                )}
+              </div>
+              {r.employeeNotes && <p className="mb-1 text-xs text-slate-500">{t("ملاحظات {name}: {n}", { name: r.employeeName, n: r.employeeNotes })}</p>}
+
+              {editingId === r.id && editDraft && (() => {
+                const weightTotal = editDraft.kpis.reduce((s, k) => s + (Number(k.weight) || 0), 0);
+                const weightOk = Math.abs(weightTotal - 0.6) < 1e-9;
+                const preview = computeReviewScore(editDraft.kpis, editDraft.competencies);
+                return (
+                  <form onSubmit={(e) => submitCompletion(r, e)} className="mt-2 space-y-3 rounded-lg border border-stone-200 bg-stone-50 p-3">
+                    <div className={`rounded-lg px-2 py-1.5 text-center text-xs font-semibold ${weightOk ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+                      {t("مجموع أوزان الـ KPIs: {n}% (المطلوب 60%)", { n: Math.round(weightTotal * 100) })}
+                    </div>
+                    <div className="rounded-lg border border-stone-200 bg-white p-2">
+                      <div className="mb-1.5 flex items-center justify-between">
+                        <span className="text-[11px] font-semibold text-slate-500">{t("مؤشرات الأداء (KPIs)")}</span>
+                        <button type="button" onClick={addKpi} className="flex items-center gap-1 text-[11px] font-semibold text-teal-700 hover:text-teal-900"><Plus size={12} /> {t("إضافة مؤشر")}</button>
+                      </div>
+                      <div className="space-y-1.5">
+                        {editDraft.kpis.map((k) => (
+                          <div key={k.id} className="grid grid-cols-12 items-center gap-1.5 text-xs">
+                            <input placeholder={t("اسم المؤشر")} className={`${inputCls} col-span-4`} value={k.title} onChange={(e) => updateKpi(k.id, "title", e.target.value)} />
+                            <input type="number" step="0.01" min="0" max="1" placeholder={t("الوزن")} className={`${inputCls} col-span-2`} value={k.weight} onChange={(e) => updateKpi(k.id, "weight", e.target.value)} />
+                            <span className="col-span-2 text-center text-slate-400">{t("موظف: {s}", { s: k.selfScore ?? "—" })}</span>
+                            <select className={`${inputCls} col-span-2`} value={k.managerScore ?? ""} onChange={(e) => updateKpi(k.id, "managerScore", e.target.value)}>
+                              <option value="">{t("تقييمك")}</option>{[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}
+                            </select>
+                            <button type="button" onClick={() => removeKpi(k.id)} className="col-span-2 flex justify-center text-slate-300 hover:text-rose-600"><Trash2 size={13} /></button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-stone-200 bg-white p-2">
+                      <div className="mb-1.5 text-[11px] font-semibold text-slate-500">{t("الجدارات السلوكية (Competencies)")}</div>
+                      <div className="space-y-1.5">
+                        {editDraft.competencies.map((c) => {
+                          const meta = COMPETENCY_ITEMS.find((ci) => ci.key === c.key);
+                          return (
+                            <div key={c.key} className="grid grid-cols-12 items-center gap-1.5 text-xs">
+                              <span className="col-span-5 text-slate-600">{meta ? t(meta.title) : c.key}</span>
+                              <span className="col-span-2 text-center text-slate-400">{t("موظف: {s}", { s: c.selfScore ?? "—" })}</span>
+                              <select className={`${inputCls} col-span-2`} value={c.managerScore ?? ""} onChange={(e) => updateCompetency(c.key, "managerScore", e.target.value)}>
+                                <option value="">{t("تقييمك")}</option>{[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}
+                              </select>
+                              <input placeholder={t("ملاحظة")} className={`${inputCls} col-span-3`} value={c.notes} onChange={(e) => updateCompetency(c.key, "notes", e.target.value)} />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <Field label="ملاحظاتك"><textarea rows={2} className={inputCls} value={editDraft.managerNotes} onChange={(e) => setEditDraft({ ...editDraft, managerNotes: e.target.value })} /></Field>
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-white px-3 py-2 text-xs">
+                      <span className="font-semibold text-slate-600">{t("التقدير المتوقع: {rating} ({pct}%)", { rating: t(preview.finalRating), pct: Math.round(preview.finalPercentage) })}</span>
+                      <div className="flex gap-2">
+                        <button type="button" onClick={() => { setEditingId(null); setEditDraft(null); }} className="rounded-lg border border-stone-300 px-3 py-1.5 font-semibold text-slate-500 hover:bg-stone-100">{t("إلغاء")}</button>
+                        <button disabled={busy} className="rounded-lg bg-teal-800 px-3 py-1.5 font-semibold text-white hover:bg-teal-900 disabled:opacity-50">{t("حفظ التقييم")}</button>
+                      </div>
+                    </div>
+                  </form>
+                );
+              })()}
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {completed.length > 0 && (
+        <>
+          <h3 className="mb-2 text-sm font-bold text-slate-700">{t("تقييمات سابقة")}</h3>
+          <div className="space-y-2">
+            {completed.map((r) => {
+              const tone = ratingToneFor(r.finalRating);
+              return (
+                <Card key={r.id} className="p-3.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-sm font-semibold text-slate-700">{r.employeeName} — {t(r.reviewType)} {r.year}</span>
+                    <div className="flex items-center gap-2">
+                      <span className={`rounded-full border px-2.5 py-0.5 text-xs font-semibold ${RATING_TONE_CLS[tone]}`}>{t(r.finalRating)}</span>
+                      {Number.isFinite(r.finalPercentage) && <span className="text-xs font-semibold tabular-nums text-slate-500">{Math.round(r.finalPercentage)}%</span>}
+                    </div>
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 /* ================= PORTAL ================= */
 function EmployeePortal({ authUid, onSignOut }) {
   const { t, lang } = useLang();
@@ -654,8 +1081,10 @@ function EmployeePortal({ authUid, onSignOut }) {
     ["penalties", "الجزاءات", <AlertTriangle size={14} />],
     ["payroll", "المرتب", <Wallet size={14} />],
     ["requests", "طلباتي", <ClipboardList size={14} />],
+    ["myReviews", "تقييماتي", <Star size={14} />],
     ["orgchart", "الهيكل التنظيمي", <Network size={14} />],
     ...(canApproveRequests ? [["team", "طلبات الفريق", <Users size={14} />]] : []),
+    ...(canApproveRequests ? [["teamReviews", "تقييمات الفريق", <Star size={14} />]] : []),
   ];
 
   return (
@@ -751,8 +1180,10 @@ function EmployeePortal({ authUid, onSignOut }) {
 
         {tab === "payroll" && <PayrollSection employee={employee} />}
         {tab === "requests" && <RequestsSection employee={employee} orgChart={orgChart} directory={directory} />}
+        {tab === "myReviews" && <MySelfAppraisalSection employee={employee} orgChart={orgChart} settings={settings} />}
         {tab === "orgchart" && <OrgChartSection employee={employee} orgChart={orgChart} directory={directory} />}
         {tab === "team" && canApproveRequests && <TeamRequestsSection employee={employee} requests={teamRequests} loaded={teamRequestsLoaded} orgChart={orgChart} />}
+        {tab === "teamReviews" && canApproveRequests && <TeamReviewsSection employee={employee} />}
       </main>
     </div>
   );
@@ -907,6 +1338,53 @@ const TRANSLATIONS = {
   "وقت إضافي": "Overtime",
   "وقت إضافي ({h} س)": "Overtime ({h} h)",
   "يوم {date} — {minutes} دقيقة": "Day {date} — {minutes} minute(s)",
+
+  // --- التقييم الدوري (نصف سنوي/سنوي) - تقييماتي + تقييمات الفريق ---
+  "تقييماتي": "My Reviews",
+  "تقييمات الفريق": "Team Reviews",
+  "إلغاء": "Cancel",
+  "تقييم {type} جديد": "New {type} Review",
+  "نصف سنوي": "Semi-Annual",
+  "سنوي": "Annual",
+  "السنة": "Year",
+  "مؤشرات الأداء (KPIs)": "Performance Indicators (KPIs)",
+  "إضافة مؤشر": "Add Indicator",
+  "اسم المؤشر": "Indicator Name",
+  "الوزن": "Weight",
+  "المستهدف": "Target",
+  "تقييمي": "My Score",
+  "تقييمك": "Your Score",
+  "موظف: {s}": "Employee: {s}",
+  "مجموع أوزان الـ KPIs: {n}% (المطلوب 60%)": "Total KPI weight: {n}% (60% required)",
+  "مفيش مؤشرات مضافة لسه - دوس «إضافة مؤشر».": "No indicators added yet - press \"Add Indicator\".",
+  "الجدارات السلوكية (Competencies)": "Behavioral Competencies",
+  "ملاحظة": "Note",
+  "ملاحظاتي": "My Notes",
+  "ملاحظاتك": "Your Notes",
+  "إرسال التقييم": "Submit Review",
+  "حفظ التقييم": "Save Review",
+  "إكمال التقييم": "Complete Review",
+  "التقدير المتوقع: {rating} ({pct}%)": "Expected rating: {rating} ({pct}%)",
+  "بانتظار تقييم المدير": "Awaiting Manager Review",
+  "تقييمك بيتكوّن من مؤشرات أداء (KPIs - 60%) تقدر تضيفها وتعدّلها، وجدارات سلوكية ثابتة (Competencies - 40%). بعد ما تبعت تقييمك، بيوصل لمديرك المباشر يكمّله، والتقدير النهائي بيتحسب تلقائي.": "Your review consists of performance indicators (KPIs - 60%) you can add and edit, and fixed behavioral competencies (40%). After you submit your review, it reaches your direct manager to complete, and the final rating is calculated automatically.",
+  "عندك تقييم {type} لسنة {year} مسجل بالفعل - لو محتاج تعديل كلّم شؤون الأفراد.": "You already have a {type} review for {year} on file - contact HR if you need to change it.",
+  "تم إرسال تقييمك - هيوصل لمديرك المباشر لإكماله.": "Your review has been sent - it will reach your direct manager to complete.",
+  "تم تسجيل تقييمك - مفيش مدير مباشر محدد حاليًا، شؤون الأفراد هتكمّله يدويًا.": "Your review has been recorded - no direct manager is currently set, HR will complete it manually.",
+  "تعذّر إرسال التقييم. جرب تاني.": "Couldn't submit the review. Try again.",
+  "تقييماتي السابقة": "My Previous Reviews",
+  "لسه معملتش أي تقييم دوري.": "You haven't done any periodic review yet.",
+  "ملاحظات المدير: {n}": "Manager's Notes: {n}",
+  "لما أي حد من فريقك يبعت تقييم نفسه (نصف سنوي/سنوي)، هيظهر هنا عشان تكمّله بتقييمك (KPIs + الجدارات السلوكية)، والتقدير النهائي هيتحسب تلقائي.": "When anyone on your team submits their self-review (semi-annual/annual), it will appear here for you to complete with your own scores (KPIs + Competencies), and the final rating is calculated automatically.",
+  "تقييمات مستنية إكمالك ({n})": "Reviews Awaiting Your Completion ({n})",
+  "مفيش تقييمات مستنية دلوقتي.": "No reviews pending right now.",
+  "ملاحظات {name}: {n}": "{name}'s Notes: {n}",
+  "تقييمات سابقة": "Previous Reviews",
+  "تعذّر حفظ التقييم — راجع اتصالك بالإنترنت وجرب تاني.": "Couldn't save the review — check your internet connection and try again.",
+  // --- شارات التقدير النهائي (Final Score) - نفس نطاقات REVIEW_RATING_BANDS بالظبط ---
+  "ممتاز (Exceeds)": "Excellent (Exceeds)",
+  "جيد جداً (Meets)": "Very Good (Meets)",
+  "مرضي (Needs Improvement)": "Satisfactory (Needs Improvement)",
+  "ضعيف (Below)": "Weak (Below)",
 };
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
