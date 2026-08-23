@@ -670,6 +670,7 @@ function MySelfAppraisalSection({ employee, orgChart, settings }) {
   const { t } = useLang();
   const [reviews, setReviews] = useState([]);
   const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState(null);
   const [draft, setDraft] = useState(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
@@ -682,8 +683,17 @@ function MySelfAppraisalSection({ employee, orgChart, settings }) {
           .filter((r) => PERIODIC_REVIEW_TYPES.includes(r.reviewType))
           .sort((a, b) => ((a.submittedAt || a.date || "") < (b.submittedAt || b.date || "") ? 1 : -1))
       );
+      setLoadError(null);
       setLoaded(true);
-    }, () => setLoaded(true));
+    }, (err) => {
+      // مهم: لو الكويري اتمنعت (صلاحيات Firestore rules لسه مانشورة أو قديمة)، ماينفعش نسيب
+      // القايمة تظهر فاضية من غير أي إشارة - ده بالظبط اللي كان بيسبب لبس "التقييم مش ظاهر"
+      // رغم إن التقييم موجود فعلاً (شايفه تطبيق الإدارة اللي عنده صلاحية كاملة). بنسجل الخطأ
+      // ونوريه بوضوح بدل "لسه معملتش أي تقييم" المضللة.
+      console.error("MySelfAppraisalSection reviews query failed:", err);
+      setLoadError((err && err.code) || "unknown");
+      setLoaded(true);
+    });
     return unsub;
   }, [employee.id]);
 
@@ -808,7 +818,11 @@ function MySelfAppraisalSection({ employee, orgChart, settings }) {
       })()}
 
       <h3 className="mb-2 text-sm font-bold text-slate-700">{t("تقييماتي السابقة")}</h3>
-      {reviews.length === 0 ? <EmptyState text="لسه معملتش أي تقييم دوري." /> : (
+      {loadError ? (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-3 text-sm text-rose-700">
+          {t("تعذّر تحميل تقييماتك (خطأ صلاحيات - {code}). لو بعتّ تقييم فعلاً ومش ظاهر، جرب تحديث الصفحة (Ctrl+Shift+R)، ولو استمرت المشكلة كلّم شؤون الأفراد.", { code: loadError })}
+        </div>
+      ) : reviews.length === 0 ? <EmptyState text="لسه معملتش أي تقييم دوري." /> : (
         <div className="space-y-2">{reviews.map((r) => <MyReviewCard key={r.id} r={r} />)}</div>
       )}
     </div>
@@ -826,6 +840,7 @@ function TeamReviewsSection({ employee }) {
   const { t } = useLang();
   const [reviews, setReviews] = useState([]);
   const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState(null);
   const [editingId, setEditingId] = useState(null);
   const [editDraft, setEditDraft] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -834,8 +849,16 @@ function TeamReviewsSection({ employee }) {
     const q = query(collection(db, "reviews"), where("managerId", "==", employee.id));
     const unsub = onSnapshot(q, (snap) => {
       setReviews(snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => ((a.submittedAt || a.date || "") < (b.submittedAt || b.date || "") ? 1 : -1)));
+      setLoadError(null);
       setLoaded(true);
-    }, () => setLoaded(true));
+    }, (err) => {
+      // نفس الحارس اللي في MySelfAppraisalSection: كويري ممنوعة (صلاحيات) مينفعش تظهر كقايمة
+      // فاضية عادية - لازم المدير يعرف إن فيه مشكلة صلاحيات وإن تقييمات فريقه ممكن تكون موجودة
+      // فعلاً بس مش قادر يشوفها، مش إن مفيش تقييمات خالص.
+      console.error("TeamReviewsSection reviews query failed:", err);
+      setLoadError((err && err.code) || "unknown");
+      setLoaded(true);
+    });
     return unsub;
   }, [employee.id]);
 
@@ -897,7 +920,11 @@ function TeamReviewsSection({ employee }) {
       <p className="mb-4 flex items-start gap-1.5 rounded-lg bg-stone-50 px-3 py-2 text-xs text-slate-400"><Info size={13} className="mt-0.5 shrink-0" />{t("لما أي حد من فريقك يبعت تقييم نفسه (نصف سنوي/سنوي)، هيظهر هنا عشان تكمّله بتقييمك (KPIs + الكفاءات)، والتقدير النهائي هيتحسب تلقائي.")}</p>
 
       <h3 className="mb-2 text-sm font-bold text-slate-700">{t("تقييمات مستنية إكمالك ({n})", { n: pending.length })}</h3>
-      {pending.length === 0 ? <EmptyState text="مفيش تقييمات مستنية دلوقتي." /> : (
+      {loadError ? (
+        <div className="mb-6 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-3 text-sm text-rose-700">
+          {t("تعذّر تحميل تقييمات فريقك (خطأ صلاحيات - {code}). لو حد من فريقك بعت تقييم نفسه ومش ظاهر هنا، جرب تحديث الصفحة (Ctrl+Shift+R)، ولو استمرت المشكلة كلّم شؤون الأفراد.", { code: loadError })}
+        </div>
+      ) : pending.length === 0 ? <EmptyState text="مفيش تقييمات مستنية دلوقتي." /> : (
         <div className="mb-6 space-y-2">
           {pending.map((r) => (
             <Card key={r.id} className="p-3.5">
@@ -1375,10 +1402,12 @@ const TRANSLATIONS = {
   "تعذّر إرسال التقييم. جرب تاني.": "Couldn't submit the review. Try again.",
   "تقييماتي السابقة": "My Previous Reviews",
   "لسه معملتش أي تقييم دوري.": "You haven't done any periodic review yet.",
+  "تعذّر تحميل تقييماتك (خطأ صلاحيات - {code}). لو بعتّ تقييم فعلاً ومش ظاهر، جرب تحديث الصفحة (Ctrl+Shift+R)، ولو استمرت المشكلة كلّم شؤون الأفراد.": "Couldn't load your reviews (permissions error - {code}). If you already submitted a review and it's not showing, try refreshing the page (Ctrl+Shift+R); if it keeps happening, contact HR.",
   "ملاحظات المدير: {n}": "Manager's Notes: {n}",
   "لما أي حد من فريقك يبعت تقييم نفسه (نصف سنوي/سنوي)، هيظهر هنا عشان تكمّله بتقييمك (KPIs + الكفاءات)، والتقدير النهائي هيتحسب تلقائي.": "When anyone on your team submits their self-review (semi-annual/annual), it will appear here for you to complete with your own scores (KPIs + Competencies), and the final rating is calculated automatically.",
   "تقييمات مستنية إكمالك ({n})": "Reviews Awaiting Your Completion ({n})",
   "مفيش تقييمات مستنية دلوقتي.": "No reviews pending right now.",
+  "تعذّر تحميل تقييمات فريقك (خطأ صلاحيات - {code}). لو حد من فريقك بعت تقييم نفسه ومش ظاهر هنا، جرب تحديث الصفحة (Ctrl+Shift+R)، ولو استمرت المشكلة كلّم شؤون الأفراد.": "Couldn't load your team's reviews (permissions error - {code}). If someone on your team submitted a self-review and it's not showing here, try refreshing the page (Ctrl+Shift+R); if it keeps happening, contact HR.",
   "ملاحظات {name}: {n}": "{name}'s Notes: {n}",
   "تقييمات سابقة": "Previous Reviews",
   "تعذّر حفظ التقييم — راجع اتصالك بالإنترنت وجرب تاني.": "Couldn't save the review — check your internet connection and try again.",
