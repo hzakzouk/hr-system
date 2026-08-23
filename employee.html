@@ -1251,12 +1251,12 @@ function EmployeePortal({ authUid, onSignOut }) {
                       ) : (
                         <>
                           <div className="mb-1 flex items-center justify-between">
-                            <span className="text-sm font-semibold text-slate-700">{t(p.actionType)}</span>
+                            <span className={`text-sm font-semibold ${p.cleared ? "text-emerald-700" : "text-slate-700"}`}>{p.cleared ? t("تم غلق التحقيق - ثبتت البراءة") : t(p.actionType)}</span>
                             <span className="text-xs text-slate-400">{p.date}</span>
                           </div>
                           {p.reason && <p className="text-sm text-slate-600">{p.reason}</p>}
-                          {p.amount ? <div className="mt-1 text-xs font-semibold text-rose-600">{t("خصم {amount} ج.م", { amount: fmtMoney(p.amount) })}</div> : null}
-                          {p.notes && <p className="mt-1 text-xs text-slate-400">{p.notes}</p>}
+                          {!p.cleared && p.amount ? <div className="mt-1 text-xs font-semibold text-rose-600">{t("خصم {amount} ج.م", { amount: fmtMoney(p.amount) })}</div> : null}
+                          {!p.cleared && p.notes && <p className="mt-1 text-xs text-slate-400">{p.notes}</p>}
                           {p.status === "appealed" && <p className="mt-1 text-xs font-semibold text-amber-600">{t("مسجل عليه تظلم - مستني قرار نهائي.")}</p>}
                           {p.status === "closed" && p.appealDecision && (
                             <p className="mt-1 text-xs text-slate-400">{t(p.appealDecision === "accepted" ? "اتقبل التظلم" : "اترفض التظلم")}</p>
@@ -1499,6 +1499,7 @@ const TRANSLATIONS = {
   "اتقبل التظلم": "Appeal accepted",
   "اترفض التظلم": "Appeal rejected",
   "في إجراء تأديبي جاري بخصوصك حاليًا - دوس هنا لمتابعته": "There is an ongoing disciplinary process concerning you - tap here to follow it",
+  "تم غلق التحقيق - ثبتت البراءة": "The investigation has been closed - innocence was established",
 };
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
