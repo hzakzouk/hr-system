@@ -1092,7 +1092,6 @@ function HRSystem({ adminUser }) {
   const [documents, documentsLoaded] = useFirestoreCollection("documents");
   const [reviews, reviewsLoaded] = useFirestoreCollection("reviews");
   const [salaryIncreases] = useFirestoreCollection("salaryIncreases");
-  const [companyDocuments] = useFirestoreCollection("companyDocuments");
   const [settings, settingsLoaded] = useFirestoreDoc("settings", "main", DEFAULT_SETTINGS);
   const [orgChart, orgChartLoaded] = useFirestoreDoc("orgChart", "main", DEFAULT_ORG_CHART);
   const [notifySettings] = useFirestoreDoc("settings", "notifications", DEFAULT_NOTIFY_SETTINGS);
@@ -1229,10 +1228,6 @@ function HRSystem({ adminUser }) {
       track(syncCollection("positions", positions, n));
       track(writeAuditLog(adminUser, "positions", diffSummary(positions, n, (p) => `${p.title || ""}`)));
     },
-    companyDocuments: (n) => {
-      track(syncCollection("companyDocuments", companyDocuments, n));
-      track(writeAuditLog(adminUser, "companyDocuments", diffSummary(companyDocuments, n, (d) => `${d.title || ""}`)));
-    },
   };
 
   // RecruitmentTab's "تحويل لموظف" on a hired candidate: hand off to EmployeesTab (switch tab,
@@ -1345,7 +1340,6 @@ function HRSystem({ adminUser }) {
             <NavItem icon={<HandCoins size={17} />} label="السلف" active={tab === "advances"} onClick={() => setTab("advances")} />
             <NavItem icon={<LogOut size={17} />} label="موظفون سابقون" active={tab === "former"} onClick={() => setTab("former")} />
             <NavItem icon={<UserPlus size={17} />} label="التعيين والتوظيف" active={tab === "recruitment"} onClick={() => setTab("recruitment")} />
-            <NavItem icon={<FileText size={17} />} label="مستندات وفورمات الشركة" active={tab === "companyDocuments"} onClick={() => setTab("companyDocuments")} />
             <NavItem icon={<BarChart3 size={17} />} label="تقارير" active={tab === "reports"} onClick={() => setTab("reports")} />
             <NavItem icon={<History size={17} />} label="سجل النشاط" active={tab === "auditLog"} onClick={() => setTab("auditLog")} />
             <NavItem icon={<SettingsIcon size={17} />} label="الإعدادات" active={tab === "settings"} onClick={() => setTab("settings")} />
@@ -1383,7 +1377,6 @@ function HRSystem({ adminUser }) {
           {tab === "advances" && <AdvancesTab employees={activeEmployees} advances={advances} setAdvances={upd.advances} />}
           {tab === "former" && <FormerEmployeesTab employees={formerEmployees} setEmployees={upd.employees} allEmployees={employees} onDelete={deleteEmployees} />}
           {tab === "recruitment" && <RecruitmentTab candidates={candidates} setCandidates={upd.candidates} positions={positions} setPositions={upd.positions} onConvert={handleConvertCandidate} />}
-          {tab === "companyDocuments" && <CompanyDocumentsTab companyDocuments={companyDocuments} setCompanyDocuments={upd.companyDocuments} />}
           {tab === "reports" && <ReportsTab employees={employees} activeEmployees={activeEmployees} attendance={attendance} penalties={penalties} advances={advances} payrollMeta={payrollMeta} settings={settings} />}
           {tab === "auditLog" && <AuditLogTab auditLog={auditLog} />}
           {tab === "settings" && <SettingsTab
@@ -4065,7 +4058,6 @@ const AUDIT_COLLECTION_LABELS = {
   orgChart: "الهيكل التنظيمي",
   candidates: "التعيين والتوظيف",
   notifySettings: "إعدادات إشعارات الإيميل",
-  companyDocuments: "مستندات وفورمات الشركة",
 };
 
 // Display label for a raw field key inside an "updated" entry's changes[] (e.g. "stage" ->
@@ -4888,162 +4880,6 @@ function RecruitmentTab({ candidates, setCandidates, positions, setPositions, on
           </Modal>
         </>
       )}
-    </div>
-  );
-}
-
-/* ================= COMPANY DOCUMENTS / FORMS ================= */
-// طلب المستخدم: خانة فيها Process / Employee Guide / Clearance Form / أي فورم ضروري للموظفين -
-// نص (مش رفع ملفات، مفيش Firebase Storage متوصل) مع إمكانية الطباعة، ظاهرة كتاب جديد في حساب
-// الـ HR وحساب الموظف (بوابة الموظف تعرضها فقط - الإضافة والحذف هنا في الأدمن بس). كل مستند:
-// { id, title, category (اختياري، زي Process/Employee Guide/Clearance Form), content, createdAt }
-function CompanyDocumentsTab({ companyDocuments, setCompanyDocuments }) {
-  const { t } = useLang();
-  const [modalOpen, setModalOpen] = useState(false);
-  const [editing, setEditing] = useState(null);
-  const [printDoc, setPrintDoc] = useState(null);
-  const [confirmDelete, setConfirmDelete] = useState(null);
-  const [query, setQuery] = useState("");
-
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return companyDocuments;
-    return companyDocuments.filter((d) => (d.title || "").toLowerCase().includes(q) || (d.category || "").toLowerCase().includes(q));
-  }, [companyDocuments, query]);
-
-  function save(data) {
-    if (editing) setCompanyDocuments(companyDocuments.map((d) => (d.id === editing.id ? { ...editing, ...data } : d)));
-    else setCompanyDocuments([{ id: uid("cdoc"), createdAt: todayISO(), ...data }, ...companyDocuments]);
-    setModalOpen(false);
-    setEditing(null);
-  }
-  function remove(d) {
-    setCompanyDocuments(companyDocuments.filter((x) => x.id !== d.id));
-    setConfirmDelete(null);
-  }
-
-  return (
-    <div>
-      <SectionTitle
-        eyebrow={t("{n} مستند/فورم مسجل", { n: companyDocuments.length })}
-        title="مستندات وفورمات الشركة"
-        action={
-          <button onClick={() => { setEditing(null); setModalOpen(true); }} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-900">
-            <Plus size={16} /> {t("مستند جديد")}
-          </button>
-        }
-      />
-      <p className="mb-4 flex items-start gap-1.5 rounded-lg bg-stone-50 px-3 py-2 text-xs text-slate-500">
-        <Info size={14} className="mt-0.5 shrink-0" />
-        {t("الإجراءات ودليل الموظف ونماذج المخالصة وأي فورم تاني محتاجه الموظفين - ظاهرة هنا وفي بوابة الموظف عشان أي حد يقدر يفتحها ويطبعها. الإضافة والتعديل والحذف من هنا (حساب الـ HR) بس.")}
-      </p>
-
-      <div className="mb-4 flex items-center gap-2 rounded-lg border border-stone-300 bg-white px-3 py-2">
-        <Search size={16} className="text-slate-400" />
-        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t("دور بالعنوان أو التصنيف...")} className="w-full text-sm outline-none" />
-      </div>
-
-      {companyDocuments.length === 0 ? (
-        <Card className="p-0"><EmptyState text="لسه معملتش أي مستند أو فورم. ابدأ بـ«مستند جديد»." /></Card>
-      ) : filtered.length === 0 ? (
-        <Card className="p-0"><EmptyState text="مفيش نتائج مطابقة للبحث." /></Card>
-      ) : (
-        <div className="space-y-2.5">
-          {filtered.map((d) => (
-            <Card key={d.id} className="p-4">
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <FileText size={15} className="shrink-0 text-teal-700" />
-                    <span className="font-semibold text-slate-800">{d.title}</span>
-                    {d.category && <StampBadge tone="teal">{d.category}</StampBadge>}
-                  </div>
-                  <p className="mt-1.5 truncate text-xs text-slate-500">{d.content}</p>
-                </div>
-                <div className="flex shrink-0 items-center gap-0.5">
-                  <button onClick={() => setPrintDoc(d)} title={t("طباعة")} className="rounded-md p-1.5 text-slate-400 hover:bg-stone-100 hover:text-teal-700"><Printer size={15} /></button>
-                  <button onClick={() => { setEditing(d); setModalOpen(true); }} title={t("تعديل")} className="rounded-md p-1.5 text-slate-400 hover:bg-stone-100 hover:text-teal-700"><Pencil size={14} /></button>
-                  <button onClick={() => setConfirmDelete(d)} title={t("حذف")} className="rounded-md p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 size={14} /></button>
-                </div>
-              </div>
-            </Card>
-          ))}
-        </div>
-      )}
-
-      <Modal open={modalOpen} onClose={() => { setModalOpen(false); setEditing(null); }} title={editing ? "تعديل مستند" : "إضافة مستند/فورم جديد"} wide>
-        <CompanyDocumentForm initial={editing} onSave={save} onCancel={() => { setModalOpen(false); setEditing(null); }} />
-      </Modal>
-
-      {confirmDelete && (
-        <Modal open onClose={() => setConfirmDelete(null)} title="حذف مستند">
-          <div className="space-y-4">
-            <p className="text-sm text-slate-600">{t("هتحذف \"{title}\" نهائيًا - هيتشال من بوابة الموظف كمان. متأكد؟", { title: confirmDelete.title })}</p>
-            <div className="flex justify-end gap-2 border-t border-stone-200 pt-4">
-              <button type="button" onClick={() => setConfirmDelete(null)} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50">{t("إلغاء")}</button>
-              <button type="button" onClick={() => remove(confirmDelete)} className="flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700"><Trash2 size={15} /> {t("حذف نهائيًا")}</button>
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {printDoc && <CompanyDocumentPrintView doc={printDoc} onClose={() => setPrintDoc(null)} />}
-    </div>
-  );
-}
-
-function CompanyDocumentForm({ initial, onSave, onCancel }) {
-  const { t } = useLang();
-  const [form, setForm] = useState({
-    title: initial?.title || "", category: initial?.category || "",
-    content: initial?.content || "",
-  });
-  function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
-  function submit(e) { e.preventDefault(); if (!form.title.trim() || !form.content.trim()) return; onSave(form); }
-  return (
-    <form onSubmit={submit} className="space-y-4">
-      <div className="grid grid-cols-2 gap-4">
-        <Field label="عنوان المستند/الفورم"><input required className={inputCls} value={form.title} onChange={(e) => set("title", e.target.value)} placeholder={t("زي: دليل الموظف الجديد")} /></Field>
-        <Field label="تصنيف (اختياري)">
-          <input className={inputCls} list="company-doc-categories" value={form.category} onChange={(e) => set("category", e.target.value)} placeholder={t("زي: Process")} />
-          <datalist id="company-doc-categories">
-            <option value="Process" /><option value="Employee Guide" /><option value="Clearance Form" />
-          </datalist>
-        </Field>
-      </div>
-      <Field label="المحتوى">
-        <textarea required rows={12} className={inputCls} value={form.content} onChange={(e) => set("content", e.target.value)} placeholder={t("اكتب نص المستند أو الفورم هنا - هيظهر ويتطبع بنفس الشكل ده...")} />
-      </Field>
-      <div className="flex justify-end gap-2 border-t border-stone-200 pt-4">
-        <button type="button" onClick={onCancel} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50">{t("إلغاء")}</button>
-        <button type="submit" className="rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900">{t("حفظ")}</button>
-      </div>
-    </form>
-  );
-}
-
-// نفس نمط OrgChartPrintView بالظبط (overlay كامل الشاشة + هيدر .no-print فيه زرار طباعة +
-// window.print()) - مستخدم هنا وفي بوابة الموظف (نسخة مطابقة هناك) عشان أي مستند/فورم يتفتح
-// ويتطبع بشكل نضيف من غير أي حاجة تانية في الصفحة.
-function CompanyDocumentPrintView({ doc, onClose }) {
-  const { t, lang } = useLang();
-  return (
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-white">
-      <div className="no-print sticky top-0 z-10 flex items-center justify-between border-b border-stone-200 bg-white px-6 py-4 shadow-sm">
-        <h3 className="text-lg font-bold text-slate-800">{t("معاينة طباعة")}</h3>
-        <div className="flex items-center gap-2">
-          <button onClick={() => window.print()} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Printer size={15} /> {t("طباعة")}</button>
-          <button onClick={onClose} className="rounded-full p-1.5 text-slate-400 hover:bg-stone-100"><X size={18} /></button>
-        </div>
-      </div>
-      <div className="mx-auto max-w-3xl p-8">
-        <div className="mb-8 text-center">
-          <div className="text-lg font-bold text-slate-800">{doc.title}</div>
-          {doc.category && <div className="text-xs font-semibold text-teal-700">{doc.category}</div>}
-          <div className="mt-1 text-xs text-slate-400">{new Date().toLocaleDateString(lang === "en" ? "en-GB" : "ar-EG", { year: "numeric", month: "long", day: "numeric" })}</div>
-        </div>
-        <div className="whitespace-pre-line text-sm leading-7 text-slate-700">{doc.content}</div>
-      </div>
     </div>
   );
 }
@@ -6290,28 +6126,6 @@ const TRANSLATIONS = {
   "تثبيت اللي خلصت فترة اختبارهم ({n})": "Confirm Overdue Probations ({n})",
   "للموظفين اللي فترة اختبارهم خلصت من زمان (زي بيانات مستوردة قديمة) ولسه من غير قرار تثبيت صريح": "For employees whose probation ended long ago (e.g. imported historical data) with no explicit confirmation yet",
   "تم تثبيت {n} موظف تلقائيًا (فترة اختبارهم كانت خلصت من غير قرار صريح).": "{n} employee(s) confirmed automatically (their probation had ended with no explicit decision).",
-  // --- مستندات وفورمات الشركة (Process / Employee Guide / Clearance Form...) - تاب جديد في
-  // حساب الـ HR (إضافة/تعديل/حذف) وحساب الموظف (عرض وطباعة بس) ---
-  "مستندات وفورمات الشركة": "Company Documents & Forms",
-  "{n} مستند/فورم مسجل": "{n} document(s)/form(s) registered",
-  "مستند جديد": "New Document",
-  "الإجراءات ودليل الموظف ونماذج المخالصة وأي فورم تاني محتاجه الموظفين - ظاهرة هنا وفي بوابة الموظف عشان أي حد يقدر يفتحها ويطبعها. الإضافة والتعديل والحذف من هنا (حساب الـ HR) بس.": "Processes, the employee guide, clearance forms, and any other form employees need - shown here and in the employee portal so anyone can open and print it. Adding, editing, and deleting is done here (HR account) only.",
-  "دور بالعنوان أو التصنيف...": "Search by title or category...",
-  "لسه معملتش أي مستند أو فورم. ابدأ بـ«مستند جديد».": "You haven't created any document or form yet. Start with \"New Document\".",
-  "مفيش نتائج مطابقة للبحث.": "No results match your search.",
-  "تعديل": "Edit",
-  "حذف": "Delete",
-  "تعديل مستند": "Edit Document",
-  "إضافة مستند/فورم جديد": "Add New Document/Form",
-  "حذف مستند": "Delete Document",
-  "هتحذف \"{title}\" نهائيًا - هيتشال من بوابة الموظف كمان. متأكد؟": "You are about to permanently delete \"{title}\" - it will also be removed from the employee portal. Are you sure?",
-  "عنوان المستند/الفورم": "Document/Form Title",
-  "زي: دليل الموظف الجديد": "e.g. New Employee Guide",
-  "تصنيف (اختياري)": "Category (optional)",
-  "زي: Process": "e.g. Process",
-  "المحتوى": "Content",
-  "اكتب نص المستند أو الفورم هنا - هيظهر ويتطبع بنفس الشكل ده...": "Write the document or form's text here - it will be shown and printed exactly as typed...",
-  "معاينة طباعة": "Print Preview",
 };
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
