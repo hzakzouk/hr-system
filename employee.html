@@ -199,7 +199,7 @@ function computeReviewScore(kpis, competencies) {
   const kpiList = kpis || [];
   const compList = competencies || [];
   const kpiWeightTotal = kpiList.reduce((s, k) => s + (Number(k.weight) || 0), 0);
-  const kpiContribution = kpiList.reduce((s, k) => s + (Number(k.weight) || 0) * (Number(k.managerScore) || 0), 0);
+  const kpiContribution = kpiList.reduce((s, k) => s + ((Number(k.weight) || 0) / 100) * (Number(k.managerScore) || 0), 0);
   const competencyCount = compList.length || 1;
   const competencySum = compList.reduce((s, c) => s + (Number(c.managerScore) || 0), 0);
   const competencyContribution = (competencySum / competencyCount) * 0.4;
@@ -627,7 +627,7 @@ function TeamRequestsSection({ employee, requests, loaded, orgChart }) {
 /* ================= التقييم الدوري - "تقييماتي" (Self Appraisal) ================= */
 // الموظف بيبدأ تقييم نفسه (نصف سنوي/سنوي) من هنا: بيختار النوع والسنة، يسجّل مؤشرات الأداء
 // (KPIs - قابلة للإضافة/التعديل منه، وزنها الإجمالي 60%) بأوزانها ودرجة نفسه، ودرجة نفسه في
-// بنود الجدارات السلوكية الخمسة الثابتة (Competencies - 40%). بعد ما يبعت التقييم بيبقى للقراءة
+// بنود الكفاءات الخمسة الثابتة (Competencies - 40%). بعد ما يبعت التقييم بيبقى للقراءة
 // بس (status: "awaiting_manager") لحد ما مديره المباشر يكمّله من حسابه هو (تاب "تقييمات الفريق")
 // أو شؤون الأفراد تكمّله من تطبيق الإدارة - نفس فلسفة "HR عندها override كامل" المستخدمة هناك.
 function blankAppraisalDraft(employee, settings, type) {
@@ -637,7 +637,7 @@ function blankAppraisalDraft(employee, settings, type) {
   return {
     reviewType: type || PERIODIC_REVIEW_TYPES[0],
     year: String(new Date().getFullYear()),
-    kpis: matchedKpis.map((k) => ({ id: k.id || uid("kpi"), title: k.title, weight: matchedKpis.length ? Math.round((0.6 / matchedKpis.length) * 100) / 100 : 0, target: k.target || "", selfScore: "" })),
+    kpis: matchedKpis.map((k) => ({ id: k.id || uid("kpi"), title: k.title, weight: matchedKpis.length ? Math.round(60 / matchedKpis.length) : 0, target: k.target || "", selfScore: "" })),
     competencies: COMPETENCY_ITEMS.map((c) => ({ key: c.key, selfScore: "", notes: "" })),
     employeeNotes: "",
   };
@@ -740,7 +740,7 @@ function MySelfAppraisalSection({ employee, orgChart, settings }) {
 
       {draft && (() => {
         const weightTotal = draft.kpis.reduce((s, k) => s + (Number(k.weight) || 0), 0);
-        const weightOk = Math.abs(weightTotal - 0.6) < 1e-9;
+        const weightOk = Math.abs(weightTotal - 60) < 1e-9;
         return (
           <Card className="mb-5 p-4">
             <form onSubmit={submit} className="space-y-3">
@@ -750,7 +750,7 @@ function MySelfAppraisalSection({ employee, orgChart, settings }) {
                 </select>
                 <input placeholder={t("السنة")} className={inputCls} value={draft.year} onChange={(e) => setDraft({ ...draft, year: e.target.value })} />
                 <div className={`flex items-center justify-center rounded-lg px-2 text-center text-xs font-semibold ${weightOk ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
-                  {t("مجموع أوزان الـ KPIs: {n}% (المطلوب 60%)", { n: Math.round(weightTotal * 100) })}
+                  {t("مجموع أوزان الـ KPIs: {n}% (المطلوب 60%)", { n: Math.round(weightTotal) })}
                 </div>
               </div>
 
@@ -763,7 +763,7 @@ function MySelfAppraisalSection({ employee, orgChart, settings }) {
                   {draft.kpis.map((k) => (
                     <div key={k.id} className="grid grid-cols-12 items-center gap-1.5 text-xs">
                       <input placeholder={t("اسم المؤشر")} className={`${inputCls} col-span-5`} value={k.title} onChange={(e) => updateKpi(k.id, "title", e.target.value)} />
-                      <input type="number" step="0.01" min="0" max="1" placeholder={t("الوزن")} className={`${inputCls} col-span-2`} value={k.weight} onChange={(e) => updateKpi(k.id, "weight", e.target.value)} />
+                      <input type="number" step="1" min="0" max="100" placeholder={t("الوزن (%)")} className={`${inputCls} col-span-2`} value={k.weight} onChange={(e) => updateKpi(k.id, "weight", e.target.value)} />
                       <input placeholder={t("المستهدف")} className={`${inputCls} col-span-2`} value={k.target} onChange={(e) => updateKpi(k.id, "target", e.target.value)} />
                       <select className={`${inputCls} col-span-2`} value={k.selfScore} onChange={(e) => updateKpi(k.id, "selfScore", e.target.value)}>
                         <option value="">{t("تقييمي")}</option>{[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}
@@ -776,7 +776,7 @@ function MySelfAppraisalSection({ employee, orgChart, settings }) {
               </div>
 
               <div className="rounded-lg border border-stone-200 p-2">
-                <div className="mb-1.5 text-[11px] font-semibold text-slate-500">{t("الجدارات السلوكية (Competencies)")}</div>
+                <div className="mb-1.5 text-[11px] font-semibold text-slate-500">{t("الكفاءات (Competencies) - 40%")}</div>
                 <div className="space-y-1.5">
                   {draft.competencies.map((c) => {
                     const meta = COMPETENCY_ITEMS.find((ci) => ci.key === c.key);
@@ -894,7 +894,7 @@ function TeamReviewsSection({ employee }) {
 
   return (
     <div>
-      <p className="mb-4 flex items-start gap-1.5 rounded-lg bg-stone-50 px-3 py-2 text-xs text-slate-400"><Info size={13} className="mt-0.5 shrink-0" />{t("لما أي حد من فريقك يبعت تقييم نفسه (نصف سنوي/سنوي)، هيظهر هنا عشان تكمّله بتقييمك (KPIs + الجدارات السلوكية)، والتقدير النهائي هيتحسب تلقائي.")}</p>
+      <p className="mb-4 flex items-start gap-1.5 rounded-lg bg-stone-50 px-3 py-2 text-xs text-slate-400"><Info size={13} className="mt-0.5 shrink-0" />{t("لما أي حد من فريقك يبعت تقييم نفسه (نصف سنوي/سنوي)، هيظهر هنا عشان تكمّله بتقييمك (KPIs + الكفاءات)، والتقدير النهائي هيتحسب تلقائي.")}</p>
 
       <h3 className="mb-2 text-sm font-bold text-slate-700">{t("تقييمات مستنية إكمالك ({n})", { n: pending.length })}</h3>
       {pending.length === 0 ? <EmptyState text="مفيش تقييمات مستنية دلوقتي." /> : (
@@ -911,12 +911,12 @@ function TeamReviewsSection({ employee }) {
 
               {editingId === r.id && editDraft && (() => {
                 const weightTotal = editDraft.kpis.reduce((s, k) => s + (Number(k.weight) || 0), 0);
-                const weightOk = Math.abs(weightTotal - 0.6) < 1e-9;
+                const weightOk = Math.abs(weightTotal - 60) < 1e-9;
                 const preview = computeReviewScore(editDraft.kpis, editDraft.competencies);
                 return (
                   <form onSubmit={(e) => submitCompletion(r, e)} className="mt-2 space-y-3 rounded-lg border border-stone-200 bg-stone-50 p-3">
                     <div className={`rounded-lg px-2 py-1.5 text-center text-xs font-semibold ${weightOk ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
-                      {t("مجموع أوزان الـ KPIs: {n}% (المطلوب 60%)", { n: Math.round(weightTotal * 100) })}
+                      {t("مجموع أوزان الـ KPIs: {n}% (المطلوب 60%)", { n: Math.round(weightTotal) })}
                     </div>
                     <div className="rounded-lg border border-stone-200 bg-white p-2">
                       <div className="mb-1.5 flex items-center justify-between">
@@ -927,7 +927,7 @@ function TeamReviewsSection({ employee }) {
                         {editDraft.kpis.map((k) => (
                           <div key={k.id} className="grid grid-cols-12 items-center gap-1.5 text-xs">
                             <input placeholder={t("اسم المؤشر")} className={`${inputCls} col-span-4`} value={k.title} onChange={(e) => updateKpi(k.id, "title", e.target.value)} />
-                            <input type="number" step="0.01" min="0" max="1" placeholder={t("الوزن")} className={`${inputCls} col-span-2`} value={k.weight} onChange={(e) => updateKpi(k.id, "weight", e.target.value)} />
+                            <input type="number" step="1" min="0" max="100" placeholder={t("الوزن (%)")} className={`${inputCls} col-span-2`} value={k.weight} onChange={(e) => updateKpi(k.id, "weight", e.target.value)} />
                             <span className="col-span-2 text-center text-slate-400">{t("موظف: {s}", { s: k.selfScore ?? "—" })}</span>
                             <select className={`${inputCls} col-span-2`} value={k.managerScore ?? ""} onChange={(e) => updateKpi(k.id, "managerScore", e.target.value)}>
                               <option value="">{t("تقييمك")}</option>{[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}
@@ -938,7 +938,7 @@ function TeamReviewsSection({ employee }) {
                       </div>
                     </div>
                     <div className="rounded-lg border border-stone-200 bg-white p-2">
-                      <div className="mb-1.5 text-[11px] font-semibold text-slate-500">{t("الجدارات السلوكية (Competencies)")}</div>
+                      <div className="mb-1.5 text-[11px] font-semibold text-slate-500">{t("الكفاءات (Competencies) - 40%")}</div>
                       <div className="space-y-1.5">
                         {editDraft.competencies.map((c) => {
                           const meta = COMPETENCY_ITEMS.find((ci) => ci.key === c.key);
@@ -1351,13 +1351,15 @@ const TRANSLATIONS = {
   "إضافة مؤشر": "Add Indicator",
   "اسم المؤشر": "Indicator Name",
   "الوزن": "Weight",
+  "الوزن (%)": "Weight (%)",
   "المستهدف": "Target",
   "تقييمي": "My Score",
   "تقييمك": "Your Score",
   "موظف: {s}": "Employee: {s}",
   "مجموع أوزان الـ KPIs: {n}% (المطلوب 60%)": "Total KPI weight: {n}% (60% required)",
   "مفيش مؤشرات مضافة لسه - دوس «إضافة مؤشر».": "No indicators added yet - press \"Add Indicator\".",
-  "الجدارات السلوكية (Competencies)": "Behavioral Competencies",
+  "الكفاءات (Competencies)": "Behavioral Competencies",
+  "الكفاءات (Competencies) - 40%": "Behavioral Competencies - 40%",
   "ملاحظة": "Note",
   "ملاحظاتي": "My Notes",
   "ملاحظاتك": "Your Notes",
@@ -1374,7 +1376,7 @@ const TRANSLATIONS = {
   "تقييماتي السابقة": "My Previous Reviews",
   "لسه معملتش أي تقييم دوري.": "You haven't done any periodic review yet.",
   "ملاحظات المدير: {n}": "Manager's Notes: {n}",
-  "لما أي حد من فريقك يبعت تقييم نفسه (نصف سنوي/سنوي)، هيظهر هنا عشان تكمّله بتقييمك (KPIs + الجدارات السلوكية)، والتقدير النهائي هيتحسب تلقائي.": "When anyone on your team submits their self-review (semi-annual/annual), it will appear here for you to complete with your own scores (KPIs + Competencies), and the final rating is calculated automatically.",
+  "لما أي حد من فريقك يبعت تقييم نفسه (نصف سنوي/سنوي)، هيظهر هنا عشان تكمّله بتقييمك (KPIs + الكفاءات)، والتقدير النهائي هيتحسب تلقائي.": "When anyone on your team submits their self-review (semi-annual/annual), it will appear here for you to complete with your own scores (KPIs + Competencies), and the final rating is calculated automatically.",
   "تقييمات مستنية إكمالك ({n})": "Reviews Awaiting Your Completion ({n})",
   "مفيش تقييمات مستنية دلوقتي.": "No reviews pending right now.",
   "ملاحظات {name}: {n}": "{name}'s Notes: {n}",
