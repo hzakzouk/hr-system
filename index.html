@@ -2589,6 +2589,15 @@ function EmployeeProfileModal({ employee, onClose, attendance, documents, setDoc
   }
   function saveAppraisal(e) {
     e.preventDefault();
+    // حارس صلب ضد تجاوز مجموع أوزان الـ KPIs الـ 60% (مش بس تحذير لوني في الواجهة زي الأول) -
+    // لازم يتحقق هنا جوه الدالة نفسها مش بس في تعطيل الزرار، لأن الضغط على Enter جوه أي input في
+    // الفورم بيطلق onSubmit حتى لو الزرار disabled بصريًا. نفس المنطق بالظبط اللي في البوابة
+    // (MySelfAppraisalSection.submit / TeamReviewsSection.submitCompletion).
+    const weightTotal = appraisalDraft.kpis.reduce((s, k) => s + (Number(k.weight) || 0), 0);
+    if (Math.abs(weightTotal - 60) > 1e-9) {
+      alert(t("مجموع أوزان الـ KPIs لازم يساوي 60% بالظبط قبل الحفظ - المجموع الحالي {n}%.", { n: Math.round(weightTotal) }));
+      return;
+    }
     const cleanKpis = appraisalDraft.kpis.map((k) => ({
       id: k.id, title: k.title, weight: Number(k.weight) || 0, target: k.target || "",
       selfScore: k.selfScore === "" ? null : Number(k.selfScore),
@@ -2867,7 +2876,7 @@ function EmployeeProfileModal({ employee, onClose, attendance, documents, setDoc
                     <span className="font-semibold text-slate-600">{t("التقدير المتوقع: {rating} ({pct}%)", { rating: t(preview.finalRating), pct: Math.round(preview.finalPercentage) })}</span>
                     <div className="flex gap-2">
                       <button type="button" onClick={() => { setShowAppraisalForm(false); setAppraisalDraft(null); }} className="rounded-lg border border-stone-300 px-3 py-1.5 font-semibold text-slate-500 hover:bg-stone-100">{t("إلغاء")}</button>
-                      <button className="rounded-lg bg-teal-800 px-3 py-1.5 font-semibold text-white hover:bg-teal-900">{t("حفظ التقييم")}</button>
+                      <button disabled={!weightOk} title={weightOk ? "" : t("لازم مجموع أوزان الـ KPIs يساوي 60% بالظبط")} className="rounded-lg bg-teal-800 px-3 py-1.5 font-semibold text-white hover:bg-teal-900 disabled:opacity-50">{t("حفظ التقييم")}</button>
                     </div>
                   </div>
                 </form>
@@ -5677,6 +5686,8 @@ const TRANSLATIONS = {
   "إضافة مؤشر": "Add Indicator",
   "الوزن": "Weight",
   "الوزن (%)": "Weight (%)",
+  "مجموع أوزان الـ KPIs لازم يساوي 60% بالظبط قبل الحفظ - المجموع الحالي {n}%.": "The total KPI weights must equal exactly 60% before saving - current total {n}%.",
+  "لازم مجموع أوزان الـ KPIs يساوي 60% بالظبط": "The total KPI weights must equal exactly 60%",
   "المستهدف": "Target",
   "موظف": "Employee",
   "مدير": "Manager",
