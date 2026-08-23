@@ -1915,6 +1915,20 @@ function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, s
   const visible = employees.filter((e) => e.status === "active" || !e.status);
   const filtered = visible.filter((e) => e.name.includes(query) || (e.position || "").includes(query) || (e.department || "").includes(query));
   const dupGroups = useMemo(() => findDuplicateGroups(visible), [visible]);
+  // موظفين فترة اختبارهم خلصت من غير قرار تثبيت صريح (زرار "تثبيت جماعي" تحت) - أساسًا لتصحيح
+  // بيانات موظفين قدامى كانوا مستوردين قبل إضافة التثبيت التلقائي وقت الاستيراد (importBulk فوق)،
+  // من غير ما يحتاج الأدمن يعيد رفع الملف أو يدخل على كل موظف لوحده.
+  const overdueProbationEmployees = useMemo(
+    () => visible.filter((e) => computeProbationStatus(e, settings, todayISO()).status === "awaiting_decision"),
+    [visible, settings]
+  );
+  function confirmAllOverdueProbations() {
+    if (overdueProbationEmployees.length === 0) return;
+    const ids = new Set(overdueProbationEmployees.map((e) => e.id));
+    const next = employees.map((e) => (ids.has(e.id) ? { ...e, probationConfirmedAt: addMonthsISO(e.hireDate, settings.probationMonths ?? 3) } : e));
+    setEmployees(next);
+    alert(t("تم تثبيت {n} موظف تلقائيًا (فترة اختبارهم كانت خلصت من غير قرار صريح).", { n: overdueProbationEmployees.length }));
+  }
 
   // A candidate handed off from RecruitmentTab's "تحويل لموظف" - open the New Employee modal
   // pre-filled from their info, then immediately tell HRSystem we've picked it up (clears
@@ -2006,18 +2020,19 @@ function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, s
       if (rec.employeeCode) matchId = byCode[String(rec.employeeCode).trim().toLowerCase()];
       if (!matchId && rec.name) matchId = byName[rec.name.trim().toLowerCase()];
 
-      // موظف مستورد ومعاه تاريخ تعيين خلّصت فترة اختباره بالفعل (زي ما هي محسوبة من
+      // موظف مستورد وعنده تاريخ تعيين خلّصت فترة اختباره بالفعل (زي ما هي محسوبة من
       // settings.probationMonths) - نعتبره متثبّت تلقائي بدل ما يفضل يظهر "محتاجة قرار" غلط
       // في بروفايله ولوحة المتابعة، لأن الاستيراد الجماعي غالبًا بيانات موظفين قدامى موجودين
       // فعلاً (زي ملف قاعدة بيانات الموظفين اللي رفعه المستخدم) مش تعيينات جديدة محتاجة قرار
       // تثبيت حقيقي. لو الموظف ده موجود بالفعل وعنده تاريخ تثبيت حقيقي متسجّل قبل كده، مبنلمسوش
-      // - مانكتبش فوقه بتاريخ تخميني.
-      if (rec.hireDate) {
-        const existing = matchId ? updated.find((e) => e.id === matchId) : null;
-        if (!existing?.probationConfirmedAt) {
-          const probationEnd = addMonthsISO(rec.hireDate, settings.probationMonths ?? 3);
-          if (todayISO() >= probationEnd) rec.probationConfirmedAt = probationEnd;
-        }
+      // - مانكتبش فوقه بتاريخ تخميني. مهم: بناخد تاريخ التعيين الفعلي (existing?.hireDate) لو
+      // الملف ده مبيحدّثش عمود تاريخ التعيين نفسه (مثلًا ملف تحديث مرتبات بس) - مش بس rec.hireDate
+      // من الملف الحالي، وإلا التصحيح مايشتغلش على أي تحديث لاحق غير عمود التعيين.
+      const existing = matchId ? updated.find((e) => e.id === matchId) : null;
+      const effectiveHireDate = rec.hireDate || existing?.hireDate;
+      if (effectiveHireDate && !existing?.probationConfirmedAt) {
+        const probationEnd = addMonthsISO(effectiveHireDate, settings.probationMonths ?? 3);
+        if (todayISO() >= probationEnd) rec.probationConfirmedAt = probationEnd;
       }
 
       if (matchId) {
@@ -2049,6 +2064,11 @@ function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, s
           {dupGroups.length > 0 && (
             <button onClick={() => setMergeOpen(true)} className="flex items-center gap-1.5 rounded-lg border border-amber-500 bg-amber-50 px-3.5 py-2 text-sm font-semibold text-amber-700 hover:bg-amber-100">
               <Users size={16} /> {t("دمج المكررات ({n})", { n: dupGroups.length })}
+            </button>
+          )}
+          {overdueProbationEmployees.length > 0 && (
+            <button onClick={confirmAllOverdueProbations} title={t("للموظفين اللي فترة اختبارهم خلصت من زمان (زي بيانات مستوردة قديمة) ولسه من غير قرار تثبيت صريح")} className="flex items-center gap-1.5 rounded-lg border border-emerald-600 bg-emerald-50 px-3.5 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100">
+              <ShieldCheck size={16} /> {t("تثبيت اللي خلصت فترة اختبارهم ({n})", { n: overdueProbationEmployees.length })}
             </button>
           )}
           <button onClick={() => setImportOpen(true)} className="flex items-center gap-1.5 rounded-lg border border-teal-700 px-3.5 py-2 text-sm font-semibold text-teal-800 hover:bg-teal-50">
@@ -6095,6 +6115,10 @@ const TRANSLATIONS = {
   "إعادة الحساب من الدرجة والمرتب والتقييم": "Recalculate from grade, salary, and rating",
   "موافقة": "Approve",
   "رفض": "Reject",
+  // --- تثبيت جماعي للموظفين اللي خلصت فترة اختبارهم (تصحيح بيانات مستوردة قديمة) ---
+  "تثبيت اللي خلصت فترة اختبارهم ({n})": "Confirm Overdue Probations ({n})",
+  "للموظفين اللي فترة اختبارهم خلصت من زمان (زي بيانات مستوردة قديمة) ولسه من غير قرار تثبيت صريح": "For employees whose probation ended long ago (e.g. imported historical data) with no explicit confirmation yet",
+  "تم تثبيت {n} موظف تلقائيًا (فترة اختبارهم كانت خلصت من غير قرار صريح).": "{n} employee(s) confirmed automatically (their probation had ended with no explicit decision).",
 };
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
