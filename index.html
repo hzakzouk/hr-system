@@ -1447,13 +1447,15 @@ function computeAlerts(employees, attendance, advances, documents, settings, tod
       const diffDays = daysBetween(todayISOStr, dueDate);
       if (diffDays <= 14) alerts.push({ type: "reviewDue", employeeName: e.name, date: dueDate, overdue: diffDays < 0 });
     }
-    // عنده تقييم سنوي مكتمل لسه ما اتحسبتلوش زيادة مرتب (مفيش صف مسجّل في salaryIncreases لنفس
-    // السنة) - ده التنبيه السنوي المطلوب: بمجرد ما مديره يكمّل تقييمه السنوي، شؤون الأفراد
-    // بتلاقي تنبيه هنا يفكّرها تحسب/تراجع اقتراح الزيادة بدل ما تنسى أو تستنى لحد ما حد يفتكرها.
+    // عنده تقييم سنوي مكتمل ولسه مفيش قرار نهائي على زيادة مرتبه (لا موافقة ولا رفض) - ده
+    // التنبيه السنوي المطلوب: بمجرد ما مديره يكمّل تقييمه السنوي، شؤون الأفراد بتلاقي تنبيه هنا
+    // يفكّرها تحسب/تراجع اقتراح الزيادة، وبيفضل ظاهر حتى لو الاقتراح اتولّد بالفعل من تاب
+    // "زيادات الرواتب" لكن لسه status: "pending" (يعني لسه مستني موافقة أو رفض) - عشان التنبيه
+    // معناه "محتاج قرارك"، مش بس "اتولّد اقتراح ليه"، ويختفي بس لما يتاخد قرار فعلي.
     const annualReview = latestCompletedAnnualReview(reviews, e.id);
     if (annualReview) {
-      const already = salaryIncreases.some((s) => s.employeeId === e.id && s.year === annualReview.year);
-      if (!already) alerts.push({ type: "salaryIncreaseDue", employeeName: e.name, year: annualReview.year });
+      const decided = salaryIncreases.some((s) => s.employeeId === e.id && s.year === annualReview.year && s.status !== "pending");
+      if (!decided) alerts.push({ type: "salaryIncreaseDue", employeeName: e.name, year: annualReview.year });
     }
   });
   advances.forEach((a) => {
