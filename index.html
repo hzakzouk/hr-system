@@ -33,7 +33,7 @@ import ReactDOM from "react-dom/client";
 import {
   Users, CalendarCheck, Wallet, AlertTriangle, LayoutDashboard,
   Plus, X, Search, Pencil, Trash2, Check, Clock, UserX,
-  ChevronLeft, ChevronRight, FileText, Save, AlertCircle, TrendingDown,
+  ChevronLeft, ChevronRight, FileText, Save, AlertCircle, TrendingDown, TrendingUp,
   Loader2, Landmark, HandCoins, LogOut, ClipboardList, Star, Settings as SettingsIcon,
   Printer, Cake, ShieldAlert, Bell, Info, Upload, ArrowRight, ArrowLeft, FileSpreadsheet,
   Network, Crown, ChevronDown, ChevronUp, Lock, LogIn, ShieldCheck, Languages, History, BarChart3,
@@ -547,6 +547,73 @@ function computeReviewScore(kpis, competencies) {
   const finalRating = reviewRatingForPercentage(finalPercentage);
   return { kpiWeightTotal, kpiContribution, competencySum, competencyContribution, finalScoreOutOf5, finalPercentage, finalRating };
 }
+
+/* ================= زيادات الرواتب السنوية (Salary Increase Matrix) =================
+   منسوخة بالظبط من ملف "Salary Increase Matrix.xlsx" اللي المستخدم رفعه: تاب "Matrix" فيه
+   جدولين - (1) نسبة الزيادة المقترحة حسب تقييم الأداء (من 1 لـ 5)، (2) شرائح الدرجات
+   الوظيفية (Grade) بحدها الأدنى/منتصفها/حدها الأقصى. تاب "Salary Increase calculation" بيوضح
+   طريقة الحساب: الراتب الجديد = MAX(الراتب الحالي × (1 + النسبة المقترحة)، الحد الأدنى لشريحة
+   الموظف). القيم دي افتراضية بس - قابلة للتعديل بالكامل من تاب الإعدادات. */
+const SALARY_GRADE_BANDS_DEFAULT = [
+  { grade: "G1", level: "مبتدئ (Junior - L1)", min: 8000, mid: 10000, max: 12000 },
+  { grade: "G2", level: "أخصائي (Specialist - L2)", min: 11000, mid: 14000, max: 17000 },
+  { grade: "G3", level: "أخصائي أول (Senior - L3)", min: 15500, mid: 20000, max: 24500 },
+  { grade: "G4", level: "قائد فريق (Team Lead - L4)", min: 22000, mid: 28500, max: 35000 },
+  { grade: "G5", level: "مدير قسم (Manager - L5)", min: 32000, mid: 42000, max: 52000 },
+];
+// rating: نفس نطاق finalScoreOutOf5 (من 0 لـ 5) في التقييم الدوري السنوي، مقرّب لأقرب رقم صحيح
+// (ratingScoreFromFinalScore تحت) - عشان نربط تقييم الموظف مباشرة بجدول الماتريكس من غير ما
+// نحتاج مقياس تاني منفصل.
+const SALARY_RATING_MATRIX_DEFAULT = [
+  { rating: 5, label: "استثنائي (Exceptional)", minPct: 12, maxPct: 15 },
+  { rating: 4, label: "يفوق التوقعات (Exceeds Expectations)", minPct: 8, maxPct: 11 },
+  { rating: 3, label: "يلبي التوقعات (Meets Expectations)", minPct: 5, maxPct: 7 },
+  { rating: 2, label: "يحتاج تحسين (Needs Improvement)", minPct: 0, maxPct: 0 },
+  { rating: 1, label: "غير مقبول (Unsatisfactory)", minPct: 0, maxPct: 0 },
+];
+
+// تقييم الموظف السنوي (finalScoreOutOf5، من 0 لـ 5 كسري) بيتقرّب لأقرب رقم صحيح (1-5) عشان
+// يتربط بصف واحد في جدول الماتريكس (اللي مكتوب فيه "5/5"، "4/5"...). محصور بين 1 و5 دايمًا
+// حتى لو الدرجة الفعلية طلعت صفر أو أقل (أسوأ تقدير ممكن لسه بياخد صف "1/5" مش يتكسر).
+function ratingScoreFromFinalScore(finalScoreOutOf5) {
+  const n = Math.round(Number(finalScoreOutOf5) || 0);
+  return Math.min(5, Math.max(1, n));
+}
+function findGradeBand(gradeBands, grade) {
+  return (gradeBands || []).find((b) => b.grade === grade) || null;
+}
+function findRatingTier(ratingMatrix, ratingScore) {
+  return (ratingMatrix || []).find((r) => r.rating === ratingScore) || null;
+}
+// الحساب الأساسي: من راتب الموظف الحالي + درجته + تقييمه السنوي، بيرجّع نسبة الزيادة المقترحة
+// (منتصف نطاق الماتريكس للتقدير ده) والراتب الجديد المقترح - بنفس معادلة الإكسل بالظبط
+// (K = الراتب الحالي × (1+النسبة)، L = MAX(K, الحد الأدنى لشريحة الموظف) عشان الراتب الجديد
+// مايقعش تحت أدنى حد لدرجته الحالية حتى لو النسبة المقترحة صغيرة). النتيجة دي بداية مقترحة
+// بس - شؤون الأفراد تقدر تعدّل أي رقم فيها يدويًا قبل الموافقة.
+function computeSuggestedIncrease(currentSalary, grade, ratingScore, gradeBands, ratingMatrix) {
+  const tier = findRatingTier(ratingMatrix, ratingScore);
+  const band = findGradeBand(gradeBands, grade);
+  const minPct = tier ? Number(tier.minPct) || 0 : 0;
+  const maxPct = tier ? Number(tier.maxPct) || 0 : 0;
+  const suggestedPercent = Math.round(((minPct + maxPct) / 2) * 100) / 100;
+  const salary = Number(currentSalary) || 0;
+  const computedSalary = salary * (1 + suggestedPercent / 100);
+  const floor = band ? Number(band.min) || 0 : 0;
+  const proposedSalary = Math.round(Math.max(computedSalary, floor));
+  return { suggestedPercent, proposedSalary, ratingLabel: tier?.label || "", gradeLevel: band?.level || "" };
+}
+// آخر تقييم سنوي "مكتمل" (completed) للموظف - ده اللي زيادة المرتب بتتحسب عليه، مش نصف
+// السنوي (المستخدم قال صراحة "زياده المرتبات بناءً على نتيجة التقييم السنوي"). بيرتّب بالسنة
+// الأحدث الأول، وبعدين بتاريخ الاكتمال لو فيه أكتر من تقييم سنوي في نفس السنة (نادر).
+function latestCompletedAnnualReview(reviews, employeeId) {
+  return (reviews || [])
+    .filter((r) => r.employeeId === employeeId && r.reviewType === "سنوي" && r.status === "completed")
+    .sort((a, b) => {
+      if (a.year !== b.year) return a.year < b.year ? 1 : -1;
+      return (a.completedAt || a.date || "") < (b.completedAt || b.date || "") ? 1 : -1;
+    })[0] || null;
+}
+
 const DEPARTMENTS_DEFAULT = ["الإدارة", "المبيعات", "التشغيل", "المالية", "خدمة العملاء"];
 const WEEKDAYS = ["الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
 const ACTION_TYPES = ["تنبيه شفهي", "إنذار كتابي", "خصم مالي", "فصل"];
@@ -578,6 +645,11 @@ const DEFAULT_SETTINGS = {
   // مؤشرات أداء ثابتة (KPIs) لكل قسم أو مسمى وظيفي - كل موظف بينضم لتقييمه المؤشرات اللي
   // scope/scopeValue بتاعتها بتطابق قسمه أو وظيفته. scope: "department" | "position".
   kpiTemplates: [],
+  // شرائح الدرجات الوظيفية (Grade) وماتريكس نسبة زيادة المرتب حسب تقييم الأداء السنوي -
+  // القيم الافتراضية منسوخة من "Salary Increase Matrix.xlsx"، قابلة للتعديل بالكامل من
+  // تاب الإعدادات (قسم "زيادات الرواتب").
+  salaryGradeBands: SALARY_GRADE_BANDS_DEFAULT,
+  salaryRatingMatrix: SALARY_RATING_MATRIX_DEFAULT,
   onboardingChecklistItems: ["استلام بطاقة الحضور", "توقيع العقد", "فتح حساب بنكي للمرتب", "تسليم دليل الموظف", "تعريف بفريق العمل"],
   offboardingChecklistItems: ["استرجاع أي عهدة (لابتوب، يونيفورم، مفاتيح)", "تسوية الرصيد المالي والإجازات", "إلغاء صلاحيات الدخول (بوابة الموظف والأنظمة)", "مقابلة خروج (Exit Interview)"],
 };
@@ -1012,6 +1084,7 @@ function HRSystem({ adminUser }) {
   const [advances, advancesLoaded] = useFirestoreCollection("advances");
   const [documents, documentsLoaded] = useFirestoreCollection("documents");
   const [reviews, reviewsLoaded] = useFirestoreCollection("reviews");
+  const [salaryIncreases] = useFirestoreCollection("salaryIncreases");
   const [settings, settingsLoaded] = useFirestoreDoc("settings", "main", DEFAULT_SETTINGS);
   const [orgChart, orgChartLoaded] = useFirestoreDoc("orgChart", "main", DEFAULT_ORG_CHART);
   const [notifySettings] = useFirestoreDoc("settings", "notifications", DEFAULT_NOTIFY_SETTINGS);
@@ -1115,6 +1188,10 @@ function HRSystem({ adminUser }) {
       track(syncCollection("reviews", reviews, n));
       track(writeAuditLog(adminUser, "reviews", diffSummary(reviews, n, (r) => `${employeeNameById[r.employeeId] || r.employeeId}`)));
     },
+    salaryIncreases: (n) => {
+      track(syncCollection("salaryIncreases", salaryIncreases, n));
+      track(writeAuditLog(adminUser, "salaryIncreases", diffSummary(salaryIncreases, n, (s) => `${employeeNameById[s.employeeId] || s.employeeId} - ${s.year || ""}`)));
+    },
     settings: (n) => {
       track(setDoc(doc(db, "settings", "main"), n));
       track(writeAuditLog(adminUser, "settings", diffDocKeys(settings, n)));
@@ -1193,6 +1270,7 @@ function HRSystem({ adminUser }) {
     upd.advances(advances.filter((a) => !idSet.has(a.employeeId)));
     upd.documents(documents.filter((d) => !idSet.has(d.employeeId)));
     upd.reviews(reviews.filter((r) => !idSet.has(r.employeeId)));
+    upd.salaryIncreases(salaryIncreases.filter((s) => !idSet.has(s.employeeId)));
 
     const nextPayrollMeta = {};
     Object.keys(payrollMeta).forEach((ym) => {
@@ -1250,6 +1328,7 @@ function HRSystem({ adminUser }) {
             <NavItem icon={<Star size={17} />} label="التقييمات" active={tab === "evaluations"} onClick={() => setTab("evaluations")} />
             <NavItem icon={<CalendarCheck size={17} />} label="الحضور والانصراف" active={tab === "attendance"} onClick={() => setTab("attendance")} />
             <NavItem icon={<Wallet size={17} />} label="المرتبات" active={tab === "payroll"} onClick={() => setTab("payroll")} />
+            <NavItem icon={<TrendingUp size={17} />} label="زيادات الرواتب" active={tab === "salaryIncrease"} onClick={() => setTab("salaryIncrease")} />
             <NavItem icon={<AlertTriangle size={17} />} label="الجزاءات والإنذارات" active={tab === "penalties"} onClick={() => setTab("penalties")} />
             <NavItem icon={<HandCoins size={17} />} label="السلف" active={tab === "advances"} onClick={() => setTab("advances")} />
             <NavItem icon={<LogOut size={17} />} label="موظفون سابقون" active={tab === "former"} onClick={() => setTab("former")} />
@@ -1268,7 +1347,7 @@ function HRSystem({ adminUser }) {
         </aside>
 
         <main className="no-print min-w-0 flex-1">
-          {tab === "dashboard" && <CommandCenterTab employees={activeEmployees} allEmployees={employees} orgChart={orgChart} attendance={attendance} penalties={penalties} advances={advances} documents={documents} settings={settings} reviews={reviews} candidates={candidates} requests={requests} checklistItems={checklistItems} assets={assets} onOpenEmployee={setOpenEmployeeId} onGoToTab={setTab} />}
+          {tab === "dashboard" && <CommandCenterTab employees={activeEmployees} allEmployees={employees} orgChart={orgChart} attendance={attendance} penalties={penalties} advances={advances} documents={documents} settings={settings} reviews={reviews} candidates={candidates} requests={requests} checklistItems={checklistItems} assets={assets} salaryIncreases={salaryIncreases} onOpenEmployee={setOpenEmployeeId} onGoToTab={setTab} />}
           {tab === "employees" && <EmployeesTab
             employees={employees} setEmployees={upd.employees} settings={settings} onOpen={setOpenEmployeeId}
             attendance={attendance} setAttendance={upd.attendance}
@@ -1286,6 +1365,7 @@ function HRSystem({ adminUser }) {
           {tab === "evaluations" && <EvaluationsTab employees={employees} reviews={reviews} onOpenEmployee={setOpenEmployeeId} />}
           {tab === "attendance" && <AttendanceTab employees={activeEmployees} attendance={attendance} patchAttendance={upd.attendancePatch} settings={settings} />}
           {tab === "payroll" && <PayrollTab employees={activeEmployees} attendance={attendance} penalties={penalties} payrollMeta={payrollMeta} setPayrollMeta={upd.payrollMeta} advances={advances} settings={settings} payslipDocs={payslipDocs} onSyncPayslips={upd.payslips} />}
+          {tab === "salaryIncrease" && <SalaryIncreaseTab employees={activeEmployees} allEmployees={employees} reviews={reviews} salaryIncreases={salaryIncreases} setSalaryIncreases={upd.salaryIncreases} setEmployees={upd.employees} settings={settings} adminUser={adminUser} onOpenEmployee={setOpenEmployeeId} />}
           {tab === "penalties" && <PenaltiesTab employees={activeEmployees} penalties={penalties} setPenalties={upd.penalties} />}
           {tab === "advances" && <AdvancesTab employees={activeEmployees} advances={advances} setAdvances={upd.advances} />}
           {tab === "former" && <FormerEmployeesTab employees={formerEmployees} setEmployees={upd.employees} allEmployees={employees} onDelete={deleteEmployees} />}
@@ -1335,7 +1415,7 @@ function HRSystem({ adminUser }) {
 // digest (via formatAlertLine) from one source of truth, instead of two copies drifting apart.
 // Returns structured data only - no icons, no translated text.
 function computeAlerts(employees, attendance, advances, documents, settings, todayISOStr, extra = {}) {
-  const { reviews = [], candidates = [], requests = [] } = extra;
+  const { reviews = [], candidates = [], requests = [], salaryIncreases = [] } = extra;
   const alerts = [];
   const today = new Date(todayISOStr);
   const in30 = new Date(today); in30.setDate(in30.getDate() + 30);
@@ -1366,6 +1446,14 @@ function computeAlerts(employees, attendance, advances, documents, settings, tod
     if (dueDate) {
       const diffDays = daysBetween(todayISOStr, dueDate);
       if (diffDays <= 14) alerts.push({ type: "reviewDue", employeeName: e.name, date: dueDate, overdue: diffDays < 0 });
+    }
+    // عنده تقييم سنوي مكتمل لسه ما اتحسبتلوش زيادة مرتب (مفيش صف مسجّل في salaryIncreases لنفس
+    // السنة) - ده التنبيه السنوي المطلوب: بمجرد ما مديره يكمّل تقييمه السنوي، شؤون الأفراد
+    // بتلاقي تنبيه هنا يفكّرها تحسب/تراجع اقتراح الزيادة بدل ما تنسى أو تستنى لحد ما حد يفتكرها.
+    const annualReview = latestCompletedAnnualReview(reviews, e.id);
+    if (annualReview) {
+      const already = salaryIncreases.some((s) => s.employeeId === e.id && s.year === annualReview.year);
+      if (!already) alerts.push({ type: "salaryIncreaseDue", employeeName: e.name, year: annualReview.year });
     }
   });
   advances.forEach((a) => {
@@ -1414,6 +1502,7 @@ function formatAlertLine(a) {
     case "docExpiry": return `- ${a.docName} بتاع ${a.employeeName} بينتهي في ${a.date}`;
     case "probationEnding": return a.overdue ? `- فترة اختبار ${a.employeeName} خلصت (${a.date}) ومحتاجة قرار تثبيت` : `- فترة اختبار ${a.employeeName} هتخلص في ${a.date}`;
     case "reviewDue": return a.overdue ? `- تقييم ${a.employeeName} الدوري متأخر (كان مستحق ${a.date})` : `- تقييم ${a.employeeName} الدوري مستحق في ${a.date}`;
+    case "salaryIncreaseDue": return `- تقييم ${a.employeeName} السنوي (${a.year}) مكتمل ولسه محتاج مراجعة اقتراح زيادة المرتب`;
     case "staleOffer": return `- عرض العمل لـ${a.candidateName} (${a.position}) واقف من غير رد من ${a.diffDays} يوم`;
     case "requestPending": return `- طلب ${REQUEST_KIND_LABELS[a.kind] || a.kind} بتاع ${a.employeeName} مستني قرار من ${a.diffDays} يوم`;
     default: return "";
@@ -1558,7 +1647,7 @@ function CommandCenterSection({ title, icon, tone, items, emptyText, children })
 // محتاجة قرار أو تنبيه من الـ Head of HR في مكان واحد (كانت شاشتين منفصلتين - "لوحة المتابعة"
 // القديمة و"المعلقات" - اتدمجوا في واحدة بعد ما اتقالنا إن قائمة أسامي الحضور مش مهمة وإن
 // التنبيهات محتاجة تبقى فيها زرار أكشن مباشر بدل ما تبقى نص بس).
-function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penalties, advances, documents, settings, reviews, candidates, requests, checklistItems, assets, onOpenEmployee, onGoToTab }) {
+function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penalties, advances, documents, settings, reviews, candidates, requests, checklistItems, assets, salaryIncreases, onOpenEmployee, onGoToTab }) {
   const { t, lang } = useLang();
   const today = todayISO();
 
@@ -1573,8 +1662,8 @@ function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penal
   const penaltiesTotal = penalties.filter((p) => monthKey(p.date) === thisMonth && p.actionType === "خصم مالي").reduce((s, p) => s + (Number(p.amount) || 0), 0);
 
   const alerts = useMemo(
-    () => computeAlerts(employees, attendance, advances, documents, settings, today, { reviews, candidates, requests }),
-    [employees, attendance, advances, documents, settings, today, reviews, candidates, requests]
+    () => computeAlerts(employees, attendance, advances, documents, settings, today, { reviews, candidates, requests, salaryIncreases }),
+    [employees, attendance, advances, documents, settings, today, reviews, candidates, requests, salaryIncreases]
   );
   const byType = (type) => alerts.filter((a) => a.type === type);
 
@@ -1696,6 +1785,18 @@ function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penal
               </div>
             );
           }}
+        </CommandCenterSection>
+
+        <CommandCenterSection title="زيادات رواتب محتاجة مراجعة" icon={<TrendingUp size={16} />} tone="teal" items={byType("salaryIncreaseDue")} emptyText="مفيش زيادات رواتب مستنية مراجعة دلوقتي.">
+          {(a, i) => (
+            <div key={i} className="flex items-center justify-between rounded-lg border border-stone-100 px-3 py-2 text-sm">
+              <div>
+                <div className="font-medium text-slate-700">{a.employeeName}</div>
+                <StampBadge tone="teal">{t("تقييم {year} مكتمل", { year: a.year })}</StampBadge>
+              </div>
+              <ReviewButton onClick={() => onGoToTab("salaryIncrease")} />
+            </div>
+          )}
         </CommandCenterSection>
 
         <CommandCenterSection title="عقود قربت تنتهي" icon={<FileText size={16} />} tone="amber" items={byType("contractEnd")} emptyText="مفيش عقود قربت تنتهي خلال 30 يوم.">
@@ -2242,6 +2343,8 @@ const EMPLOYEE_IMPORT_FIELDS = [
   { key: "name", label: "الاسم", required: true, match: ["الاسم", "اسم الموظف"] },
   { key: "position", label: "الوظيفة", match: ["الوظيفة"] },
   { key: "department", label: "القسم", match: ["القسم"] },
+  { key: "grade", label: "الدرجة (Grade)", match: ["الدرجة", "Grade"] },
+  { key: "level", label: "المستوى الوظيفي (Level)", match: ["المستوى الوظيفي", "Level"] },
   { key: "branch", label: "الفرع (لو الشركة أكتر من موقع)", match: ["الفرع"] },
   { key: "phone", label: "رقم الموبايل", match: ["موبايل", "الهاتف", "تليفون"] },
   { key: "nationalId", label: "الرقم القومي", match: ["الرقم القومي", "قومي"] },
@@ -2392,6 +2495,7 @@ function EmployeeForm({ initial, settings, employees = [], onSave, onCancel }) {
   const [form, setForm] = useState({
     employeeCode: initial?.employeeCode || "",
     name: initial?.name || "", position: initial?.position || "", department: initial?.department || "",
+    grade: initial?.grade || "", level: initial?.level || "",
     branch: initial?.branch || "",
     phone: initial?.phone || "", nationalId: initial?.nationalId || "", hireDate: initial?.hireDate || todayISO(),
     salary: initial?.salary || "", contractType: initial?.contractType || CONTRACT_TYPES[0],
@@ -2400,6 +2504,12 @@ function EmployeeForm({ initial, settings, employees = [], onSave, onCancel }) {
     leaveEntitlement: initial?.leaveEntitlement ?? settings.leaveDefaultDays,
   });
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
+  // اختيار الدرجة (Grade) بيملأ المستوى الوظيفي (Level) تلقائي من جدول شرائح الدرجات
+  // (settings.salaryGradeBands) - بس لو الحقل لسه فاضي، عشان مايمحيش قيمة كتبها الأدمن يدويًا.
+  function setGrade(g) {
+    const band = (settings.salaryGradeBands || []).find((b) => b.grade === g);
+    setForm((f) => ({ ...f, grade: g, level: !f.level && band ? band.level : f.level }));
+  }
   function toggleOffDay(day) {
     setForm((f) => ({
       ...f,
@@ -2419,6 +2529,13 @@ function EmployeeForm({ initial, settings, employees = [], onSave, onCancel }) {
           <input list="departments" className={inputCls} value={form.department} onChange={(e) => set("department", e.target.value)} />
           <datalist id="departments">{DEPARTMENTS_DEFAULT.map((d) => <option key={d} value={d} />)}</datalist>
         </Field>
+        <Field label="الدرجة (Grade)">
+          <select className={inputCls} value={form.grade} onChange={(e) => setGrade(e.target.value)}>
+            <option value="">{t("— بدون —")}</option>
+            {(settings.salaryGradeBands || []).map((b) => <option key={b.grade} value={b.grade}>{b.grade}</option>)}
+          </select>
+        </Field>
+        <Field label="المستوى الوظيفي (Level)"><input className={inputCls} value={form.level} onChange={(e) => set("level", e.target.value)} /></Field>
         <Field label="الفرع (لو الشركة أكتر من موقع)">
           <input list="branches" className={inputCls} value={form.branch} onChange={(e) => set("branch", e.target.value)} placeholder={t("مثلًا فرع المعادي")} />
           <datalist id="branches">{knownBranches.map((b) => <option key={b} value={b} />)}</datalist>
@@ -2673,6 +2790,8 @@ function EmployeeProfileModal({ employee, onClose, attendance, documents, setDoc
             ["القسم", employee.department || "—"],
             ["الفرع", employee.branch || "—"],
             ["الوظيفة", employee.position || "—"],
+            ["الدرجة (Grade)", employee.grade || "—"],
+            ["المستوى الوظيفي (Level)", employee.level || "—"],
             ["معاد بداية الدوام الرسمي", settings.workStartTime || "—"],
             ["عدد أيام العمل / الأسبوع", 7 - getWeeklyOffDays(employee).length],
             ["رصيد الإجازة السنوي", entitlement],
@@ -3891,6 +4010,7 @@ const AUDIT_COLLECTION_LABELS = {
   advances: "السلف",
   documents: "المستندات",
   reviews: "التقييمات",
+  salaryIncreases: "زيادات الرواتب",
   settings: "الإعدادات",
   orgChart: "الهيكل التنظيمي",
   candidates: "التعيين والتوظيف",
@@ -3902,6 +4022,7 @@ const AUDIT_COLLECTION_LABELS = {
 // functional, just untranslated, so a field added later never breaks rendering.
 const AUDIT_FIELD_LABELS = {
   name: "الاسم", phone: "رقم الموبايل", email: "الإيميل", position: "الوظيفة", department: "القسم",
+  grade: "الدرجة (Grade)", level: "المستوى الوظيفي (Level)",
   salary: "الراتب الأساسي", contractType: "نوع العقد", contractStart: "بداية العقد", contractEnd: "نهاية العقد",
   hireDate: "تاريخ التعيين", birthDate: "تاريخ الميلاد", nationalId: "الرقم القومي", employeeCode: "كود الموظف",
   leaveEntitlement: "رصيد الإجازة السنوي", weeklyOffDays: "أيام الإجازة الأسبوعية", status: "الحالة",
@@ -4163,6 +4284,155 @@ function EvaluationsTab({ employees, reviews, onOpenEmployee }) {
                     <td className="px-4 py-2.5 tabular-nums text-slate-500">{isCompleted && Number.isFinite(r.finalPercentage) ? `${Math.round(r.finalPercentage)}%` : "—"}</td>
                     <td className="px-4 py-2.5 text-slate-400">{r.date || "—"}</td>
                     <td className="px-4 py-2.5">{isCompleted ? <StampBadge tone="emerald">{t("مكتمل")}</StampBadge> : <StampBadge tone="amber">{t("قيد التقييم")}</StampBadge>}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// تاب "زيادات الرواتب" - بيولّد اقتراحات زيادة سنوية تلقائيًا من نتيجة التقييم السنوي المكتمل
+// (باستخدام computeSuggestedIncrease وجداول settings.salaryGradeBands/salaryRatingMatrix)،
+// وبيسيب لـ HR حرية التعديل في أي خانة قبل الموافقة/الرفض. الموافقة هي الحاجة الوحيدة اللي
+// بتلمس مرتب الموظف الفعلي (employee.salary) - الرفض بيسجّل بس من غير أي تعديل.
+function SalaryIncreaseTab({ employees, allEmployees, reviews, salaryIncreases, setSalaryIncreases, setEmployees, settings, adminUser, onOpenEmployee }) {
+  const { t } = useLang();
+  const empById = useMemo(() => Object.fromEntries((allEmployees || []).map((e) => [e.id, e])), [allEmployees]);
+  const gradeBands = settings.salaryGradeBands || [];
+  const ratingMatrix = settings.salaryRatingMatrix || [];
+
+  const years = useMemo(() => {
+    const fromReviews = reviews.filter((r) => r.reviewType === "سنوي" && r.status === "completed").map((r) => r.year).filter(Boolean);
+    const fromRecords = (salaryIncreases || []).map((s) => s.year).filter(Boolean);
+    return Array.from(new Set([...fromReviews, ...fromRecords])).sort().reverse();
+  }, [reviews, salaryIncreases]);
+  const [year, setYear] = useState(() => years[0] || new Date().getFullYear());
+
+  const existingKeys = useMemo(() => new Set((salaryIncreases || []).map((s) => `${s.employeeId}__${s.year}`)), [salaryIncreases]);
+  const pendingCandidates = useMemo(
+    () => (employees || []).filter((e) => !existingKeys.has(`${e.id}__${year}`) && reviews.some((r) => r.employeeId === e.id && r.reviewType === "سنوي" && r.year === year && r.status === "completed")),
+    [employees, reviews, year, existingKeys]
+  );
+
+  function generateForYear() {
+    const additions = pendingCandidates.map((e) => {
+      const review = reviews.find((r) => r.employeeId === e.id && r.reviewType === "سنوي" && r.year === year && r.status === "completed");
+      const ratingScore = ratingScoreFromFinalScore(review?.finalScoreOutOf5);
+      const calc = computeSuggestedIncrease(e.salary, e.grade, ratingScore, gradeBands, ratingMatrix);
+      return {
+        id: uid("sal"), employeeId: e.id, year, reviewId: review?.id || "",
+        currentSalary: Number(e.salary) || 0, grade: e.grade || "", ratingScore,
+        suggestedPercent: calc.suggestedPercent, proposedSalary: calc.proposedSalary,
+        status: "pending", createdAt: todayISO(), decidedAt: "", decidedBy: "",
+      };
+    });
+    if (additions.length) setSalaryIncreases([...(salaryIncreases || []), ...additions]);
+  }
+
+  function updateRecord(id, patch) {
+    setSalaryIncreases((salaryIncreases || []).map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  }
+  function recalcRecord(s) {
+    const calc = computeSuggestedIncrease(s.currentSalary, s.grade, s.ratingScore, gradeBands, ratingMatrix);
+    updateRecord(s.id, { suggestedPercent: calc.suggestedPercent, proposedSalary: calc.proposedSalary });
+  }
+  function approve(s) {
+    setEmployees(employees.map((e) => (e.id === s.employeeId ? { ...e, salary: s.proposedSalary } : e)));
+    updateRecord(s.id, { status: "approved", decidedAt: todayISO(), decidedBy: adminUser?.email || "" });
+  }
+  function reject(s) {
+    updateRecord(s.id, { status: "rejected", decidedAt: todayISO(), decidedBy: adminUser?.email || "" });
+  }
+
+  const yearRecords = useMemo(() => (salaryIncreases || []).filter((s) => s.year === year).sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)), [salaryIncreases, year]);
+
+  return (
+    <div>
+      <SectionTitle eyebrow={t("{n} سجل زيادة لسنة {year}", { n: yearRecords.length, year })} title="زيادات الرواتب" />
+
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <select className={`${inputCls} w-auto`} value={year} onChange={(e) => setYear(Number(e.target.value))}>
+          {years.length === 0 && <option value={year}>{year}</option>}
+          {years.map((y) => <option key={y} value={y}>{y}</option>)}
+        </select>
+        <button
+          onClick={generateForYear}
+          disabled={pendingCandidates.length === 0}
+          className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3 py-2 text-sm font-semibold text-white hover:bg-teal-900 disabled:opacity-50"
+        >
+          <TrendingUp size={15} /> {t("توليد اقتراحات لسنة {year} ({n})", { year, n: pendingCandidates.length })}
+        </button>
+      </div>
+
+      {yearRecords.length === 0 ? (
+        <Card className="p-0"><EmptyState text="مفيش زيادات رواتب مسجلة للسنة دي - جرّب تولّد اقتراحات من التقييمات المكتملة." /></Card>
+      ) : (
+        <Card className="overflow-x-auto p-0">
+          <table className="w-full text-sm">
+            <thead className="bg-stone-50 text-xs text-slate-400">
+              <tr>
+                <th className="px-4 py-2.5 text-start font-semibold">{t("الموظف")}</th>
+                <th className="px-4 py-2.5 text-start font-semibold">{t("الدرجة (Grade)")}</th>
+                <th className="px-4 py-2.5 text-start font-semibold">{t("المرتب الحالي")}</th>
+                <th className="px-4 py-2.5 text-start font-semibold">{t("التقييم (من 5)")}</th>
+                <th className="px-4 py-2.5 text-start font-semibold">{t("نسبة الزيادة %")}</th>
+                <th className="px-4 py-2.5 text-start font-semibold">{t("المرتب الجديد المقترح")}</th>
+                <th className="px-4 py-2.5 text-start font-semibold">{t("الحالة")}</th>
+                <th className="px-4 py-2.5 text-start font-semibold"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-stone-100">
+              {yearRecords.map((s) => {
+                const emp = empById[s.employeeId];
+                const editable = s.status === "pending";
+                const cellCls = `w-24 rounded-lg border px-2 py-1.5 text-sm tabular-nums ${editable ? "border-stone-300 bg-white focus:border-teal-600 focus:ring-2 focus:ring-teal-100 outline-none" : "border-transparent bg-transparent text-slate-500"}`;
+                return (
+                  <tr key={s.id} className="hover:bg-stone-50">
+                    <td className="px-4 py-2.5 font-medium text-slate-700">
+                      {emp ? <button onClick={() => onOpenEmployee(emp.id)} className="hover:underline">{emp.name}</button> : (s.employeeId || "—")}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      {editable ? (
+                        <select className={cellCls} value={s.grade} onChange={(e) => updateRecord(s.id, { grade: e.target.value })}>
+                          {gradeBands.map((b) => <option key={b.grade} value={b.grade}>{b.grade}</option>)}
+                        </select>
+                      ) : (s.grade || "—")}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      {editable ? <input type="number" className={cellCls} value={s.currentSalary} onChange={(e) => updateRecord(s.id, { currentSalary: Number(e.target.value) })} /> : `${fmtMoney(s.currentSalary)} ${t("ج.م")}`}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      {editable ? (
+                        <select className={cellCls} value={s.ratingScore} onChange={(e) => updateRecord(s.id, { ratingScore: Number(e.target.value) })}>
+                          {[5, 4, 3, 2, 1].map((n) => <option key={n} value={n}>{n}</option>)}
+                        </select>
+                      ) : s.ratingScore}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      {editable ? <input type="number" step="0.5" className={cellCls} value={s.suggestedPercent} onChange={(e) => updateRecord(s.id, { suggestedPercent: Number(e.target.value) })} /> : `${s.suggestedPercent}%`}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      {editable ? <input type="number" className={cellCls} value={s.proposedSalary} onChange={(e) => updateRecord(s.id, { proposedSalary: Number(e.target.value) })} /> : <span className="font-semibold text-slate-700">{fmtMoney(s.proposedSalary)} {t("ج.م")}</span>}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      {s.status === "pending" && <StampBadge tone="amber">{t("مستني قرار")}</StampBadge>}
+                      {s.status === "approved" && <StampBadge tone="emerald">{t("متوافق عليه")}</StampBadge>}
+                      {s.status === "rejected" && <StampBadge tone="rose">{t("مرفوض")}</StampBadge>}
+                      {!editable && s.decidedAt && <div className="mt-1 text-[11px] text-slate-400">{s.decidedAt}{s.decidedBy ? ` - ${s.decidedBy}` : ""}</div>}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      {editable ? (
+                        <div className="flex items-center gap-1.5">
+                          <button title={t("إعادة الحساب من الدرجة والمرتب والتقييم")} onClick={() => recalcRecord(s)} className="rounded-lg border border-stone-300 p-1.5 text-slate-500 hover:bg-stone-50"><RefreshCw size={14} /></button>
+                          <button onClick={() => approve(s)} className="flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"><Check size={13} /> {t("موافقة")}</button>
+                          <button onClick={() => reject(s)} className="flex items-center gap-1 rounded-lg bg-rose-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-rose-700"><X size={13} /> {t("رفض")}</button>
+                        </div>
+                      ) : null}
+                    </td>
                   </tr>
                 );
               })}
@@ -4623,6 +4893,17 @@ function SettingsTab({ settings, setSettings, notifySettings, setNotifySettings,
     setForm(next);
   }
 
+  // درجات ومستويات المرتبات (Grade Bands)، وجدول نسب الزيادة السنوية حسب تقييم الأداء - بيتحفظوا
+  // مع باقي الإعدادات العامة بزرار "حفظ الإعدادات" فوق (نفس منطق شرائح الضريبة بالظبط).
+  function updateGradeBand(i, patch) {
+    const next = { ...form, salaryGradeBands: (form.salaryGradeBands || []).map((b, idx) => (idx === i ? { ...b, ...patch } : b)) };
+    setForm(next);
+  }
+  function updateRatingTier(i, patch) {
+    const next = { ...form, salaryRatingMatrix: (form.salaryRatingMatrix || []).map((r, idx) => (idx === i ? { ...r, ...patch } : r)) };
+    setForm(next);
+  }
+
   // مؤشرات الأداء (KPIs)، وخطوات تشيك ليست الضم/الخروج الافتراضية - زي العطلات الرسمية فوق،
   // التعديلات هنا بتتحفظ فورًا (مش مربوطة بزرار "حفظ الإعدادات" العام).
   const [kpiForm, setKpiForm] = useState({ scope: "department", scopeValue: "", title: "", target: "" });
@@ -4695,6 +4976,50 @@ function SettingsTab({ settings, setSettings, notifySettings, setNotifySettings,
                   <input type="number" step="0.5" className={inputCls} value={b.rate} onChange={(e) => updateBracket(i, { rate: Number(e.target.value) })} />
                   <span className="text-xs text-slate-400">%</span>
                 </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        <Card className="p-5">
+          <h3 className="mb-1 font-bold text-slate-800">{t("درجات ومستويات المرتبات (Grade Bands)")}</h3>
+          <p className="mb-4 text-xs text-slate-500">{t("كل درجة ليها حد أدنى وأوسط وأقصى للمرتب - دول أساس حساب اقتراح الزيادة السنوية في تاب «زيادات الرواتب».")}</p>
+          <div className="space-y-2">
+            <div className="grid grid-cols-5 gap-2 text-xs font-semibold text-slate-500">
+              <span>{t("الدرجة (Grade)")}</span>
+              <span>{t("المستوى الوظيفي (Level)")}</span>
+              <span>{t("الحد الأدنى")}</span>
+              <span>{t("المتوسط")}</span>
+              <span>{t("الحد الأقصى")}</span>
+            </div>
+            {(form.salaryGradeBands || []).map((b, i) => (
+              <div key={b.grade || i} className="grid grid-cols-5 gap-2">
+                <input className={inputCls} value={b.grade} onChange={(e) => updateGradeBand(i, { grade: e.target.value })} />
+                <input className={inputCls} value={b.level} onChange={(e) => updateGradeBand(i, { level: e.target.value })} />
+                <input type="number" className={inputCls} value={b.min} onChange={(e) => updateGradeBand(i, { min: Number(e.target.value) })} />
+                <input type="number" className={inputCls} value={b.mid} onChange={(e) => updateGradeBand(i, { mid: Number(e.target.value) })} />
+                <input type="number" className={inputCls} value={b.max} onChange={(e) => updateGradeBand(i, { max: Number(e.target.value) })} />
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        <Card className="p-5">
+          <h3 className="mb-1 font-bold text-slate-800">{t("جدول نسب الزيادة السنوية حسب التقييم")}</h3>
+          <p className="mb-4 text-xs text-slate-500">{t("لكل تقييم (من 5) مدى نسبة زيادة مقترحة - النظام بياخد نص المدى (بين الحد الأدنى والأقصى) كنسبة مقترحة للحساب التلقائي.")}</p>
+          <div className="space-y-2">
+            <div className="grid grid-cols-4 gap-2 text-xs font-semibold text-slate-500">
+              <span>{t("التقييم (من 5)")}</span>
+              <span>{t("الوصف")}</span>
+              <span>{t("أقل نسبة زيادة %")}</span>
+              <span>{t("أعلى نسبة زيادة %")}</span>
+            </div>
+            {(form.salaryRatingMatrix || []).map((r, i) => (
+              <div key={r.rating ?? i} className="grid grid-cols-4 gap-2">
+                <input type="number" min="1" max="5" className={inputCls} value={r.rating} onChange={(e) => updateRatingTier(i, { rating: Number(e.target.value) })} />
+                <input className={inputCls} value={r.label} onChange={(e) => updateRatingTier(i, { label: e.target.value })} />
+                <input type="number" step="0.5" className={inputCls} value={r.minPct} onChange={(e) => updateRatingTier(i, { minPct: Number(e.target.value) })} />
+                <input type="number" step="0.5" className={inputCls} value={r.maxPct} onChange={(e) => updateRatingTier(i, { maxPct: Number(e.target.value) })} />
               </div>
             ))}
           </div>
@@ -5724,6 +6049,36 @@ const TRANSLATIONS = {
   "مكتمل": "Completed",
   "قيد التقييم": "In Progress",
   "مفيش تقييمات دورية مطابقة.": "No matching periodic reviews.",
+  // --- زيادات الرواتب (Salary Increase Matrix) ---
+  "زيادات رواتب محتاجة مراجعة": "Salary Increases Needing Review",
+  "مفيش زيادات رواتب مستنية مراجعة دلوقتي.": "No salary increases awaiting review right now.",
+  "تقييم {year} مكتمل": "{year} review completed",
+  "زيادات الرواتب": "Salary Increases",
+  "درجات ومستويات المرتبات (Grade Bands)": "Salary Grade Bands",
+  "كل درجة ليها حد أدنى وأوسط وأقصى للمرتب - دول أساس حساب اقتراح الزيادة السنوية في تاب «زيادات الرواتب».": "Each grade has a minimum, midpoint, and maximum salary - these are the basis for the annual increase suggestion in the Salary Increases tab.",
+  "الدرجة (Grade)": "Grade",
+  "المستوى الوظيفي (Level)": "Level",
+  "الحد الأدنى": "Minimum",
+  "المتوسط": "Midpoint",
+  "الحد الأقصى": "Maximum",
+  "جدول نسب الزيادة السنوية حسب التقييم": "Annual Increase % by Rating",
+  "لكل تقييم (من 5) مدى نسبة زيادة مقترحة - النظام بياخد نص المدى (بين الحد الأدنى والأقصى) كنسبة مقترحة للحساب التلقائي.": "Each rating (out of 5) has a suggested increase % range - the system takes the midpoint of that range as the suggested % for the automatic calculation.",
+  "التقييم (من 5)": "Rating (out of 5)",
+  "الوصف": "Description",
+  "أقل نسبة زيادة %": "Min Increase %",
+  "أعلى نسبة زيادة %": "Max Increase %",
+  "— بدون —": "— None —",
+  "{n} سجل زيادة لسنة {year}": "{n} increase record(s) for {year}",
+  "توليد اقتراحات لسنة {year} ({n})": "Generate Suggestions for {year} ({n})",
+  "مفيش زيادات رواتب مسجلة للسنة دي - جرّب تولّد اقتراحات من التقييمات المكتملة.": "No salary increases recorded for this year - try generating suggestions from completed reviews.",
+  "المرتب الحالي": "Current Salary",
+  "نسبة الزيادة %": "Increase %",
+  "المرتب الجديد المقترح": "Proposed New Salary",
+  "مستني قرار": "Awaiting Decision",
+  "متوافق عليه": "Approved",
+  "إعادة الحساب من الدرجة والمرتب والتقييم": "Recalculate from grade, salary, and rating",
+  "موافقة": "Approve",
+  "رفض": "Reject",
 };
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
