@@ -676,11 +676,16 @@ function MySelfAppraisalSection({ employee, orgChart, settings }) {
   const [msg, setMsg] = useState(null);
 
   useEffect(() => {
-    const q = query(collection(db, "reviews"), where("employeeId", "==", employee.id));
+    // مهم: لازم نفلتر على reviewType في الكويري نفسها (مش بس بعد الجلب) - firestore.rules بتحط
+    // شرط isPeriodicReviewType(resource.data.reviewType) جنب شرط employeeId في قاعدة القراءة،
+    // وFirestore بيرفض أي list query كاملة (permission-denied) لو فيه شرط في الـ rule على حقل
+    // الكويري نفسها ملهوش قيد مطابق صريح فيها - حتى لو كل الدوكيومنتات الفعلية بتحقق الشرط.
+    // من غير where("reviewType","in",...) هنا، الكويري كانت بترفض بالكامل قبل حتى ما توصل لجزئية
+    // employeeId - ده اللي كان بيمنع تقييم Hany Zakzouk من الظهور خالص عنده أو عند مديره.
+    const q = query(collection(db, "reviews"), where("employeeId", "==", employee.id), where("reviewType", "in", PERIODIC_REVIEW_TYPES));
     const unsub = onSnapshot(q, (snap) => {
       setReviews(
         snap.docs.map((d) => ({ id: d.id, ...d.data() }))
-          .filter((r) => PERIODIC_REVIEW_TYPES.includes(r.reviewType))
           .sort((a, b) => ((a.submittedAt || a.date || "") < (b.submittedAt || b.date || "") ? 1 : -1))
       );
       setLoadError(null);
@@ -846,7 +851,11 @@ function TeamReviewsSection({ employee }) {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    const q = query(collection(db, "reviews"), where("managerId", "==", employee.id));
+    // نفس الملحوظة اللي في MySelfAppraisalSection بالظبط: firestore.rules بتحط شرط
+    // isPeriodicReviewType(resource.data.reviewType) جنب شرط managerId، فلازم الكويري تقيّد
+    // reviewType صراحة برضو وإلا Firestore بيرفض الـ list كاملة (permission-denied) - ده اللي
+    // كان بيمنع مدير زي هيثم من شوف تقييمات فريقه المستنية خالص.
+    const q = query(collection(db, "reviews"), where("managerId", "==", employee.id), where("reviewType", "in", PERIODIC_REVIEW_TYPES));
     const unsub = onSnapshot(q, (snap) => {
       setReviews(snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => ((a.submittedAt || a.date || "") < (b.submittedAt || b.date || "") ? 1 : -1)));
       setLoadError(null);
