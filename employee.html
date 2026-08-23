@@ -1128,6 +1128,11 @@ function EmployeePortal({ authUid, onSignOut }) {
   const entitlement = employee.leaveEntitlement ?? settings.leaveDefaultDays ?? 21;
   const remaining = entitlement - takenLeave;
   const penaltiesTotal = penalties.filter((p) => p.actionType === "خصم مالي").reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  // إشعار للموظف إن في تحقيق تأديبي مفتوح معاه (لسه مفيش قرار نهائي) - المستخدم طلبه صراحة
+  // عشان الموظف مايفاجئش، ومطابق لروح "الاستماع لأقواله" في قانون العمل الجديد. بيظهر كبانر
+  // فوق كل التابات (مش بس تاب الجزاءات نفسه) وكـ badge على تاب "الجزاءات" زي badge طلبات
+  // الفريق بالظبط.
+  const hasOpenDisciplinaryCase = penalties.some((p) => p.status === "investigating" || p.status === "pending_decision");
   const pendingTeamCount = teamRequests.filter((r) => r.status === "pending" || r.status === "pending_ceo").length;
   const pendingTeamReviewsCount = teamReviews.filter((r) => r.status === "awaiting_manager").length;
 
@@ -1162,10 +1167,17 @@ function EmployeePortal({ authUid, onSignOut }) {
       </header>
 
       <main className="mx-auto max-w-3xl p-5">
+        {hasOpenDisciplinaryCase && tab !== "penalties" && (
+          <button onClick={() => setTab("penalties")} className="no-print mb-4 flex w-full items-center gap-2.5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-right text-sm text-rose-700 hover:bg-rose-100">
+            <AlertTriangle size={18} className="shrink-0" />
+            <span className="flex-1 font-semibold">{t("في إجراء تأديبي جاري بخصوصك حاليًا - دوس هنا لمتابعته")}</span>
+          </button>
+        )}
         <div className="no-print mb-4 flex flex-wrap gap-2 border-b border-stone-200 pb-3">
           {TABS.map(([k, l, icon]) => (
             <button key={k} onClick={() => setTab(k)} className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium ${tab === k ? "bg-teal-800 text-white" : "text-slate-500 hover:bg-stone-100"}`}>
               {icon}{t(l)}
+              {k === "penalties" && hasOpenDisciplinaryCase && <span className="h-2 w-2 rounded-full bg-rose-600" />}
               {k === "team" && pendingTeamCount > 0 && <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-600 px-1 text-[10px] font-bold text-white">{pendingTeamCount}</span>}
               {k === "teamReviews" && pendingTeamReviewsCount > 0 && <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-600 px-1 text-[10px] font-bold text-white">{pendingTeamReviewsCount}</span>}
             </button>
@@ -1486,6 +1498,7 @@ const TRANSLATIONS = {
   "مسجل عليه تظلم - مستني قرار نهائي.": "An appeal has been filed - awaiting a final decision.",
   "اتقبل التظلم": "Appeal accepted",
   "اترفض التظلم": "Appeal rejected",
+  "في إجراء تأديبي جاري بخصوصك حاليًا - دوس هنا لمتابعته": "There is an ongoing disciplinary process concerning you - tap here to follow it",
 };
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
