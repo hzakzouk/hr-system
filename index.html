@@ -639,6 +639,7 @@ const PENALTY_STATUS_LABELS = {
   decided: "صادر",
   appealed: "تحت تظلم",
   closed: "مغلقة",
+  cleared: "غلق التحقيق - ثبوت البراءة",
 };
 const PENALTY_DEADLINE_STAGE_LABELS = {
   startInvestigation: "بدء التحقيق",
@@ -3740,7 +3741,7 @@ function PenaltiesTab({ employees, penalties, setPenalties, penaltyCaseNotes, se
   }
   function empName(id) { return employees.find((e) => e.id === id)?.name || t("موظف سابق"); }
   const toneFor = (at) => at === "خصم مالي" ? "rose" : at === "فصل" ? "rose" : at === "إنذار كتابي" ? "amber" : "slate";
-  const statusToneFor = (status) => status === "closed" ? "slate" : status === "appealed" ? "amber" : status === "decided" ? "teal" : "rose";
+  const statusToneFor = (status) => status === "cleared" ? "emerald" : status === "closed" ? "slate" : status === "appealed" ? "amber" : status === "decided" ? "teal" : "rose";
   const today = todayISO();
   const activeCase = activeCaseId ? penalties.find((p) => p.id === activeCaseId) : null;
 
@@ -3749,7 +3750,7 @@ function PenaltiesTab({ employees, penalties, setPenalties, penaltyCaseNotes, se
     return [...penalties]
       .filter((p) => !q || empName(p.employeeId).toLowerCase().includes(q))
       .filter((p) => statusFilter === "الكل" || (p.status || "decided") === statusFilter)
-      .filter((p) => actionTypeFilter === "الكل" || p.actionType === actionTypeFilter)
+      .filter((p) => actionTypeFilter === "الكل" || (actionTypeFilter === "__cleared__" ? p.cleared : p.actionType === actionTypeFilter))
       .filter((p) => !dateFrom || (p.date || "") >= dateFrom)
       .filter((p) => !dateTo || (p.date || "") <= dateTo)
       .sort((a, b) => (a.date < b.date ? 1 : -1));
@@ -3782,6 +3783,7 @@ function PenaltiesTab({ employees, penalties, setPenalties, penaltyCaseNotes, se
           </select>
           <select className={`${inputCls} w-auto`} value={actionTypeFilter} onChange={(e) => setActionTypeFilter(e.target.value)}>
             <option value="الكل">{t("كل أنواع الإجراء")}</option>
+            <option value="__cleared__">{t("ثبوت البراءة")}</option>
             {ACTION_TYPES.map((at) => <option key={at} value={at}>{t(at)}</option>)}
           </select>
           <input type="date" title={t("من تاريخ")} className={`${inputCls} w-auto`} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
@@ -3807,7 +3809,7 @@ function PenaltiesTab({ employees, penalties, setPenalties, penaltyCaseNotes, se
                   <tr key={p.id} className="border-b border-stone-100 last:border-0 hover:bg-stone-50">
                     <td className="px-4 py-3 font-medium text-slate-800">{empName(p.employeeId)}</td>
                     <td className="px-4 py-3 text-slate-500">{p.date}</td>
-                    <td className="px-4 py-3">{p.actionType ? <StampBadge tone={toneFor(p.actionType)}>{t(p.actionType)}</StampBadge> : <span className="text-xs text-slate-400">{t("لسه محددش")}</span>}</td>
+                    <td className="px-4 py-3">{p.cleared ? <StampBadge tone="emerald">{t("ثبوت البراءة")}</StampBadge> : p.actionType ? <StampBadge tone={toneFor(p.actionType)}>{t(p.actionType)}</StampBadge> : <span className="text-xs text-slate-400">{t("لسه محددش")}</span>}</td>
                     <td className="px-4 py-3">
                       <StampBadge tone={statusToneFor(status)}>{t(PENALTY_STATUS_LABELS[status])}</StampBadge>
                       {deadline && (
@@ -3926,7 +3928,7 @@ function PenaltyCaseManager({ penalty: p, employee, note, onUpdate, onSaveNote, 
   const today = todayISO();
   const [reasonDraft, setReasonDraft] = useState(p.reason || "");
   const [recordDraft, setRecordDraft] = useState(note.investigationRecord || "");
-  const [decisionForm, setDecisionForm] = useState({ actionType: p.actionType || ACTION_TYPES[1], reason: p.reason || "", amount: p.amount ? String(p.amount) : "", date: p.date || today });
+  const [decisionForm, setDecisionForm] = useState({ actionType: p.actionType || (p.cleared ? "" : ACTION_TYPES[1]), reason: p.reason || "", amount: p.amount ? String(p.amount) : "", date: p.date || today });
   const [appealForm, setAppealForm] = useState({ filedDate: p.appealFiledDate || today, notes: note.appealNotes || "" });
   const [appealNotesDraft, setAppealNotesDraft] = useState(note.appealNotes || "");
   const [resolveForm, setResolveForm] = useState({ decision: "accepted", date: today, notes: "" });
@@ -3942,8 +3944,9 @@ function PenaltyCaseManager({ penalty: p, employee, note, onUpdate, onSaveNote, 
   function saveDecision(e) {
     e.preventDefault();
     if (!decisionForm.reason.trim()) return;
-    const patch = { actionType: decisionForm.actionType, reason: decisionForm.reason, amount: decisionForm.actionType === "خصم مالي" ? Number(decisionForm.amount) || 0 : 0, date: decisionForm.date };
-    if (status === "pending_decision" && !p.actionType) patch.status = "decided";
+    const cleared = decisionForm.actionType === "";
+    const patch = { actionType: decisionForm.actionType, reason: decisionForm.reason, amount: decisionForm.actionType === "خصم مالي" ? Number(decisionForm.amount) || 0 : 0, date: decisionForm.date, cleared };
+    if (status === "pending_decision" && !p.actionType && !p.cleared) patch.status = cleared ? "cleared" : "decided";
     onUpdate(patch);
   }
   function fileAppeal(e) {
@@ -3966,13 +3969,13 @@ function PenaltyCaseManager({ penalty: p, employee, note, onUpdate, onSaveNote, 
     <div className="space-y-4">
       <div className="flex items-center justify-between rounded-lg bg-stone-50 px-3 py-2 text-sm">
         <span className="font-semibold text-slate-700">{employee?.name}</span>
-        <StampBadge tone={status === "closed" ? "slate" : status === "appealed" ? "amber" : status === "decided" ? "teal" : "rose"}>{t(PENALTY_STATUS_LABELS[status])}</StampBadge>
+        <StampBadge tone={status === "cleared" ? "emerald" : status === "closed" ? "slate" : status === "appealed" ? "amber" : status === "decided" ? "teal" : "rose"}>{t(PENALTY_STATUS_LABELS[status])}</StampBadge>
       </div>
 
       {p.violationDate && (
         <Field label="تاريخ العلم بالمخالفة"><input type="date" className={inputCls} value={p.violationDate} onChange={(e) => onUpdate({ violationDate: e.target.value })} /></Field>
       )}
-      {!p.actionType ? (
+      {!p.actionType && !p.cleared ? (
         <Field label="وصف المخالفة / السبب"><textarea className={inputCls} rows={2} value={reasonDraft} onChange={(e) => setReasonDraft(e.target.value)} onBlur={() => { if (reasonDraft !== (p.reason || "")) onUpdate({ reason: reasonDraft }); }} /></Field>
       ) : (
         p.violationDate && <p className="text-sm text-slate-600">{p.reason}</p>
@@ -4005,13 +4008,13 @@ function PenaltyCaseManager({ penalty: p, employee, note, onUpdate, onSaveNote, 
         </Card>
       )}
 
-      {(status === "pending_decision" || p.actionType) && (
+      {(status === "pending_decision" || p.actionType || p.cleared) && (
         <Card className="p-4">
           <h4 className="mb-3 text-sm font-bold text-slate-700">{t("القرار")}</h4>
           <form onSubmit={saveDecision} className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
               <Field label="تاريخ القرار"><input type="date" className={inputCls} value={decisionForm.date} onChange={(e) => setDecisionForm((f) => ({ ...f, date: e.target.value }))} /></Field>
-              <Field label="نوع الجزاء"><select className={inputCls} value={decisionForm.actionType} onChange={(e) => setDecisionForm((f) => ({ ...f, actionType: e.target.value }))}>{ACTION_TYPES.map((at) => <option key={at} value={at}>{t(at)}</option>)}</select></Field>
+              <Field label="نوع الجزاء"><select className={inputCls} value={decisionForm.actionType} onChange={(e) => setDecisionForm((f) => ({ ...f, actionType: e.target.value }))}><option value="">{t("غلق التحقيق - ثبوت البراءة")}</option>{ACTION_TYPES.map((at) => <option key={at} value={at}>{t(at)}</option>)}</select></Field>
             </div>
             {decisionForm.actionType === "خصم مالي" && (
               <Field label="قيمة الخصم (ج.م)">
@@ -4020,7 +4023,7 @@ function PenaltyCaseManager({ penalty: p, employee, note, onUpdate, onSaveNote, 
               </Field>
             )}
             <Field label="السبب"><input required className={inputCls} value={decisionForm.reason} onChange={(e) => setDecisionForm((f) => ({ ...f, reason: e.target.value }))} /></Field>
-            <button type="submit" className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Save size={15} /> {p.actionType ? t("حفظ") : t("إصدار القرار")}</button>
+            <button type="submit" className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Save size={15} /> {(p.actionType || p.cleared) ? t("حفظ") : t("إصدار القرار")}</button>
           </form>
         </Card>
       )}
@@ -5905,11 +5908,15 @@ function PenaltyCasePrintView({ penalty: p, employee, note, onClose }) {
             <p className="mt-1 whitespace-pre-line">{note.investigationRecord}</p>
           </div>
         )}
-        {p.actionType && (
+        {(p.actionType || p.cleared) && (
           <div className="mt-4 border-t border-stone-200 pt-4">
             <div className="font-semibold text-slate-800">{t("القرار")}</div>
             <div className="mt-1 space-y-1">
-              <div className="flex justify-between"><span className="text-slate-500">{t("نوع الجزاء")}</span><span className="font-semibold">{t(p.actionType)}</span></div>
+              {p.cleared ? (
+                <div className="flex justify-between"><span className="text-slate-500">{t("النتيجة")}</span><span className="font-semibold text-emerald-700">{t(PENALTY_STATUS_LABELS.cleared)}</span></div>
+              ) : (
+                <div className="flex justify-between"><span className="text-slate-500">{t("نوع الجزاء")}</span><span className="font-semibold">{t(p.actionType)}</span></div>
+              )}
               <div className="flex justify-between"><span className="text-slate-500">{t("تاريخ القرار")}</span><span>{p.date}</span></div>
               {p.actionType === "خصم مالي" && <div className="flex justify-between"><span className="text-slate-500">{t("قيمة الخصم")}</span><span className="font-semibold">{fmtMoney(p.amount)} {t("ج.م")}</span></div>}
             </div>
@@ -6725,6 +6732,10 @@ const TRANSLATIONS = {
   "مسح الفلاتر": "Clear Filters",
   "لغاية تاريخ": "To date",
   "إلى": "to",
+  // --- نتيجة تحقيق بلا جزاء (ثبوت براءة المشكو في حقه) - بديل لـ"إصدار القرار" في مرحلة القرار ---
+  "غلق التحقيق - ثبوت البراءة": "Close Investigation - Innocence Established",
+  "ثبوت البراءة": "Innocence Established",
+  "النتيجة": "Result",
 };
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
