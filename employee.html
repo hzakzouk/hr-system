@@ -1395,9 +1395,13 @@ function EmployeePortal({ authUid, onSignOut }) {
             <Card className="overflow-hidden p-0">
               <div className="max-h-[480px] overflow-y-auto">
                 <table className="w-full text-sm">
-                  <thead className="sticky top-0 bg-stone-50">
+                  {/* الـ sticky بقى على كل <th> لوحده مش على الـ <thead> كله - الـ sticky على
+                      thead بالظبط ده اللي كان بيسبب مشكلة إن العنوان يظهر متزحزح شمال/يمين عن
+                      عواميد البيانات تحته (مشكلة معروفة في بعض المتصفحات مع sticky+RTL+جدول -
+                      الـ th بمفرده بيحسب مكانه الصحيح كويس أكتر من الـ thead ككل). */}
+                  <thead className="bg-stone-50">
                     <tr className="border-b border-stone-200 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      <th className="px-4 py-2.5">{t("التاريخ")}</th><th className="px-4 py-2.5">{t("الحالة")}</th><th className="px-4 py-2.5">{t("دقايق التأخير")}</th><th className="px-4 py-2.5">{t("وقت إضافي")}</th>
+                      <th className="sticky top-0 bg-stone-50 px-4 py-2.5">{t("التاريخ")}</th><th className="sticky top-0 bg-stone-50 px-4 py-2.5">{t("الحالة")}</th><th className="sticky top-0 bg-stone-50 px-4 py-2.5">{t("دقايق التأخير")}</th><th className="sticky top-0 bg-stone-50 px-4 py-2.5">{t("وقت إضافي")}</th>
                     </tr>
                   </thead>
                   <tbody>
