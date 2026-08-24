@@ -1194,6 +1194,10 @@ function HRSystem({ adminUser }) {
   const [positions] = useFirestoreCollection("positions");
   const [surveys] = useFirestoreCollection("surveys");
   const [surveyResponses] = useFirestoreCollection("surveyResponses");
+  // إشعارات لوحة المتابعة اللي HR عمللها "إخفاء" (زرار delete) - كل سجل { id: alertDismissKey,
+  // dismissedAt } - id السجل هو مفتاح الإخفاء نفسه، فمفيش حاجة تتكرر. عملية تشغيلية بحتة (بتخفي
+  // عرض بس، مش بتمس أي سجل HR فعلي) فمش بتتسجل في سجل التدقيق (auditLog) - زي payslips بالظبط.
+  const [dismissedAlerts] = useFirestoreCollection("dismissedAlerts");
   const [orgChartPrintOpen, setOrgChartPrintOpen] = useState(false);
   const [printPenaltyCase, setPrintPenaltyCase] = useState(null);
   // Set by RecruitmentTab's "تحويل لموظف" action on a hired candidate - EmployeesTab watches
@@ -1305,6 +1309,7 @@ function HRSystem({ adminUser }) {
       track(writeAuditLog(adminUser, "notifySettings", diffDocKeys(notifySettings, n)));
     },
     payslips: (ym, rows) => track(syncPayslipsForMonth(ym, rows, payslipDocs.filter((d) => d.id.startsWith(`${ym}_`)))),
+    dismissedAlerts: (n) => track(syncCollection("dismissedAlerts", dismissedAlerts, n)),
     candidates: (n) => {
       track(syncCollection("candidates", candidates, n));
       track(writeAuditLog(adminUser, "candidates", diffSummary(candidates, n, (c) => `${c.name || c.id} - ${c.stage || ""}`)));
@@ -1457,7 +1462,7 @@ function HRSystem({ adminUser }) {
         </aside>
 
         <main className="no-print min-w-0 flex-1">
-          {tab === "dashboard" && <CommandCenterTab employees={activeEmployees} allEmployees={employees} orgChart={orgChart} attendance={attendance} penalties={penalties} advances={advances} documents={documents} settings={settings} reviews={reviews} candidates={candidates} requests={requests} checklistItems={checklistItems} assets={assets} salaryIncreases={salaryIncreases} onOpenEmployee={setOpenEmployeeId} onGoToTab={setTab} />}
+          {tab === "dashboard" && <CommandCenterTab employees={activeEmployees} allEmployees={employees} orgChart={orgChart} attendance={attendance} penalties={penalties} advances={advances} documents={documents} settings={settings} reviews={reviews} candidates={candidates} requests={requests} checklistItems={checklistItems} assets={assets} salaryIncreases={salaryIncreases} dismissedAlerts={dismissedAlerts} setDismissedAlerts={upd.dismissedAlerts} onOpenEmployee={setOpenEmployeeId} onGoToTab={setTab} />}
           {tab === "employees" && <EmployeesTab
             employees={employees} setEmployees={upd.employees} settings={settings} onOpen={setOpenEmployeeId}
             attendance={attendance} setAttendance={upd.attendance}
@@ -1546,11 +1551,11 @@ function computeAlerts(employees, attendance, advances, documents, settings, tod
   employees.forEach((e) => {
     if (e.contractEnd) {
       const end = new Date(e.contractEnd);
-      if (end >= today && end <= in30) alerts.push({ type: "contractEnd", employeeName: e.name, date: e.contractEnd });
+      if (end >= today && end <= in30) alerts.push({ type: "contractEnd", employeeId: e.id, employeeName: e.name, date: e.contractEnd });
     }
     const takenLeave = Object.keys(attendance).filter((d) => yearKey(d) === yearKey(todayISOStr) && getAttEntry(attendance, d, e.id)?.status === "leave").length;
     const remaining = (e.leaveEntitlement ?? settings.leaveDefaultDays) - takenLeave;
-    if (remaining <= 2) alerts.push({ type: "leaveLow", employeeName: e.name, remaining });
+    if (remaining <= 2) alerts.push({ type: "leaveLow", employeeId: e.id, employeeName: e.name, remaining });
     if (e.birthDate) {
       const bd = new Date(e.birthDate);
       const thisYearBd = new Date(today.getFullYear(), bd.getMonth(), bd.getDate());
@@ -1560,16 +1565,16 @@ function computeAlerts(employees, attendance, advances, documents, settings, tod
     // فترة الاختبار قربت تخلص أو خلصت من غير قرار تثبيت صريح - محتاجة قرار من الأدمن.
     const probation = computeProbationStatus(e, settings, todayISOStr);
     if (probation.status === "awaiting_decision") {
-      alerts.push({ type: "probationEnding", employeeName: e.name, date: probation.endDate, overdue: true });
+      alerts.push({ type: "probationEnding", employeeId: e.id, employeeName: e.name, date: probation.endDate, overdue: true });
     } else if (probation.status === "probation") {
       const diffDays = daysBetween(todayISOStr, probation.endDate);
-      if (diffDays <= 7) alerts.push({ type: "probationEnding", employeeName: e.name, date: probation.endDate, overdue: false });
+      if (diffDays <= 7) alerts.push({ type: "probationEnding", employeeId: e.id, employeeName: e.name, date: probation.endDate, overdue: false });
     }
     // تقييم دوري مستحق (أو قرّب يستحق خلال أسبوعين) بناءً على دورة settings.reviewCycleMonths.
     const dueDate = nextReviewDueDate(e, reviews, settings);
     if (dueDate) {
       const diffDays = daysBetween(todayISOStr, dueDate);
-      if (diffDays <= 14) alerts.push({ type: "reviewDue", employeeName: e.name, date: dueDate, overdue: diffDays < 0 });
+      if (diffDays <= 14) alerts.push({ type: "reviewDue", employeeId: e.id, employeeName: e.name, date: dueDate, overdue: diffDays < 0 });
     }
     // عنده تقييم سنوي مكتمل ولسه مفيش قرار نهائي على زيادة مرتبه (لا موافقة ولا رفض) - ده
     // التنبيه السنوي المطلوب: بمجرد ما مديره يكمّل تقييمه السنوي، شؤون الأفراد بتلاقي تنبيه هنا
@@ -1579,7 +1584,7 @@ function computeAlerts(employees, attendance, advances, documents, settings, tod
     const annualReview = latestCompletedAnnualReview(reviews, e.id);
     if (annualReview) {
       const decided = salaryIncreases.some((s) => s.employeeId === e.id && s.year === annualReview.year && s.status !== "pending");
-      if (!decided) alerts.push({ type: "salaryIncreaseDue", employeeName: e.name, year: annualReview.year });
+      if (!decided) alerts.push({ type: "salaryIncreaseDue", employeeId: e.id, employeeName: e.name, year: annualReview.year });
     }
   });
   advances.forEach((a) => {
@@ -1594,7 +1599,7 @@ function computeAlerts(employees, attendance, advances, documents, settings, tod
       const exp = new Date(d.expiryDate);
       if (exp >= today && exp <= in30) {
         const emp = employees.find((e) => e.id === d.employeeId);
-        alerts.push({ type: "docExpiry", employeeName: emp?.name || "", docName: d.name, date: d.expiryDate });
+        alerts.push({ type: "docExpiry", documentId: d.id, employeeName: emp?.name || "", docName: d.name, date: d.expiryDate });
       }
     }
   });
@@ -1602,7 +1607,7 @@ function computeAlerts(employees, attendance, advances, documents, settings, tod
   candidates.forEach((c) => {
     if (c.stage === "عرض عمل" && c.appliedDate) {
       const diffDays = daysBetween(c.appliedDate, todayISOStr);
-      if (diffDays >= 14) alerts.push({ type: "staleOffer", candidateName: c.name, position: c.position || "", diffDays });
+      if (diffDays >= 14) alerts.push({ type: "staleOffer", candidateId: c.id, candidateName: c.name, position: c.position || "", appliedDate: c.appliedDate, diffDays });
     }
   });
   // طلب من بوابة الموظف (إجازة/إذن تأخير/سلفة) واقف من غير قرار لمدة طويلة.
@@ -1626,6 +1631,31 @@ function computeAlerts(employees, attendance, advances, documents, settings, tod
     }
   });
   return alerts;
+}
+
+// Stable dismiss-key for one computeAlerts() item - used by "لوحة المتابعة"'s per-item delete
+// button (dismissedAlerts collection) to decide which items are currently hidden. computeAlerts()
+// regenerates alert objects fresh on every render (they have no Firestore id of their own), so
+// the key is built from the fields that identify *this specific occurrence* of the alert: an
+// employee/candidate/document/penalty id plus whatever value would change if the underlying
+// condition is renewed (a new deadline date, a new low-balance figure, a new deadline stage...).
+// That's deliberate - dismissing hides this exact occurrence, but if the condition re-fires with
+// a different value later (e.g. leave balance goes back up then drops again to a new number,
+// or a probation end date gets pushed), the key changes and the alert reappears instead of
+// staying silently hidden forever. Returns null for a type that isn't dismissable from here
+// (currently every rendered CommandCenterTab alert type has a key).
+function alertDismissKey(a) {
+  switch (a.type) {
+    case "contractEnd": return `contractEnd:${a.employeeId}:${a.date}`;
+    case "leaveLow": return `leaveLow:${a.employeeId}:${a.remaining}`;
+    case "probationEnding": return `probationEnding:${a.employeeId}:${a.date}`;
+    case "reviewDue": return `reviewDue:${a.employeeId}:${a.date}`;
+    case "salaryIncreaseDue": return `salaryIncreaseDue:${a.employeeId}:${a.year}`;
+    case "docExpiry": return `docExpiry:${a.documentId}:${a.date}`;
+    case "staleOffer": return `staleOffer:${a.candidateId}:${a.appliedDate}`;
+    case "disciplinaryDeadline": return `disciplinaryDeadline:${a.penaltyId}:${a.stage}`;
+    default: return null;
+  }
 }
 
 // One Arabic plain-text line per alert, used by the email digest - deliberately NOT run
@@ -1690,6 +1720,17 @@ function RemindButton({ href }) {
     <a href={href} target="_blank" rel="noreferrer" className="flex shrink-0 items-center gap-1 rounded-md border border-emerald-600 px-2 py-1 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-50">
       <MessageCircle size={11} /> {t("تنبيه واتساب")}
     </a>
+  );
+}
+// زرار مضغوط بيخفي عنصر بعينه من لوحة المتابعة (مش بيمسح أي سجل فعلي - الجزاء أو المستند أو
+// الموظف نفسه فاضل زي ما هو، بس التنبيه ده بالذات مبيتعرضش تاني هنا). بيرجع يظهر تاني لو نفس
+// الحالة "اتجددت" بقيمة مختلفة (تاريخ استحقاق جديد، رصيد إجازة نزل لرقم جديد...) - alertDismissKey.
+function DismissButton({ onClick }) {
+  const { t } = useLang();
+  return (
+    <button onClick={onClick} title={t("إخفاء هذا التنبيه من لوحة المتابعة")} className="flex shrink-0 items-center justify-center rounded-md border border-stone-200 p-1.5 text-slate-400 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600">
+      <Trash2 size={11} />
+    </button>
   );
 }
 
@@ -1787,9 +1828,18 @@ function CommandCenterSection({ title, icon, tone, items, emptyText, children })
 // محتاجة قرار أو تنبيه من الـ Head of HR في مكان واحد (كانت شاشتين منفصلتين - "لوحة المتابعة"
 // القديمة و"المعلقات" - اتدمجوا في واحدة بعد ما اتقالنا إن قائمة أسامي الحضور مش مهمة وإن
 // التنبيهات محتاجة تبقى فيها زرار أكشن مباشر بدل ما تبقى نص بس).
-function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penalties, advances, documents, settings, reviews, candidates, requests, checklistItems, assets, salaryIncreases, onOpenEmployee, onGoToTab }) {
+function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penalties, advances, documents, settings, reviews, candidates, requests, checklistItems, assets, salaryIncreases, dismissedAlerts, setDismissedAlerts, onOpenEmployee, onGoToTab }) {
   const { t, lang } = useLang();
   const today = todayISO();
+
+  // مفاتيح التنبيهات اللي HR اختار يخفيها من هنا (زرار الـ delete) - مش بيمسح أي سجل فعلي،
+  // بس بيمنع العنصر ده بالذات من الظهور تاني في لوحة المتابعة. لو نفس الحالة "اتجددت" بقيمة
+  // مختلفة بعدين (alertDismissKey بيتغيّر)، التنبيه بيرجع يظهر لوحده من غير أي تدخل.
+  const dismissedKeys = useMemo(() => new Set((dismissedAlerts || []).map((d) => d.id)), [dismissedAlerts]);
+  function dismiss(key) {
+    if (!key || dismissedKeys.has(key)) return;
+    setDismissedAlerts([...(dismissedAlerts || []), { id: key, dismissedAt: today }]);
+  }
 
   // المتأخر لسه حاضر فعليًا (جه الشغل بس متأخر) - يتحسب جوه "حاضر النهاردة"، و"متأخر
   // النهاردة" بيبقى بس توضيح لكام واحد من الحاضرين ده كان متأخر (مش فئة منفصلة بتتشال
@@ -1805,9 +1855,12 @@ function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penal
     () => computeAlerts(employees, attendance, advances, documents, settings, today, { reviews, candidates, requests, salaryIncreases, penalties }),
     [employees, attendance, advances, documents, settings, today, reviews, candidates, requests, salaryIncreases, penalties]
   );
-  const byType = (type) => alerts.filter((a) => a.type === type);
+  // بيرجع بس التنبيهات اللي لسه مش متعمّلها dismiss (alertDismissKey بيرجع null لأي نوع مالوش
+  // مفتاح مُعرّف - عمليًا كل الأنواع المعروضة هنا عندها واحد، فده حماية زيادة مش سلوك متوقع).
+  const byType = (type) => alerts.filter((a) => a.type === type && !dismissedKeys.has(alertDismissKey(a)));
 
   const pendingRequests = requests.filter((r) => r.status === "pending" || r.status === "pending_ceo")
+    .filter((r) => !dismissedKeys.has(`request:${r.id}`))
     .sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
 
   // بنجمّع بمفتاح (الموظف + نوع الخطوة) مش الموظف لوحده - عشان لو نفس الموظف كان عنده خطوات
@@ -1821,12 +1874,16 @@ function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penal
       byKey[key].count++;
       byKey[key].texts.push(c.text);
     });
-    return Object.values(byKey);
-  }, [checklistItems]);
+    // مفتاح الإخفاء بيتضمن نصوص البنود الناقصة نفسها (مرتّبة) - لو نفس البنود لسه ناقصة يفضل
+    // مخفي، لكن لو بند اتعمل واتظهر بند جديد بدل منه (مجموعة مختلفة)، ده "تجدد" للحالة فيرجع يظهر.
+    return Object.values(byKey)
+      .map((c) => ({ ...c, dismissKey: `checklist:${c.employeeId}:${c.type}:${[...c.texts].sort().join("|")}` }))
+      .filter((c) => !dismissedKeys.has(c.dismissKey));
+  }, [checklistItems, dismissedKeys]);
 
   // أي عهدة (لابتوب، يونيفورم...) لسه ما اتسجّلش استرجاعها - لأي موظف حتى لو لسه شغال، مش بس
   // اللي استقالوا (المستخدم طلب كده صراحة: "أي عهدة لسه مش مرجّعة، لأي موظف").
-  const outstandingAssets = useMemo(() => (assets || []).filter((a) => !a.returnedDate), [assets]);
+  const outstandingAssets = useMemo(() => (assets || []).filter((a) => !a.returnedDate && !dismissedKeys.has(`asset:${a.id}`)), [assets, dismissedKeys]);
 
   function findEmployee(id) { return employees.find((e) => e.id === id); }
   function findEmployeeByName(name) { return employees.find((e) => e.name === name); }
@@ -1880,9 +1937,12 @@ function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penal
                     <span className="text-xs text-slate-400">{t(REQUEST_STATUS_LABELS[r.status] || r.status)}{responsible ? ` - ${responsible.name}` : ""}</span>
                   </div>
                 </div>
-                {responsible
-                  ? <RemindButton href={buildAlertWhatsAppLink(responsible, msg)} />
-                  : <span className="shrink-0 text-[11px] text-amber-600">{t("تعذّر تحديد المسؤول - راجع الهيكل التنظيمي")}</span>}
+                <div className="flex shrink-0 items-center gap-1.5">
+                  {responsible
+                    ? <RemindButton href={buildAlertWhatsAppLink(responsible, msg)} />
+                    : <span className="text-[11px] text-amber-600">{t("تعذّر تحديد المسؤول - راجع الهيكل التنظيمي")}</span>}
+                  <DismissButton onClick={() => dismiss(`request:${r.id}`)} />
+                </div>
               </div>
             );
           }}
@@ -1897,7 +1957,10 @@ function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penal
                   <div className="font-medium text-slate-700">{a.employeeName}</div>
                   <StampBadge tone={a.overdue ? "rose" : "amber"}>{a.overdue ? t("خلصت في {date}", { date: a.date }) : t("هتخلص في {date}", { date: a.date })}</StampBadge>
                 </div>
-                <ReviewButton onClick={() => emp && onOpenEmployee(emp.id)} />
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <ReviewButton onClick={() => emp && onOpenEmployee(emp.id)} />
+                  <DismissButton onClick={() => dismiss(alertDismissKey(a))} />
+                </div>
               </div>
             );
           }}
@@ -1913,7 +1976,10 @@ function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penal
                   <span className="text-xs text-slate-400">{a.overdue ? t("الموعد فات ({date})", { date: a.date }) : t("الموعد {date}", { date: a.date })}</span>
                 </div>
               </div>
-              <ReviewButton onClick={() => onGoToTab("penalties")} />
+              <div className="flex shrink-0 items-center gap-1.5">
+                <ReviewButton onClick={() => onGoToTab("penalties")} />
+                <DismissButton onClick={() => dismiss(alertDismissKey(a))} />
+              </div>
             </div>
           )}
         </CommandCenterSection>
@@ -1934,9 +2000,12 @@ function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penal
                     {manager && <span className="text-xs text-slate-400">- {manager.name}</span>}
                   </div>
                 </div>
-                {manager
-                  ? <RemindButton href={buildAlertWhatsAppLink(manager, msg)} />
-                  : <span className="shrink-0 text-[11px] text-amber-600">{t("تعذّر تحديد المسؤول - راجع الهيكل التنظيمي")}</span>}
+                <div className="flex shrink-0 items-center gap-1.5">
+                  {manager
+                    ? <RemindButton href={buildAlertWhatsAppLink(manager, msg)} />
+                    : <span className="text-[11px] text-amber-600">{t("تعذّر تحديد المسؤول - راجع الهيكل التنظيمي")}</span>}
+                  <DismissButton onClick={() => dismiss(alertDismissKey(a))} />
+                </div>
               </div>
             );
           }}
@@ -1949,7 +2018,10 @@ function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penal
                 <div className="font-medium text-slate-700">{a.employeeName}</div>
                 <StampBadge tone="teal">{t("تقييم {year} مكتمل", { year: a.year })}</StampBadge>
               </div>
-              <ReviewButton onClick={() => onGoToTab("salaryIncrease")} />
+              <div className="flex shrink-0 items-center gap-1.5">
+                <ReviewButton onClick={() => onGoToTab("salaryIncrease")} />
+                <DismissButton onClick={() => dismiss(alertDismissKey(a))} />
+              </div>
             </div>
           )}
         </CommandCenterSection>
@@ -1963,7 +2035,10 @@ function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penal
                   <div className="font-medium text-slate-700">{a.employeeName}</div>
                   <span className="text-xs text-slate-400">{a.date}</span>
                 </div>
-                <ReviewButton onClick={() => emp && onOpenEmployee(emp.id)} />
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <ReviewButton onClick={() => emp && onOpenEmployee(emp.id)} />
+                  <DismissButton onClick={() => dismiss(alertDismissKey(a))} />
+                </div>
               </div>
             );
           }}
@@ -1976,7 +2051,10 @@ function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penal
                 <div className="font-medium text-slate-700">{a.candidateName} <span className="text-xs text-slate-400">({a.position})</span></div>
                 <span className="text-xs text-rose-500">{t("{n} يوم", { n: a.diffDays })}</span>
               </div>
-              <ReviewButton onClick={() => onGoToTab("recruitment")} />
+              <div className="flex shrink-0 items-center gap-1.5">
+                <ReviewButton onClick={() => onGoToTab("recruitment")} />
+                <DismissButton onClick={() => dismiss(alertDismissKey(a))} />
+              </div>
             </div>
           )}
         </CommandCenterSection>
@@ -1991,7 +2069,10 @@ function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penal
                   <div className="font-medium text-slate-700">{a.employeeName} <span className="text-xs text-slate-400">- {t(a.docName)}</span></div>
                   <span className="text-xs text-slate-400">{a.date}</span>
                 </div>
-                <RemindButton href={emp ? buildAlertWhatsAppLink(emp, msg) : null} />
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <RemindButton href={emp ? buildAlertWhatsAppLink(emp, msg) : null} />
+                  <DismissButton onClick={() => dismiss(alertDismissKey(a))} />
+                </div>
               </div>
             );
           }}
@@ -2009,7 +2090,10 @@ function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penal
                     <span className="text-xs text-slate-500">{c.texts.map((tx) => t(tx)).join(lang === "en" ? ", " : "، ")}</span>
                   </div>
                 </div>
-                <ReviewButton onClick={() => emp && onOpenEmployee(c.employeeId)} />
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <ReviewButton onClick={() => emp && onOpenEmployee(c.employeeId)} />
+                  <DismissButton onClick={() => dismiss(c.dismissKey)} />
+                </div>
               </div>
             );
           }}
@@ -2027,7 +2111,10 @@ function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penal
                     <span className="text-xs text-slate-400">{t("اتسلّمت في {date}", { date: a.assignedDate })}</span>
                   </div>
                 </div>
-                <ReviewButton onClick={() => emp && onOpenEmployee(emp.id)} />
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <ReviewButton onClick={() => emp && onOpenEmployee(emp.id)} />
+                  <DismissButton onClick={() => dismiss(`asset:${a.id}`)} />
+                </div>
               </div>
             );
           }}
@@ -2043,7 +2130,10 @@ function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penal
                   <div className="font-medium text-slate-700">{a.employeeName}</div>
                   <span className="text-xs text-rose-500">{t("{n} يوم باقي", { n: a.remaining })}</span>
                 </div>
-                <RemindButton href={emp ? buildAlertWhatsAppLink(emp, msg) : null} />
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <RemindButton href={emp ? buildAlertWhatsAppLink(emp, msg) : null} />
+                  <DismissButton onClick={() => dismiss(alertDismissKey(a))} />
+                </div>
               </div>
             );
           }}
@@ -7059,6 +7149,8 @@ const TRANSLATIONS = {
   "مسح الفلاتر": "Clear Filters",
   "لغاية تاريخ": "To date",
   "إلى": "to",
+  // --- زرار إخفاء إشعار بعينه من لوحة المتابعة (delete/dismiss) ---
+  "إخفاء هذا التنبيه من لوحة المتابعة": "Hide this notification from the dashboard",
   // --- نتيجة تحقيق بلا جزاء (ثبوت براءة المشكو في حقه) - بديل لـ"إصدار القرار" في مرحلة القرار ---
   "غلق التحقيق - ثبوت البراءة": "Close Investigation - Innocence Established",
   "ثبوت البراءة": "Innocence Established",
