@@ -32,7 +32,7 @@ import ReactDOM from "react-dom/client";
 import {
   CalendarCheck, Clock, AlertTriangle, LogOut, Loader2, User, Lock, LogIn,
   Check, UserX, Wallet, Printer, Network, Crown, HandCoins, Plus, ClipboardList,
-  X, Info, Users, Languages, Star, Trash2,
+  X, Info, Users, Languages, Star, Trash2, MessageSquareText,
 } from "lucide-react";
 import { initializeApp } from "firebase/app";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
@@ -120,6 +120,13 @@ const EN_MONTHS = ["January", "February", "March", "April", "May", "June", "July
 
 function fmtMoney(n) { return (Number(n) || 0).toLocaleString("en-US", { maximumFractionDigits: 0 }); }
 function todayISO() { return new Date().toISOString().slice(0, 10); }
+const SURVEY_YESNO_OPTIONS = ["نعم", "لا"];
+// استطلاع "مفتوح للرد" لازم يكون منشور (published)، محدش قفله بدري (closedEarly)، وآخر ميعاد الرد
+// لسه ما فاتش. نفس الدالة متكررة بالظبط في hr-system.jsx - الملفين مالهمش أي imports مشتركة،
+// فأي تعديل هنا لازم يتظبط هناك كمان.
+function isSurveyOpen(survey, todayISOStr) {
+  return !!survey.published && !survey.closedEarly && (!survey.deadline || todayISOStr <= survey.deadline);
+}
 function yearKey(d) { return d.slice(0, 4); }
 function ymLabel(ym, lang) {
   const [y, m] = String(ym || "").split("-").map(Number);
@@ -666,6 +673,145 @@ function MyReviewCard({ r }) {
   );
 }
 
+// استطلاعات الرأي (Employee Survey) - قايمة الاستطلاعات المنشورة (لسه مفتوحة أو خلص ميعادها)،
+// اللي لسه محتاج رد بيظهر فوق (statusRank)، وفتح فورم الرد بيتم inline (بيستبدل القايمة، مش
+// Modal - مفيش Modal component في الملف ده أصلاً، والفورمز التانية كلها inline بنفس الطريقة).
+function SurveysSection({ employee, surveys, surveyResponses }) {
+  const { t } = useLang();
+  const [fillingId, setFillingId] = useState(null);
+  const today = todayISO();
+
+  function responseFor(surveyId) { return surveyResponses.find((r) => r.surveyId === surveyId); }
+  function statusRank(s) {
+    const answered = !!responseFor(s.id);
+    if (isSurveyOpen(s, today) && !answered) return 0;
+    if (isSurveyOpen(s, today) && answered) return 1;
+    return 2;
+  }
+  const sorted = [...surveys].sort((a, b) => statusRank(a) - statusRank(b) || ((a.deadline || "") < (b.deadline || "") ? -1 : 1));
+  const fillingSurvey = fillingId ? surveys.find((s) => s.id === fillingId) : null;
+
+  if (fillingSurvey) {
+    return (
+      <Card className="p-4">
+        <div className="mb-4 flex items-center justify-between">
+          <div>
+            <div className="text-sm font-bold text-slate-800">{fillingSurvey.title}</div>
+            {fillingSurvey.description && <p className="mt-0.5 text-xs text-slate-500">{fillingSurvey.description}</p>}
+          </div>
+          <button onClick={() => setFillingId(null)} className="text-xs font-semibold text-slate-500 hover:underline">{t("رجوع للقايمة")}</button>
+        </div>
+        <SurveyFillForm survey={fillingSurvey} employee={employee} existingResponse={responseFor(fillingSurvey.id)} onDone={() => setFillingId(null)} />
+      </Card>
+    );
+  }
+
+  return (
+    <div>
+      {sorted.length === 0 ? <EmptyState text="مفيش استطلاعات رأي دلوقتي." /> : (
+        <div className="space-y-2">
+          {sorted.map((s) => {
+            const resp = responseFor(s.id);
+            const open = isSurveyOpen(s, today);
+            return (
+              <Card key={s.id} className="p-3.5">
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="text-sm font-semibold text-slate-800">{s.title}</span>
+                  <span className="shrink-0 text-xs text-slate-400">{t("آخر ميعاد")}: {s.deadline || "—"}</span>
+                </div>
+                {s.description && <p className="mb-2 text-sm text-slate-600">{s.description}</p>}
+                {resp ? (
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-emerald-700">{t("تم إرسال ردك بتاريخ {date}", { date: resp.submittedAt ? resp.submittedAt.slice(0, 10) : "" })}</span>
+                    {open && <button onClick={() => setFillingId(s.id)} className="shrink-0 text-xs font-semibold text-teal-700 hover:underline">{t("تعديل ردك")}</button>}
+                  </div>
+                ) : open ? (
+                  <button onClick={() => setFillingId(s.id)} className="rounded-lg bg-teal-800 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-900">{t("شارك برأيك")}</button>
+                ) : (
+                  <span className="text-xs font-semibold text-slate-400">{t("الميعاد خلص من غير ما ترد")}</span>
+                )}
+              </Card>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+function SurveyFillForm({ survey, employee, existingResponse, onDone }) {
+  const { t } = useLang();
+  const [answers, setAnswers] = useState(() => {
+    const init = {};
+    (existingResponse?.answers || []).forEach((a) => { init[a.questionId] = a.value; });
+    return init;
+  });
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  function setAnswer(qid, v) { setAnswers((a) => ({ ...a, [qid]: v })); }
+
+  async function submit(e) {
+    e.preventDefault();
+    setMsg(null);
+    const missing = (survey.questions || []).find((q) => q.required && !String(answers[q.id] ?? "").trim());
+    if (missing) { setMsg({ tone: "rose", text: t("لازم تجاوب على كل الأسئلة المطلوبة قبل الإرسال.") }); return; }
+    setBusy(true);
+    try {
+      const ref = doc(db, "surveyResponses", `${survey.id}_${employee.id}`);
+      await setDoc(ref, {
+        surveyId: survey.id,
+        employeeId: employee.id,
+        employeeName: employee.name,
+        answers: (survey.questions || []).map((q) => ({ questionId: q.id, value: answers[q.id] ?? "" })),
+        submittedAt: new Date().toISOString(),
+      });
+      setMsg({ tone: "teal", text: t("تم إرسال ردك - شكرًا لمشاركتك رأيك.") });
+      setTimeout(() => onDone(), 900);
+    } catch (err) {
+      setMsg({ tone: "rose", text: t("تعذّر إرسال الرد. جرب تاني.") });
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      {msg && <div className={`rounded-lg px-3 py-2 text-sm ${msg.tone === "rose" ? "bg-rose-50 text-rose-700" : "bg-teal-50 text-teal-700"}`}>{msg.text}</div>}
+      {(survey.questions || []).map((q, i) => (
+        <div key={q.id}>
+          <div className="mb-1.5 text-sm font-medium text-slate-700">{i + 1}. {q.text}{q.required && <span className="text-rose-500"> *</span>}</div>
+          {q.type === "rating5" && (
+            <div className="flex gap-2">
+              {[1, 2, 3, 4, 5].map((n) => (
+                <button key={n} type="button" onClick={() => setAnswer(q.id, n)} className={`flex h-10 w-10 items-center justify-center rounded-lg border text-sm font-semibold ${Number(answers[q.id]) === n ? "border-teal-700 bg-teal-800 text-white" : "border-stone-300 text-slate-600 hover:bg-stone-50"}`}>{n}</button>
+              ))}
+            </div>
+          )}
+          {q.type === "multipleChoice" && (
+            <div className="space-y-1.5">
+              {(q.options || []).map((opt) => (
+                <label key={opt} className="flex items-center gap-2 text-sm text-slate-700">
+                  <input type="radio" name={q.id} checked={answers[q.id] === opt} onChange={() => setAnswer(q.id, opt)} /> {opt}
+                </label>
+              ))}
+            </div>
+          )}
+          {q.type === "yesno" && (
+            <div className="flex gap-2">
+              {SURVEY_YESNO_OPTIONS.map((opt) => (
+                <button key={opt} type="button" onClick={() => setAnswer(q.id, opt)} className={`rounded-lg border px-4 py-2 text-sm font-semibold ${answers[q.id] === opt ? "border-teal-700 bg-teal-800 text-white" : "border-stone-300 text-slate-600 hover:bg-stone-50"}`}>{t(opt)}</button>
+              ))}
+            </div>
+          )}
+          {q.type === "text" && (
+            <textarea className={inputCls} rows={3} value={answers[q.id] || ""} onChange={(e) => setAnswer(q.id, e.target.value)} />
+          )}
+        </div>
+      ))}
+      <div className="flex justify-end gap-2 border-t border-stone-200 pt-4">
+        <button type="submit" disabled={busy} className="rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900 disabled:opacity-50">{busy ? t("جاري الإرسال...") : t("إرسال الرد")}</button>
+      </div>
+    </form>
+  );
+}
+
 function MySelfAppraisalSection({ employee, orgChart, settings }) {
   const { t } = useLang();
   const [reviews, setReviews] = useState([]);
@@ -1034,6 +1180,8 @@ function EmployeePortal({ authUid, onSignOut }) {
   const [employee, setEmployee] = useState(undefined); // undefined = loading, null = not found
   const [attendanceRecords, setAttendanceRecords] = useState([]);
   const [penalties, setPenalties] = useState([]);
+  const [surveys, setSurveys] = useState([]);
+  const [surveyResponses, setSurveyResponses] = useState([]);
   const [settings, setSettings] = useState({ leaveDefaultDays: 21 });
   const [orgChart, setOrgChart] = useState({ ceoEmployeeId: null, departmentHeads: {} });
   const [directory, setDirectory] = useState([]);
@@ -1061,13 +1209,24 @@ function EmployeePortal({ authUid, onSignOut }) {
     return unsub;
   }, []);
 
+  // استطلاعات الرأي المنشورة (published==true) - القراءة مش مربوطة بالموظف نفسه (firestore.rules
+  // بتسمح لأي مستخدم داخل يشوف أي استطلاع منشور)، فمستقلة عن تحميل employee زي orgChart/settings
+  // فوق بالظبط.
+  useEffect(() => {
+    const q = query(collection(db, "surveys"), where("published", "==", true));
+    const unsub = onSnapshot(q, (snap) => setSurveys(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
+    return unsub;
+  }, []);
+
   useEffect(() => {
     if (!employee) return;
     const attQ = query(collection(db, "attendanceRecords"), where("employeeId", "==", employee.id));
     const unsubAtt = onSnapshot(attQ, (snap) => setAttendanceRecords(snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => (a.date < b.date ? 1 : -1))));
     const penQ = query(collection(db, "penalties"), where("employeeId", "==", employee.id));
     const unsubPen = onSnapshot(penQ, (snap) => setPenalties(snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => (a.date < b.date ? 1 : -1))));
-    return () => { unsubAtt(); unsubPen(); };
+    const srQ = query(collection(db, "surveyResponses"), where("employeeId", "==", employee.id));
+    const unsubSr = onSnapshot(srQ, (snap) => setSurveyResponses(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
+    return () => { unsubAtt(); unsubPen(); unsubSr(); };
   }, [employee?.id]);
 
   // "Manager" = this employee is the head of their own department per orgChart/main. Computed
@@ -1135,11 +1294,16 @@ function EmployeePortal({ authUid, onSignOut }) {
   const hasOpenDisciplinaryCase = penalties.some((p) => p.status === "investigating" || p.status === "pending_decision");
   const pendingTeamCount = teamRequests.filter((r) => r.status === "pending" || r.status === "pending_ceo").length;
   const pendingTeamReviewsCount = teamReviews.filter((r) => r.status === "awaiting_manager").length;
+  // استطلاعات رأي منشورة، لسه مفتوحة (الميعاد ما فاتش)، ومحدش رد عليها لسه من الموظف ده - بتظهر
+  // كبانر فوق كل التابات وكـ badge رقمي على تاب "استطلاعات الرأي" زي badge طلبات الفريق بالظبط.
+  const respondedSurveyIds = new Set(surveyResponses.map((r) => r.surveyId));
+  const pendingSurveys = surveys.filter((s) => isSurveyOpen(s, today) && !respondedSurveyIds.has(s.id));
 
   const TABS = [
     ["leave", "الإجازات", <CalendarCheck size={14} />],
     ["attendance", "الحضور", <Clock size={14} />],
     ["penalties", "الجزاءات", <AlertTriangle size={14} />],
+    ["surveys", "استطلاعات الرأي", <MessageSquareText size={14} />],
     ["payroll", "المرتب", <Wallet size={14} />],
     ["requests", "طلباتي", <ClipboardList size={14} />],
     ["myReviews", "تقييماتي", <Star size={14} />],
@@ -1173,11 +1337,18 @@ function EmployeePortal({ authUid, onSignOut }) {
             <span className="flex-1 font-semibold">{t("في إجراء تأديبي جاري بخصوصك حاليًا - دوس هنا لمتابعته")}</span>
           </button>
         )}
+        {pendingSurveys.length > 0 && tab !== "surveys" && (
+          <button onClick={() => setTab("surveys")} className="no-print mb-4 flex w-full items-center gap-2.5 rounded-xl border border-teal-200 bg-teal-50 px-4 py-3 text-right text-sm text-teal-700 hover:bg-teal-100">
+            <MessageSquareText size={18} className="shrink-0" />
+            <span className="flex-1 font-semibold">{pendingSurveys.length === 1 ? t("عندك استطلاع رأي جديد - دوس هنا عشان تشارك برأيك") : t("عندك {n} استطلاعات رأي جديدة - دوس هنا عشان تشارك برأيك", { n: pendingSurveys.length })}</span>
+          </button>
+        )}
         <div className="no-print mb-4 flex flex-wrap gap-2 border-b border-stone-200 pb-3">
           {TABS.map(([k, l, icon]) => (
             <button key={k} onClick={() => setTab(k)} className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium ${tab === k ? "bg-teal-800 text-white" : "text-slate-500 hover:bg-stone-100"}`}>
               {icon}{t(l)}
               {k === "penalties" && hasOpenDisciplinaryCase && <span className="h-2 w-2 rounded-full bg-rose-600" />}
+              {k === "surveys" && pendingSurveys.length > 0 && <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-600 px-1 text-[10px] font-bold text-white">{pendingSurveys.length}</span>}
               {k === "team" && pendingTeamCount > 0 && <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-600 px-1 text-[10px] font-bold text-white">{pendingTeamCount}</span>}
               {k === "teamReviews" && pendingTeamReviewsCount > 0 && <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-600 px-1 text-[10px] font-bold text-white">{pendingTeamReviewsCount}</span>}
             </button>
@@ -1271,6 +1442,7 @@ function EmployeePortal({ authUid, onSignOut }) {
           </div>
         )}
 
+        {tab === "surveys" && <SurveysSection employee={employee} surveys={surveys} surveyResponses={surveyResponses} />}
         {tab === "payroll" && <PayrollSection employee={employee} />}
         {tab === "requests" && <RequestsSection employee={employee} orgChart={orgChart} directory={directory} />}
         {tab === "myReviews" && <MySelfAppraisalSection employee={employee} orgChart={orgChart} settings={settings} />}
@@ -1500,6 +1672,24 @@ const TRANSLATIONS = {
   "اترفض التظلم": "Appeal rejected",
   "في إجراء تأديبي جاري بخصوصك حاليًا - دوس هنا لمتابعته": "There is an ongoing disciplinary process concerning you - tap here to follow it",
   "تم غلق التحقيق - ثبتت البراءة": "The investigation has been closed - innocence was established",
+  // --- استطلاعات الرأي (Employee Survey) - تاب الموظف ---
+  "استطلاعات الرأي": "Employee Surveys",
+  "عندك استطلاع رأي جديد - دوس هنا عشان تشارك برأيك": "You have a new survey - tap here to share your opinion",
+  "عندك {n} استطلاعات رأي جديدة - دوس هنا عشان تشارك برأيك": "You have {n} new surveys - tap here to share your opinion",
+  "مفيش استطلاعات رأي دلوقتي.": "No surveys right now.",
+  "رجوع للقايمة": "Back to the List",
+  "آخر ميعاد": "Deadline",
+  "تم إرسال ردك بتاريخ {date}": "Your response was sent on {date}",
+  "تعديل ردك": "Edit Your Response",
+  "شارك برأيك": "Share Your Opinion",
+  "الميعاد خلص من غير ما ترد": "The deadline passed without a response from you",
+  "لازم تجاوب على كل الأسئلة المطلوبة قبل الإرسال.": "You must answer all required questions before submitting.",
+  "تم إرسال ردك - شكرًا لمشاركتك رأيك.": "Your response has been sent - thank you for sharing your opinion.",
+  "تعذّر إرسال الرد. جرب تاني.": "Couldn't submit the response. Try again.",
+  "جاري الإرسال...": "Sending...",
+  "إرسال الرد": "Submit Response",
+  "نعم": "Yes",
+  "لا": "No",
 };
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
