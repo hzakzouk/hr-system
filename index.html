@@ -1429,11 +1429,12 @@ function EmptyState({ text }) {
   const { t } = useLang();
   return <div className="rounded-xl border border-dashed border-stone-300 py-10 text-center text-sm text-slate-400">{autoT(t, text)}</div>;
 }
-function NavItem({ icon, label, active, onClick }) {
+function NavItem({ icon, label, active, onClick, collapsed }) {
   const { t } = useLang();
+  const text = autoT(t, label);
   return (
-    <button onClick={onClick} className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${active ? "bg-teal-800 text-white" : "text-slate-600 hover:bg-stone-100"}`}>
-      {icon}<span>{autoT(t, label)}</span>
+    <button onClick={onClick} title={collapsed ? text : undefined} className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${collapsed ? "lg:justify-center lg:px-2" : ""} ${active ? "bg-teal-800 text-white" : "text-slate-600 hover:bg-stone-100"}`}>
+      {icon}<span className={collapsed ? "lg:hidden" : ""}>{text}</span>
     </button>
   );
 }
@@ -1455,6 +1456,15 @@ function HRSystem({ adminUser }) {
   const [tab, setTab] = useState("dashboard");
   const [openEmployeeId, setOpenEmployeeId] = useState(null);
   const [saving, setSaving] = useState(false);
+  // القايمة الجانبية قابلة للطي (زرار في الهيدر بتاعها) عشان تدّي مساحة أكبر للمحتوى الرئيسي -
+  // مهم خصوصًا لجداول عريضة زي المرتبات على شاشات لابتوب عادية. الحالة متسجّلة في localStorage
+  // (بنفس نمط hr_admin_lang) عشان تفضل زي ما الأدمن سابها بين الزيارات.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem("hr_admin_sidebar_collapsed") === "1"; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("hr_admin_sidebar_collapsed", sidebarCollapsed ? "1" : "0"); } catch {}
+  }, [sidebarCollapsed]);
 
   const [employees, employeesLoaded] = useFirestoreCollection("employees");
   const [attendanceRecords, attendanceLoaded] = useFirestoreCollection("attendanceRecords");
@@ -1733,39 +1743,50 @@ function HRSystem({ adminUser }) {
     <div dir={dir} className="min-h-[700px] w-full bg-stone-50 font-sans text-slate-800 print:bg-white">
       <style>{`@media print { .no-print { display: none !important; } .print-area { display: block !important; } }`}</style>
       <div className="mx-auto flex max-w-7xl flex-col gap-6 p-4 lg:flex-row lg:p-6">
-        <aside className="no-print w-full shrink-0 rounded-2xl border border-stone-200 bg-white p-4 shadow-sm lg:sticky lg:top-6 lg:h-fit lg:max-h-[calc(100vh-3rem)] lg:w-60 lg:self-start lg:overflow-y-auto">
-          <div className="mb-6 flex items-center gap-2 px-2">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-teal-800 text-white"><Users size={18} /></div>
-            <div>
+        <aside className={`no-print w-full shrink-0 rounded-2xl border border-stone-200 bg-white p-4 shadow-sm lg:sticky lg:top-6 lg:h-fit lg:max-h-[calc(100vh-3rem)] lg:self-start lg:overflow-y-auto ${sidebarCollapsed ? "lg:w-[4.5rem]" : "lg:w-60"}`}>
+          <div className={`mb-6 flex items-center gap-2 px-2 ${sidebarCollapsed ? "lg:justify-center" : ""}`}>
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-teal-800 text-white"><Users size={18} /></div>
+            <div className={sidebarCollapsed ? "lg:hidden" : ""}>
               <div className="text-sm font-bold text-slate-800">{t("شؤون الأفراد")}</div>
               <div className="text-[11px] text-slate-400">{t("إدارة الموظفين والمرتبات")}</div>
             </div>
           </div>
-          <LangToggle className="mb-4 w-full justify-center" />
+          <button
+            onClick={() => setSidebarCollapsed((v) => !v)}
+            title={t(sidebarCollapsed ? "توسيع القائمة الجانبية" : "طي القائمة الجانبية")}
+            className="mb-4 hidden w-full items-center justify-center gap-1.5 rounded-lg border border-stone-200 py-1.5 text-[11px] font-semibold text-slate-500 hover:bg-stone-50 lg:flex"
+          >
+            <ChevronLeft size={14} className={`transition-transform ${sidebarCollapsed ? "rotate-180" : ""}`} />
+            <span className={sidebarCollapsed ? "lg:hidden" : ""}>{t("طي القائمة")}</span>
+          </button>
+          <LangToggle className={`mb-4 w-full justify-center ${sidebarCollapsed ? "lg:hidden" : ""}`} />
           <nav className="flex flex-col gap-1">
-            <NavItem icon={<LayoutDashboard size={17} />} label="لوحة المتابعة" active={tab === "dashboard"} onClick={() => setTab("dashboard")} />
-            <NavItem icon={<Users size={17} />} label="الموظفون والعقود" active={tab === "employees"} onClick={() => setTab("employees")} />
-            <NavItem icon={<Network size={17} />} label="الهيكل التنظيمي" active={tab === "orgchart"} onClick={() => setTab("orgchart")} />
-            <NavItem icon={<Star size={17} />} label="التقييمات" active={tab === "evaluations"} onClick={() => setTab("evaluations")} />
-            <NavItem icon={<CalendarCheck size={17} />} label="الحضور والانصراف" active={tab === "attendance"} onClick={() => setTab("attendance")} />
-            <NavItem icon={<ClipboardList size={17} />} label="طلبات الموظفين" active={tab === "requests"} onClick={() => setTab("requests")} />
-            <NavItem icon={<Wallet size={17} />} label="المرتبات" active={tab === "payroll"} onClick={() => setTab("payroll")} />
-            <NavItem icon={<TrendingUp size={17} />} label="زيادات الرواتب" active={tab === "salaryIncrease"} onClick={() => setTab("salaryIncrease")} />
-            <NavItem icon={<AlertTriangle size={17} />} label="الجزاءات والإنذارات" active={tab === "penalties"} onClick={() => setTab("penalties")} />
-            <NavItem icon={<MessageSquareText size={17} />} label="استطلاعات الرأي" active={tab === "surveys"} onClick={() => setTab("surveys")} />
-            <NavItem icon={<HandCoins size={17} />} label="السلف" active={tab === "advances"} onClick={() => setTab("advances")} />
-            <NavItem icon={<LogOut size={17} />} label="موظفون سابقون" active={tab === "former"} onClick={() => setTab("former")} />
-            <NavItem icon={<UserPlus size={17} />} label="التعيين والتوظيف" active={tab === "recruitment"} onClick={() => setTab("recruitment")} />
-            <NavItem icon={<BarChart3 size={17} />} label="تقارير" active={tab === "reports"} onClick={() => setTab("reports")} />
-            <NavItem icon={<History size={17} />} label="سجل النشاط" active={tab === "auditLog"} onClick={() => setTab("auditLog")} />
-            <NavItem icon={<SettingsIcon size={17} />} label="الإعدادات" active={tab === "settings"} onClick={() => setTab("settings")} />
+            <NavItem icon={<LayoutDashboard size={17} />} label="لوحة المتابعة" active={tab === "dashboard"} onClick={() => setTab("dashboard")} collapsed={sidebarCollapsed} />
+            <NavItem icon={<Users size={17} />} label="الموظفون والعقود" active={tab === "employees"} onClick={() => setTab("employees")} collapsed={sidebarCollapsed} />
+            <NavItem icon={<Network size={17} />} label="الهيكل التنظيمي" active={tab === "orgchart"} onClick={() => setTab("orgchart")} collapsed={sidebarCollapsed} />
+            <NavItem icon={<Star size={17} />} label="التقييمات" active={tab === "evaluations"} onClick={() => setTab("evaluations")} collapsed={sidebarCollapsed} />
+            <NavItem icon={<CalendarCheck size={17} />} label="الحضور والانصراف" active={tab === "attendance"} onClick={() => setTab("attendance")} collapsed={sidebarCollapsed} />
+            <NavItem icon={<ClipboardList size={17} />} label="طلبات الموظفين" active={tab === "requests"} onClick={() => setTab("requests")} collapsed={sidebarCollapsed} />
+            <NavItem icon={<Wallet size={17} />} label="المرتبات" active={tab === "payroll"} onClick={() => setTab("payroll")} collapsed={sidebarCollapsed} />
+            <NavItem icon={<TrendingUp size={17} />} label="زيادات الرواتب" active={tab === "salaryIncrease"} onClick={() => setTab("salaryIncrease")} collapsed={sidebarCollapsed} />
+            <NavItem icon={<AlertTriangle size={17} />} label="الجزاءات والإنذارات" active={tab === "penalties"} onClick={() => setTab("penalties")} collapsed={sidebarCollapsed} />
+            <NavItem icon={<MessageSquareText size={17} />} label="استطلاعات الرأي" active={tab === "surveys"} onClick={() => setTab("surveys")} collapsed={sidebarCollapsed} />
+            <NavItem icon={<HandCoins size={17} />} label="السلف" active={tab === "advances"} onClick={() => setTab("advances")} collapsed={sidebarCollapsed} />
+            <NavItem icon={<LogOut size={17} />} label="موظفون سابقون" active={tab === "former"} onClick={() => setTab("former")} collapsed={sidebarCollapsed} />
+            <NavItem icon={<UserPlus size={17} />} label="التعيين والتوظيف" active={tab === "recruitment"} onClick={() => setTab("recruitment")} collapsed={sidebarCollapsed} />
+            <NavItem icon={<BarChart3 size={17} />} label="تقارير" active={tab === "reports"} onClick={() => setTab("reports")} collapsed={sidebarCollapsed} />
+            <NavItem icon={<History size={17} />} label="سجل النشاط" active={tab === "auditLog"} onClick={() => setTab("auditLog")} collapsed={sidebarCollapsed} />
+            <NavItem icon={<SettingsIcon size={17} />} label="الإعدادات" active={tab === "settings"} onClick={() => setTab("settings")} collapsed={sidebarCollapsed} />
           </nav>
-          <div className="mt-6 flex items-center gap-1.5 rounded-lg bg-stone-50 px-2.5 py-2 text-[11px] text-slate-400">
-            {saving ? <><Loader2 className="animate-spin" size={12} /><span>{t("جاري الحفظ...")}</span></> : <><Check size={12} className="text-emerald-600" /><span>{t("متزامن مع قاعدة البيانات")}</span></>}
+          <div className={`mt-6 flex items-center gap-1.5 rounded-lg bg-stone-50 px-2.5 py-2 text-[11px] text-slate-400 ${sidebarCollapsed ? "lg:justify-center" : ""}`}>
+            {saving ? <><Loader2 className="animate-spin shrink-0" size={12} /><span className={sidebarCollapsed ? "lg:hidden" : ""}>{t("جاري الحفظ...")}</span></> : <><Check size={12} className="shrink-0 text-emerald-600" /><span className={sidebarCollapsed ? "lg:hidden" : ""}>{t("متزامن مع قاعدة البيانات")}</span></>}
           </div>
-          <div className="mt-2 flex items-center justify-between gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] text-slate-400">
-            <span className="truncate" title={adminUser?.email}>{adminUser?.email}</span>
-            <button onClick={() => signOut(auth)} className="shrink-0 font-medium text-slate-400 hover:text-rose-600">{t("خروج")}</button>
+          <div className={`mt-2 flex items-center justify-between gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] text-slate-400 ${sidebarCollapsed ? "lg:justify-center" : ""}`}>
+            <span className={`truncate ${sidebarCollapsed ? "lg:hidden" : ""}`} title={adminUser?.email}>{adminUser?.email}</span>
+            <button onClick={() => signOut(auth)} title={sidebarCollapsed ? t("خروج") : undefined} className="shrink-0 font-medium text-slate-400 hover:text-rose-600">
+              {sidebarCollapsed ? <LogOut size={14} className="hidden lg:block" /> : null}
+              <span className={sidebarCollapsed ? "lg:hidden" : ""}>{t("خروج")}</span>
+            </button>
           </div>
         </aside>
 
@@ -8327,6 +8348,9 @@ const TRANSLATIONS = {
   "ضريبة كسب العمل": "Income Tax",
   "طباعة": "Print",
   "طباعة الهيكل": "Print Chart",
+  "طي القائمة الجانبية": "Collapse sidebar",
+  "توسيع القائمة الجانبية": "Expand sidebar",
+  "طي القائمة": "Collapse",
   "عدد الأقساط": "Number of Installments",
   "عدد الأقساط (شهور)": "Number of Installments (months)",
   "عرض الموظفين ({n})": "Show Employees ({n})",
