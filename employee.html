@@ -114,6 +114,10 @@ const STATUS_COLORS = {
 // Network للمأمورية) عشان يفضل شكلهم متسق بين البوابتين.
 const CASUAL_LEAVE_ANNUAL_DAYS = 6;
 const CASUAL_LEAVE_MAX_PER_REQUEST = 2;
+// أقل إشعار مسبق مقبول لطلب الاستقالة (شهر كامل) - نفس القاعدة اللي طلبها المستخدم صراحة.
+// المُدخل هو "آخر يوم عمل مطلوب" (lastWorkingDay)، والتحقق (validateResignationRequest تحت)
+// بيقارنه بتاريخ النهاردة وقت الإرسال، مش تاريخ اعتماد المدير.
+const RESIGNATION_NOTICE_DAYS = 30;
 const REQUEST_KINDS = {
   leave: { label: "إجازة", icon: <CalendarCheck size={14} /> },
   casual: { label: "إجازة عارضة", icon: <ClipboardList size={14} /> },
@@ -121,6 +125,7 @@ const REQUEST_KINDS = {
   mission: { label: "مأمورية", icon: <Network size={14} /> },
   late: { label: "تأخير / استئذان", icon: <Clock size={14} /> },
   advance: { label: "سلفة", icon: <HandCoins size={14} /> },
+  resign: { label: "طلب استقالة", icon: <LogOut size={14} /> },
 };
 // "pending_ceo" is advance-only: a department head's "approve" on a teammate's advance
 // request never finalizes it - it reroutes the request to the CEO (see planAdvanceDecision
@@ -224,6 +229,23 @@ function validateCasualLeaveRequest(payload, existingRequests) {
   if (usedThisYear + requestedDays > CASUAL_LEAVE_ANNUAL_DAYS) {
     return { ok: false, reason: "annual_cap", usedThisYear };
   }
+  return { ok: true };
+}
+// تحقق صافي لطلب الاستقالة (زي validateCasualLeaveRequest بالظبط - منطق منفصل عن أي state/
+// Firestore عشان يتقدر يتعمله اختبار من غير قاعدة بيانات حقيقية): آخر يوم عمل المطلوب لازم
+// يبعد بمقدار RESIGNATION_NOTICE_DAYS يوم على الأقل من تاريخ الإرسال (النهاردة)، ومفيش طلب
+// استقالة تاني معلّق أو معتمد بالفعل لنفس الموظف (عشان يمنع تكرار الطلب بالغلط). بيرجّع
+// {ok:true} أو {ok:false, reason, noticeDays} - noticeDays هو عدد الأيام الفعلي المُعطى (ممكن
+// يكون سالب لو التاريخ فات أصلًا). "today" بياخده الاستدعاء بره الدالة (todayISO()) - زي
+// computeProbationStatus وأمثاله - عشان الدالة تفضل صافية وقابلة للاختبار من غير Date حقيقي.
+function validateResignationRequest(payload, existingRequests, today) {
+  if (!payload.lastWorkingDay) return { ok: false, reason: "missing_date" };
+  const noticeDays = Math.round((new Date(`${payload.lastWorkingDay}T00:00:00`) - new Date(`${today}T00:00:00`)) / 86400000);
+  if (noticeDays < RESIGNATION_NOTICE_DAYS) {
+    return { ok: false, reason: "notice_period", noticeDays };
+  }
+  const hasActive = existingRequests.some((r) => r.kind === "resign" && (r.status === "pending" || r.status === "pending_ceo" || r.status === "approved"));
+  if (hasActive) return { ok: false, reason: "already_active" };
   return { ok: true };
 }
 function planAttendanceWritesForDecision(req, status) {
@@ -489,7 +511,7 @@ function OrgChartSection({ employee, orgChart, directory }) {
 function NewRequestForm({ onSubmit, busy, msg }) {
   const { t } = useLang();
   const [kind, setKind] = useState("leave");
-  const [form, setForm] = useState({ dateFrom: "", dateTo: "", date: "", minutes: "", amount: "", reason: "" });
+  const [form, setForm] = useState({ dateFrom: "", dateTo: "", date: "", minutes: "", amount: "", lastWorkingDay: "", reason: "" });
 
   function set(patch) { setForm((f) => ({ ...f, ...patch })); }
 
@@ -504,11 +526,14 @@ function NewRequestForm({ onSubmit, busy, msg }) {
     } else if (kind === "late") {
       if (!form.date || !(Number(form.minutes) > 0)) return;
       onSubmit({ kind, date: form.date, minutes: Number(form.minutes), reason: form.reason });
+    } else if (kind === "resign") {
+      if (!form.lastWorkingDay) return;
+      onSubmit({ kind, lastWorkingDay: form.lastWorkingDay, reason: form.reason });
     } else {
       if (!(Number(form.amount) > 0)) return;
       onSubmit({ kind, amount: Number(form.amount), reason: form.reason });
     }
-    set({ dateFrom: "", dateTo: "", date: "", minutes: "", amount: "", reason: "" });
+    set({ dateFrom: "", dateTo: "", date: "", minutes: "", amount: "", lastWorkingDay: "", reason: "" });
   }
 
   return (
@@ -538,6 +563,12 @@ function NewRequestForm({ onSubmit, busy, msg }) {
         {kind === "advance" && (
           <Field label="المبلغ المطلوب (ج.م)"><input required type="number" min="1" className={inputCls} value={form.amount} onChange={(e) => set({ amount: e.target.value })} placeholder={t("مثلًا 1000")} /></Field>
         )}
+        {kind === "resign" && (
+          <>
+            <Field label="آخر يوم عمل مطلوب"><input required type="date" className={inputCls} value={form.lastWorkingDay} onChange={(e) => set({ lastWorkingDay: e.target.value })} /></Field>
+            <p className="rounded-lg bg-amber-50 px-3 py-2 text-[11px] text-amber-700">{t("لازم إشعار مسبق لا يقل عن {days} يوم قبل آخر يوم عمل.", { days: RESIGNATION_NOTICE_DAYS })}</p>
+          </>
+        )}
         <Field label="السبب (اختياري)">
           <textarea rows={2} className={inputCls} value={form.reason} onChange={(e) => set({ reason: e.target.value })} placeholder={t("اكتب أي تفاصيل تساعد في مراجعة الطلب")} />
         </Field>
@@ -565,6 +596,7 @@ function RequestCard({ req, showEmployee, onDecide, decideBusy }) {
         {(req.kind === "leave" || req.kind === "casual" || req.kind === "sick" || req.kind === "mission") && <span>{t("من {from} لحد {to}", { from: req.dateFrom, to: req.dateTo })}</span>}
         {req.kind === "late" && <span>{t("يوم {date} — {minutes} دقيقة", { date: req.date, minutes: req.minutes })}</span>}
         {req.kind === "advance" && <span>{fmtMoney(req.amount)} {t("ج.م")}</span>}
+        {req.kind === "resign" && <span>{t("آخر يوم عمل: {date}", { date: req.lastWorkingDay })}</span>}
       </div>
       {req.reason && <p className="mt-1 text-xs text-slate-500">{req.reason}</p>}
       {req.status === "pending_ceo" && req.managerDecidedByName && (
@@ -612,6 +644,18 @@ function RequestsSection({ employee, orgChart, directory }) {
           text: check.reason === "max_per_request"
             ? t("الإجازة العارضة بحد أقصى يومين في المرة الواحدة.")
             : t("رصيدك من الإجازة العارضة هذا العام {used} من {total} أيام — الطلب ده هيخليك تتعدى الحد المسموح.", { used: check.usedThisYear, total: CASUAL_LEAVE_ANNUAL_DAYS }),
+        });
+        return;
+      }
+    }
+    if (payload.kind === "resign") {
+      const check = validateResignationRequest(payload, requests, todayISO());
+      if (!check.ok) {
+        setMsg({
+          tone: "rose",
+          text: check.reason === "already_active"
+            ? t("عندك طلب استقالة قيد المراجعة أو معتمد بالفعل.")
+            : t("لازم إشعار مسبق لا يقل عن {days} يوم قبل آخر يوم عمل — طلبك الحالي إشعاره {given} يوم بس.", { days: RESIGNATION_NOTICE_DAYS, given: Math.max(check.noticeDays, 0) }),
         });
         return;
       }
@@ -716,7 +760,7 @@ function TeamRequestsSection({ employee, requests, loaded, orgChart }) {
 
   return (
     <div>
-      <p className="mb-4 flex items-start gap-1.5 rounded-lg bg-stone-50 px-3 py-2 text-xs text-slate-400"><Info size={13} className="mt-0.5 shrink-0" />{t("الموافقة على إجازة أو تأخير بتسجّل الحضور تلقائي. طلب السلفة لما توافق عليه كمدير قسم بيروح لاعتماد نهائي من الرئيس التنفيذي (CEO)، وبعد اعتماده بيتسجل تلقائي في تاب السلف بنظام الأدمن.")}</p>
+      <p className="mb-4 flex items-start gap-1.5 rounded-lg bg-stone-50 px-3 py-2 text-xs text-slate-400"><Info size={13} className="mt-0.5 shrink-0" />{t("الموافقة على إجازة أو تأخير بتسجّل الحضور تلقائي. طلب السلفة لما توافق عليه كمدير قسم بيروح لاعتماد نهائي من الرئيس التنفيذي (CEO)، وبعد اعتماده بيتسجل تلقائي في تاب السلف بنظام الأدمن. الموافقة على طلب استقالة بتحول الطلب لشؤون الأفراد لتنفيذه (نقل الموظف لموظفين سابقين وبدء تشيك ليست الخروج).")}</p>
       <h3 className="mb-2 text-sm font-bold text-slate-700">{t("طلبات قيد المراجعة ({n})", { n: pending.length })}</h3>
       {pending.length === 0 ? <EmptyState text="مفيش طلبات محتاجة مراجعة دلوقتي." />
         : <div className="mb-6 space-y-2">{pending.map((r) => <RequestCard key={r.id} req={r} showEmployee onDecide={decide} decideBusy={decideBusy} />)}</div>}
@@ -1629,6 +1673,13 @@ function EmployeePortalApp() {
 }
 
 const TRANSLATIONS = {
+  "آخر يوم عمل: {date}": "Last working day: {date}",
+  "طلب استقالة": "Resignation Request",
+  "آخر يوم عمل مطلوب": "Requested last working day",
+  "الموافقة على إجازة أو تأخير بتسجّل الحضور تلقائي. طلب السلفة لما توافق عليه كمدير قسم بيروح لاعتماد نهائي من الرئيس التنفيذي (CEO)، وبعد اعتماده بيتسجل تلقائي في تاب السلف بنظام الأدمن. الموافقة على طلب استقالة بتحول الطلب لشؤون الأفراد لتنفيذه (نقل الموظف لموظفين سابقين وبدء تشيك ليست الخروج).": "Approving a leave or late request records attendance automatically. An advance request you approve as a department head goes for final CEO sign-off, and once approved is recorded automatically in the admin system's Advances tab. Approving a resignation request routes it to HR to process (moving the employee to former employees and starting the offboarding checklist).",
+  "عندك طلب استقالة قيد المراجعة أو معتمد بالفعل.": "You already have a resignation request under review or approved.",
+  "لازم إشعار مسبق لا يقل عن {days} يوم قبل آخر يوم عمل — طلبك الحالي إشعاره {given} يوم بس.": "At least {days} days' notice is required before the last working day — your current request only gives {given} days' notice.",
+  "لازم إشعار مسبق لا يقل عن {days} يوم قبل آخر يوم عمل.": "At least {days} days' notice is required before the last working day.",
   "{n} س": "{n} h",
   "{n} د": "{n} min",
   "دقايق التأخير": "Late Minutes",
