@@ -32,7 +32,7 @@ import ReactDOM from "react-dom/client";
 import {
   CalendarCheck, Clock, AlertTriangle, LogOut, Loader2, User, Lock, LogIn,
   Check, UserX, Wallet, Printer, Network, Crown, HandCoins, Plus, ClipboardList,
-  X, Info, Users, Languages, Star, Trash2, MessageSquareText,
+  X, Info, Users, Languages, Star, Trash2, MessageSquareText, GraduationCap,
 } from "lucide-react";
 import { initializeApp } from "firebase/app";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
@@ -126,6 +126,9 @@ const REQUEST_KINDS = {
   late: { label: "تأخير / استئذان", icon: <Clock size={14} /> },
   advance: { label: "سلفة", icon: <HandCoins size={14} /> },
   resign: { label: "طلب استقالة", icon: <LogOut size={14} /> },
+  // متاح لرؤساء الأقسام بس (managerOnly) - بيسمح لرئيس القسم يطلب تدريب لواحد أو أكتر من
+  // فريقه، مش لنفسه كموظف عادي. مفلتر في NewRequestForm بناءً على isManager.
+  training: { label: "طلب تدريب للفريق", icon: <GraduationCap size={14} />, managerOnly: true },
 };
 // "pending_ceo" is advance-only: a department head's "approve" on a teammate's advance
 // request never finalizes it - it reroutes the request to the CEO (see planAdvanceDecision
@@ -508,12 +511,19 @@ function OrgChartSection({ employee, orgChart, directory }) {
 }
 
 /* ================= REQUESTS ================= */
-function NewRequestForm({ onSubmit, busy, msg }) {
+function NewRequestForm({ onSubmit, busy, msg, isManager, teammates = [] }) {
   const { t } = useLang();
   const [kind, setKind] = useState("leave");
-  const [form, setForm] = useState({ dateFrom: "", dateTo: "", date: "", minutes: "", amount: "", lastWorkingDay: "", reason: "" });
+  const [form, setForm] = useState({ dateFrom: "", dateTo: "", date: "", minutes: "", amount: "", lastWorkingDay: "", reason: "", trainingName: "", trainingLocation: "", price: "", traineeIds: [] });
 
   function set(patch) { setForm((f) => ({ ...f, ...patch })); }
+  function toggleTrainee(id) {
+    setForm((f) => ({ ...f, traineeIds: f.traineeIds.includes(id) ? f.traineeIds.filter((x) => x !== id) : [...f.traineeIds, id] }));
+  }
+
+  // زرار "طلب تدريب للفريق" ميبانش خالص لغير رئيس القسم (isManager) - نفس فكرة التاب بتاعه
+  // "فريقي" في canApproveRequests، عشان موظف عادي ملوش فريق يطلب تدريب لأعضائه.
+  const visibleKinds = Object.entries(REQUEST_KINDS).filter(([, v]) => !v.managerOnly || isManager);
 
   function handleSubmit(e) {
     e.preventDefault();
@@ -529,18 +539,22 @@ function NewRequestForm({ onSubmit, busy, msg }) {
     } else if (kind === "resign") {
       if (!form.lastWorkingDay) return;
       onSubmit({ kind, lastWorkingDay: form.lastWorkingDay, reason: form.reason });
+    } else if (kind === "training") {
+      if (!form.trainingName.trim() || !form.trainingLocation.trim() || !(Number(form.price) >= 0) || form.traineeIds.length === 0) return;
+      const traineeNames = teammates.filter((m) => form.traineeIds.includes(m.id)).map((m) => m.name);
+      onSubmit({ kind, trainingName: form.trainingName.trim(), trainingLocation: form.trainingLocation.trim(), price: Number(form.price) || 0, traineeIds: form.traineeIds, traineeNames, reason: form.reason });
     } else {
       if (!(Number(form.amount) > 0)) return;
       onSubmit({ kind, amount: Number(form.amount), reason: form.reason });
     }
-    set({ dateFrom: "", dateTo: "", date: "", minutes: "", amount: "", lastWorkingDay: "", reason: "" });
+    set({ dateFrom: "", dateTo: "", date: "", minutes: "", amount: "", lastWorkingDay: "", reason: "", trainingName: "", trainingLocation: "", price: "", traineeIds: [] });
   }
 
   return (
     <Card className="mb-5 p-5">
       <h3 className="mb-3 text-sm font-bold text-slate-800">{t("طلب جديد")}</h3>
-      <div className="mb-4 flex gap-2">
-        {Object.entries(REQUEST_KINDS).map(([k, v]) => (
+      <div className="mb-4 flex flex-wrap gap-2">
+        {visibleKinds.map(([k, v]) => (
           <button key={k} type="button" onClick={() => setKind(k)} className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold ${kind === k ? "bg-teal-800 text-white" : "bg-stone-100 text-slate-500 hover:bg-stone-200"}`}>{v.icon}{t(v.label)}</button>
         ))}
       </div>
@@ -567,6 +581,29 @@ function NewRequestForm({ onSubmit, busy, msg }) {
           <>
             <Field label="آخر يوم عمل مطلوب"><input required type="date" className={inputCls} value={form.lastWorkingDay} onChange={(e) => set({ lastWorkingDay: e.target.value })} /></Field>
             <p className="rounded-lg bg-amber-50 px-3 py-2 text-[11px] text-amber-700">{t("لازم إشعار مسبق لا يقل عن {days} يوم قبل آخر يوم عمل.", { days: RESIGNATION_NOTICE_DAYS })}</p>
+          </>
+        )}
+        {kind === "training" && (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="اسم التدريب"><input required className={inputCls} value={form.trainingName} onChange={(e) => set({ trainingName: e.target.value })} placeholder={t("مثلًا مهارات البيع")} /></Field>
+              <Field label="مكان التدريب"><input required className={inputCls} value={form.trainingLocation} onChange={(e) => set({ trainingLocation: e.target.value })} placeholder={t("مثلًا مقر الشركة / أونلاين")} /></Field>
+            </div>
+            <Field label="سعر التدريب (ج.م)"><input required type="number" min="0" className={inputCls} value={form.price} onChange={(e) => set({ price: e.target.value })} placeholder={t("مثلًا 3000")} /></Field>
+            <Field label="الموظفون المتدربون (اختر واحد أو أكتر من فريقك)">
+              {teammates.length === 0 ? (
+                <p className="rounded-lg bg-stone-50 px-3 py-2 text-[11px] text-slate-400">{t("مفيش موظفين في فريقك لسه.")}</p>
+              ) : (
+                <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-stone-300 p-2">
+                  {teammates.map((m) => (
+                    <label key={m.id} className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-stone-50">
+                      <input type="checkbox" checked={form.traineeIds.includes(m.id)} onChange={() => toggleTrainee(m.id)} />
+                      {m.name}
+                    </label>
+                  ))}
+                </div>
+              )}
+            </Field>
           </>
         )}
         <Field label="السبب (اختياري)">
@@ -597,6 +634,9 @@ function RequestCard({ req, showEmployee, onDecide, decideBusy }) {
         {req.kind === "late" && <span>{t("يوم {date} — {minutes} دقيقة", { date: req.date, minutes: req.minutes })}</span>}
         {req.kind === "advance" && <span>{fmtMoney(req.amount)} {t("ج.م")}</span>}
         {req.kind === "resign" && <span>{t("آخر يوم عمل: {date}", { date: req.lastWorkingDay })}</span>}
+        {req.kind === "training" && (
+          <span>{req.trainingName} — {req.trainingLocation} — {fmtMoney(req.price)} {t("ج.م")}{req.traineeNames?.length ? ` — ${req.traineeNames.join("، ")}` : ""}</span>
+        )}
       </div>
       {req.reason && <p className="mt-1 text-xs text-slate-500">{req.reason}</p>}
       {req.status === "pending_ceo" && req.managerDecidedByName && (
@@ -621,6 +661,15 @@ function RequestsSection({ employee, orgChart, directory }) {
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
+
+  // رئيس القسم بس هو اللي يقدر يطلب تدريب لفريقه - نفس معادلة isManager في EmployeePortal
+  // بالظبط (رئيس القسم هو صاحب department == departmentHeads[dept])، وقايمة الفريق نفس منطق
+  // "الزملاء" في OrgChartSection (نفس القسم، من غير رئيس القسم نفسه).
+  const isManager = !!(employee && employee.department && (orgChart.departmentHeads || {})[employee.department] === employee.id);
+  const teammates = useMemo(
+    () => (directory || []).filter((d) => (d.department || "") === (employee.department || "") && d.id !== employee.id).map((d) => ({ id: d.id, name: d.name })),
+    [directory, employee.department, employee.id]
+  );
 
   useEffect(() => {
     const q = query(collection(db, "requests"), where("employeeId", "==", employee.id));
@@ -686,7 +735,7 @@ function RequestsSection({ employee, orgChart, directory }) {
 
   return (
     <div>
-      <NewRequestForm onSubmit={handleSubmit} busy={busy} msg={msg} />
+      <NewRequestForm onSubmit={handleSubmit} busy={busy} msg={msg} isManager={isManager} teammates={teammates} />
       <h3 className="mb-2 text-sm font-bold text-slate-700">{t("طلباتي السابقة")}</h3>
       {!loaded ? <div className="flex justify-center py-6"><Loader2 className="animate-spin text-teal-700" size={20} /></div>
         : requests.length === 0 ? <EmptyState text="لسه معملتش أي طلب." />
@@ -1673,6 +1722,16 @@ function EmployeePortalApp() {
 }
 
 const TRANSLATIONS = {
+  // --- طلب تدريب للفريق (رؤساء الأقسام بس) ---
+  "طلب تدريب للفريق": "Team Training Request",
+  "اسم التدريب": "Training Name",
+  "مكان التدريب": "Training Location",
+  "سعر التدريب (ج.م)": "Training Price (EGP)",
+  "الموظفون المتدربون (اختر واحد أو أكتر من فريقك)": "Trainees (pick one or more from your team)",
+  "مفيش موظفين في فريقك لسه.": "No one on your team yet.",
+  "مثلًا مهارات البيع": "e.g. Sales Skills",
+  "مثلًا مقر الشركة / أونلاين": "e.g. Company HQ / Online",
+  "مثلًا 3000": "e.g. 3000",
   "آخر يوم عمل: {date}": "Last working day: {date}",
   "طلب استقالة": "Resignation Request",
   "آخر يوم عمل مطلوب": "Requested last working day",
