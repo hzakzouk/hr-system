@@ -1880,7 +1880,7 @@ function HRSystem({ adminUser }) {
             settings={settings} setSettings={upd.settings}
             notifySettings={notifySettings} setNotifySettings={upd.notifySettings}
             backupProps={{ employees, attendance, penalties, payrollMeta, advances, documents, reviews, settings, orgChart, upd }}
-            resetProps={{ onReset: resetAllData, totalRecords: resetTotalRecords, employeesCount: employees.length }}
+            resetProps={{ onReset: resetAllData, totalRecords: resetTotalRecords, employeesCount: employees.length, confirmPassword: settings.confirmPassword }}
           />}
         </main>
       </div>
@@ -6106,24 +6106,31 @@ function BackupSection({ employees, attendance, penalties, payrollMeta, advances
 // وأصعب بكتير من تأكيد بضغطة واحدة زي EmployeeDeleteConfirmModal. onReset (= resetAllData في
 // HRSystem) بيرمي الخطأ لو فشل بدل ما يبلعه، عشان الرسالة هنا تبان دقيقة وموضعية (زي
 // BackupSection.handleImportFile بالظبط) مش alert عام.
-function ResetAllDataSection({ totalRecords, employeesCount, onReset }) {
+function ResetAllDataSection({ totalRecords, employeesCount, onReset, confirmPassword }) {
   const { t } = useLang();
   const [open, setOpen] = useState(false);
   const [confirmText, setConfirmText] = useState("");
+  const [pwInput, setPwInput] = useState("");
+  const [pwError, setPwError] = useState("");
   const [working, setWorking] = useState(false);
   const [msg, setMsg] = useState(null); // { tone: "teal" | "rose", text }
   const CONFIRM_WORD = "تصفير";
-  const ready = confirmText.trim() === CONFIRM_WORD;
+  // نفس "كلمة سر تأكيد التعديلات" اللي محطوطة (لو محطوطة) لحماية أي حفظ تاني في تاب الإعدادات
+  // (guardedApply/confirmPendingSave فوق) - لو الأدمن مسجّلها، الزرار الأحمر هنا بيتقفل ليها
+  // برضو، مش بس لكلمة "تصفير". لو مفيش كلمة سر متسجّلة أصلًا، التأكيد بكلمة "تصفير" لوحدها كافي.
+  const ready = confirmText.trim() === CONFIRM_WORD && (!confirmPassword || pwInput === confirmPassword);
 
-  function close() { if (working) return; setOpen(false); setConfirmText(""); }
+  function close() { if (working) return; setOpen(false); setConfirmText(""); setPwInput(""); setPwError(""); }
 
   async function runReset() {
-    if (!ready || working) return;
+    if (confirmText.trim() !== CONFIRM_WORD || working) return;
+    if (confirmPassword && pwInput !== confirmPassword) { setPwError(t("كلمة السر غلط.")); return; }
     setWorking(true);
     try {
       await onReset();
       setOpen(false);
       setConfirmText("");
+      setPwInput("");
       setMsg({ tone: "teal", text: t("تم تصفير كل بيانات النظام. الإعدادات العامة وإعدادات الإيميل اتسابت زي ما هي.") });
     } catch (err) {
       console.error(err);
@@ -6159,6 +6166,12 @@ function ResetAllDataSection({ totalRecords, employeesCount, onReset }) {
           <Field label={'اكتب كلمة "تصفير" للتأكيد'}>
             <input autoFocus className={inputCls} value={confirmText} onChange={(e) => setConfirmText(e.target.value)} placeholder={CONFIRM_WORD} disabled={working} />
           </Field>
+          {confirmPassword && (
+            <Field label="كلمة السر">
+              <input type="password" className={inputCls} value={pwInput} onChange={(e) => { setPwInput(e.target.value); setPwError(""); }} disabled={working} />
+              {pwError && <p className="mt-1 text-xs font-medium text-rose-600">{pwError}</p>}
+            </Field>
+          )}
           <div className="flex justify-end gap-2 border-t border-stone-200 pt-4">
             <button type="button" onClick={close} disabled={working} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50 disabled:opacity-50">{t("إلغاء")}</button>
             <button type="button" disabled={!ready || working} onClick={runReset} className="flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-40">
