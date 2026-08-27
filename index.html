@@ -2734,14 +2734,15 @@ function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, s
 
       {filtered.length === 0 ? <Card className="p-0"><EmptyState text={visible.length === 0 ? "لسه معملتش أي موظف." : "مفيش نتائج مطابقة."} /></Card> : (
         <Card className="overflow-x-auto p-0">
+          <div className="max-h-[70vh] overflow-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-                <th className="w-8 px-3 py-2.5">
+                <th className="sticky top-0 z-10 w-8 bg-stone-50 px-3 py-2.5">
                   <input type="checkbox" checked={allFilteredSelected} ref={(el) => { if (el) el.indeterminate = someFilteredSelected && !allFilteredSelected; }} onChange={toggleSelectAllFiltered} className="h-4 w-4 rounded border-stone-300" />
                 </th>
-                <th className="px-2.5 py-2.5">{t("كود")}</th><th className="px-2.5 py-2.5">{t("الاسم")}</th><th className="px-2.5 py-2.5">{t("الوظيفة")}</th><th className="px-2.5 py-2.5">{t("القسم")}</th>
-                <th className="px-2.5 py-2.5">{t("نوع العقد")}</th><th className="px-2.5 py-2.5">{t("نهاية العقد")}</th><th className="px-2.5 py-2.5">{t("الراتب الأساسي")}</th><th className="px-2.5 py-2.5"></th>
+                <th className="sticky top-0 z-10 bg-stone-50 px-2.5 py-2.5">{t("كود")}</th><th className="sticky top-0 z-10 bg-stone-50 px-2.5 py-2.5">{t("الاسم")}</th><th className="sticky top-0 z-10 bg-stone-50 px-2.5 py-2.5">{t("الوظيفة")}</th><th className="sticky top-0 z-10 bg-stone-50 px-2.5 py-2.5">{t("القسم")}</th>
+                <th className="sticky top-0 z-10 bg-stone-50 px-2.5 py-2.5">{t("نوع العقد")}</th><th className="sticky top-0 z-10 bg-stone-50 px-2.5 py-2.5">{t("نهاية العقد")}</th><th className="sticky top-0 z-10 bg-stone-50 px-2.5 py-2.5">{t("الراتب الأساسي")}</th><th className="sticky top-0 z-10 bg-stone-50 px-2.5 py-2.5"></th>
               </tr>
             </thead>
             <tbody>
@@ -2766,6 +2767,7 @@ function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, s
               ))}
             </tbody>
           </table>
+          </div>
         </Card>
       )}
 
@@ -4117,10 +4119,11 @@ function AttendanceTab({ employees, attendance, patchAttendance, settings }) {
         <Card className="p-0"><EmptyState text={filtersActive ? "مفيش موظفين مطابقين للفلتر." : "لسه معملتش أي موظف نشط."} /></Card>
       ) : (
         <Card className="overflow-x-auto p-0">
+          <div className="max-h-[65vh] overflow-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-                <th className="px-4 py-3">{t("الموظف")}</th><th className="px-4 py-3">{t("الحالة")}</th><th className="px-4 py-3">{t("دقايق التأخير")}</th><th className="px-4 py-3">{t("ساعات إضافي")}</th>
+                <th className="sticky start-0 top-0 z-20 bg-stone-50 px-4 py-3">{t("الموظف")}</th><th className="sticky top-0 z-10 bg-stone-50 px-4 py-3">{t("الحالة")}</th><th className="sticky top-0 z-10 bg-stone-50 px-4 py-3">{t("دقايق التأخير")}</th><th className="sticky top-0 z-10 bg-stone-50 px-4 py-3">{t("ساعات إضافي")}</th>
               </tr>
             </thead>
             <tbody>
@@ -4129,7 +4132,7 @@ function AttendanceTab({ employees, attendance, patchAttendance, settings }) {
                 const entry = getAttEntry(attendance, date, e.id);
                 return (
                   <tr key={e.id} className="border-b border-stone-100 last:border-0 hover:bg-stone-50">
-                    <td className="px-4 py-3 font-medium text-slate-800">{e.name}</td>
+                    <td className="sticky start-0 z-10 bg-white px-4 py-3 font-medium text-slate-800">{e.name}</td>
                     <td className="px-4 py-3">
                       {nonWorkReason ? <StampBadge tone="slate">{nonWorkReason}</StampBadge> : (
                         <div className="flex gap-1.5">
@@ -4155,6 +4158,7 @@ function AttendanceTab({ employees, attendance, patchAttendance, settings }) {
               })}
             </tbody>
           </table>
+          </div>
         </Card>
       )}
 
@@ -4463,9 +4467,10 @@ function PenaltiesTab({ employees, penalties, setPenalties, penaltyCaseNotes, se
 
       {sorted.length === 0 ? <Card className="p-0"><EmptyState text={filtersActive ? "مفيش إجراءات مطابقة للفلتر." : "مفيش إجراءات مسجلة."} /></Card> : (
         <Card className="overflow-x-auto p-0">
+          <div className="max-h-[65vh] overflow-auto">
           <table className="w-full text-sm">
             <thead><tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-              <th className="sticky start-0 z-10 bg-stone-50 px-4 py-3">{t("الموظف")}</th><th className="px-4 py-3">{t("التاريخ")}</th><th className="px-4 py-3">{t("نوع الإجراء")}</th><th className="px-4 py-3">{t("الحالة")}</th><th className="px-4 py-3">{t("السبب")}</th><th className="px-4 py-3">{t("الخصم")}</th><th className="px-4 py-3"></th>
+              <th className="sticky start-0 top-0 z-20 bg-stone-50 px-4 py-3">{t("الموظف")}</th><th className="sticky top-0 z-10 bg-stone-50 px-4 py-3">{t("التاريخ")}</th><th className="sticky top-0 z-10 bg-stone-50 px-4 py-3">{t("نوع الإجراء")}</th><th className="sticky top-0 z-10 bg-stone-50 px-4 py-3">{t("الحالة")}</th><th className="sticky top-0 z-10 bg-stone-50 px-4 py-3">{t("السبب")}</th><th className="sticky top-0 z-10 bg-stone-50 px-4 py-3">{t("الخصم")}</th><th className="sticky top-0 z-10 bg-stone-50 px-4 py-3"></th>
             </tr></thead>
             <tbody>
               {sorted.map((p) => {
@@ -4497,6 +4502,7 @@ function PenaltiesTab({ employees, penalties, setPenalties, penaltyCaseNotes, se
               })}
             </tbody>
           </table>
+          </div>
         </Card>
       )}
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="تسجيل إجراء جديد">
@@ -5126,9 +5132,10 @@ function AdvancesTab({ employees, advances, setAdvances }) {
         <Card className="p-0"><EmptyState text="مفيش موظفين مطابقين للفلتر." /></Card>
       ) : (
         <Card className="overflow-x-auto p-0">
+          <div className="max-h-[65vh] overflow-auto">
           <table className="w-full text-sm">
             <thead><tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-              <th className="sticky start-0 z-10 bg-stone-50 px-4 py-3">{t("الموظف")}</th><th className="px-4 py-3">{t("تاريخ الصرف")}</th><th className="px-4 py-3">{t("القيمة")}</th><th className="px-4 py-3">{t("عدد الأقساط")}</th><th className="px-4 py-3">{t("القسط الشهري")}</th><th className="px-4 py-3">{t("المتبقي")}</th><th className="px-4 py-3"></th>
+              <th className="sticky start-0 top-0 z-20 bg-stone-50 px-4 py-3">{t("الموظف")}</th><th className="sticky top-0 z-10 bg-stone-50 px-4 py-3">{t("تاريخ الصرف")}</th><th className="sticky top-0 z-10 bg-stone-50 px-4 py-3">{t("القيمة")}</th><th className="sticky top-0 z-10 bg-stone-50 px-4 py-3">{t("عدد الأقساط")}</th><th className="sticky top-0 z-10 bg-stone-50 px-4 py-3">{t("القسط الشهري")}</th><th className="sticky top-0 z-10 bg-stone-50 px-4 py-3">{t("المتبقي")}</th><th className="sticky top-0 z-10 bg-stone-50 px-4 py-3"></th>
             </tr></thead>
             <tbody>
               {filteredAdvances.map((a) => (
@@ -5144,6 +5151,7 @@ function AdvancesTab({ employees, advances, setAdvances }) {
               ))}
             </tbody>
           </table>
+          </div>
         </Card>
       )}
       <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="تسجيل سلفة جديدة">
@@ -5249,14 +5257,15 @@ function EmployeeRequestsTab({ requests }) {
         <Card className="p-0"><EmptyState text="مفيش طلبات مطابقة للفلتر." /></Card>
       ) : (
         <Card className="overflow-x-auto p-0">
+          <div className="max-h-[65vh] overflow-auto">
           <table className="w-full text-sm">
             <thead><tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-              <th className="px-4 py-3">{t("الموظف")}</th><th className="px-4 py-3">{t("النوع")}</th><th className="px-4 py-3">{t("التفاصيل")}</th><th className="px-4 py-3">{t("الحالة")}</th><th className="px-4 py-3">{t("تاريخ الطلب")}</th>
+              <th className="sticky start-0 top-0 z-20 bg-stone-50 px-4 py-3">{t("الموظف")}</th><th className="sticky top-0 z-10 bg-stone-50 px-4 py-3">{t("النوع")}</th><th className="sticky top-0 z-10 bg-stone-50 px-4 py-3">{t("التفاصيل")}</th><th className="sticky top-0 z-10 bg-stone-50 px-4 py-3">{t("الحالة")}</th><th className="sticky top-0 z-10 bg-stone-50 px-4 py-3">{t("تاريخ الطلب")}</th>
             </tr></thead>
             <tbody>
               {filteredRequests.map((r) => (
                 <tr key={r.id} className="border-b border-stone-100 last:border-0 hover:bg-stone-50">
-                  <td className="px-4 py-3 font-medium text-slate-800 whitespace-nowrap">{r.employeeName}</td>
+                  <td className="sticky start-0 z-10 bg-white px-4 py-3 font-medium text-slate-800 whitespace-nowrap">{r.employeeName}</td>
                   <td className="px-4 py-3 text-slate-600 whitespace-nowrap">{t(REQUEST_KIND_LABELS[r.kind] || r.kind)}</td>
                   <td className="px-4 py-3 text-slate-500">
                     {requestDetail(r)}
@@ -5273,6 +5282,7 @@ function EmployeeRequestsTab({ requests }) {
               ))}
             </tbody>
           </table>
+          </div>
         </Card>
       )}
     </div>
@@ -5358,12 +5368,13 @@ function FormerEmployeesTab({ employees, setEmployees, allEmployees, onDelete })
         <Card className="p-0"><EmptyState text="مفيش موظفين مطابقين للفلتر." /></Card>
       ) : (
         <Card className="overflow-x-auto p-0">
+          <div className="max-h-[65vh] overflow-auto">
           <table className="w-full text-sm">
             <thead><tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-              <th className="w-8 px-4 py-3">
+              <th className="sticky top-0 z-10 w-8 bg-stone-50 px-4 py-3">
                 <input type="checkbox" checked={allSelected} ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }} onChange={toggleSelectAll} className="h-4 w-4 rounded border-stone-300" />
               </th>
-              <th className="px-4 py-3">{t("الاسم")}</th><th className="px-4 py-3">{t("تاريخ التعيين")}</th><th className="px-4 py-3">{t("تاريخ الاستقالة")}</th><th className="px-4 py-3">{t("تسوية نهاية الخدمة")}</th><th className="px-4 py-3"></th>
+              <th className="sticky top-0 z-10 bg-stone-50 px-4 py-3">{t("الاسم")}</th><th className="sticky top-0 z-10 bg-stone-50 px-4 py-3">{t("تاريخ التعيين")}</th><th className="sticky top-0 z-10 bg-stone-50 px-4 py-3">{t("تاريخ الاستقالة")}</th><th className="sticky top-0 z-10 bg-stone-50 px-4 py-3">{t("تسوية نهاية الخدمة")}</th><th className="sticky top-0 z-10 bg-stone-50 px-4 py-3"></th>
             </tr></thead>
             <tbody>
               {filteredEmployees.map((e) => (
@@ -5384,6 +5395,7 @@ function FormerEmployeesTab({ employees, setEmployees, allEmployees, onDelete })
               ))}
             </tbody>
           </table>
+          </div>
         </Card>
       )}
       <Modal open={!!editing} onClose={() => setEditing(null)} title={t("تسوية نهاية الخدمة")}>
@@ -5620,11 +5632,12 @@ function PayrollTab({ employees, setEmployees, attendance, penalties, payrollMet
         <Card className="p-0"><EmptyState text="مفيش موظفين مطابقين للفلتر." /></Card>
       ) : (
         <Card className="overflow-x-auto p-0">
+          <div className="max-h-[65vh] overflow-auto">
           <table className="w-full text-sm">
             <thead><tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-              <th className={`${stickyColCls} z-10 bg-stone-50 px-2.5 py-2.5`}>{t("الموظف")}</th><th className="px-2 py-2.5">{t("الأساسي")}</th><th className="px-2 py-2.5">{t("غياب")}</th><th className="px-2 py-2.5">{t("خصم تأخير")}</th><th className="px-2 py-2.5">{t("جزاءات")}</th>
-              <th className="px-2 py-2.5">{t("سلف")}</th><th className="px-2 py-2.5">{t("تأمينات")}</th><th className="px-2 py-2.5">{t("ضريبة")}</th><th className="px-2 py-2.5">{t("إضافي")}</th>
-              <th className="px-2 py-2.5">{t("مكافأة")}</th><th className="px-2 py-2.5">{t("الصافي")}</th><th className="px-2 py-2.5">{t("الحالة")}</th><th className="px-2 py-2.5"></th>
+              <th className={`${stickyColCls} top-0 z-20 bg-stone-50 px-2.5 py-2.5`}>{t("الموظف")}</th><th className="sticky top-0 z-10 bg-stone-50 px-2 py-2.5">{t("الأساسي")}</th><th className="sticky top-0 z-10 bg-stone-50 px-2 py-2.5">{t("غياب")}</th><th className="sticky top-0 z-10 bg-stone-50 px-2 py-2.5">{t("خصم تأخير")}</th><th className="sticky top-0 z-10 bg-stone-50 px-2 py-2.5">{t("جزاءات")}</th>
+              <th className="sticky top-0 z-10 bg-stone-50 px-2 py-2.5">{t("سلف")}</th><th className="sticky top-0 z-10 bg-stone-50 px-2 py-2.5">{t("تأمينات")}</th><th className="sticky top-0 z-10 bg-stone-50 px-2 py-2.5">{t("ضريبة")}</th><th className="sticky top-0 z-10 bg-stone-50 px-2 py-2.5">{t("إضافي")}</th>
+              <th className="sticky top-0 z-10 bg-stone-50 px-2 py-2.5">{t("مكافأة")}</th><th className="sticky top-0 z-10 bg-stone-50 px-2 py-2.5">{t("الصافي")}</th><th className="sticky top-0 z-10 bg-stone-50 px-2 py-2.5">{t("الحالة")}</th><th className="sticky top-0 z-10 bg-stone-50 px-2 py-2.5"></th>
             </tr></thead>
             <tbody>
               {filteredRows.map((r) => (
@@ -5657,6 +5670,7 @@ function PayrollTab({ employees, setEmployees, attendance, penalties, payrollMet
               ))}
             </tbody>
           </table>
+          </div>
         </Card>
       )}
 
@@ -6238,17 +6252,18 @@ function EvaluationsTab({ employees, reviews, onOpenEmployee }) {
         <Card className="p-0"><EmptyState text="مفيش تقييمات دورية مطابقة." /></Card>
       ) : (
         <Card className="overflow-x-auto p-0">
+          <div className="max-h-[65vh] overflow-auto">
           <table className="w-full text-sm">
             <thead className="bg-stone-50 text-xs text-slate-400">
               <tr>
-                <th className="sticky start-0 z-10 bg-stone-50 px-4 py-2.5 text-start font-semibold">{t("الموظف")}</th>
-                <th className="px-4 py-2.5 text-start font-semibold">{t("القسم")}</th>
-                <th className="px-4 py-2.5 text-start font-semibold">{t("النوع")}</th>
-                <th className="px-4 py-2.5 text-start font-semibold">{t("السنة")}</th>
-                <th className="px-4 py-2.5 text-start font-semibold">{t("التقدير")}</th>
-                <th className="px-4 py-2.5 text-start font-semibold">{t("النسبة")}</th>
-                <th className="px-4 py-2.5 text-start font-semibold">{t("التاريخ")}</th>
-                <th className="px-4 py-2.5 text-start font-semibold">{t("الحالة")}</th>
+                <th className="sticky start-0 top-0 z-20 bg-stone-50 px-4 py-2.5 text-start font-semibold">{t("الموظف")}</th>
+                <th className="sticky top-0 z-10 bg-stone-50 px-4 py-2.5 text-start font-semibold">{t("القسم")}</th>
+                <th className="sticky top-0 z-10 bg-stone-50 px-4 py-2.5 text-start font-semibold">{t("النوع")}</th>
+                <th className="sticky top-0 z-10 bg-stone-50 px-4 py-2.5 text-start font-semibold">{t("السنة")}</th>
+                <th className="sticky top-0 z-10 bg-stone-50 px-4 py-2.5 text-start font-semibold">{t("التقدير")}</th>
+                <th className="sticky top-0 z-10 bg-stone-50 px-4 py-2.5 text-start font-semibold">{t("النسبة")}</th>
+                <th className="sticky top-0 z-10 bg-stone-50 px-4 py-2.5 text-start font-semibold">{t("التاريخ")}</th>
+                <th className="sticky top-0 z-10 bg-stone-50 px-4 py-2.5 text-start font-semibold">{t("الحالة")}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-stone-100">
@@ -6271,6 +6286,7 @@ function EvaluationsTab({ employees, reviews, onOpenEmployee }) {
               })}
             </tbody>
           </table>
+          </div>
         </Card>
       )}
     </div>
@@ -6428,17 +6444,18 @@ function SalaryIncreaseTab({ employees, allEmployees, reviews, salaryIncreases, 
         <Card className="p-0"><EmptyState text="مفيش موظفين مطابقين للفلتر." /></Card>
       ) : (
         <Card className="overflow-x-auto p-0">
+          <div className="max-h-[65vh] overflow-auto">
           <table className="w-full text-sm">
             <thead className="bg-stone-50 text-xs text-slate-400">
               <tr>
-                <th className="sticky start-0 z-10 bg-stone-50 px-4 py-2.5 text-start font-semibold">{t("الموظف")}</th>
-                <th className="px-4 py-2.5 text-start font-semibold">{t("الدرجة (Grade)")}</th>
-                <th className="px-4 py-2.5 text-start font-semibold">{t("المرتب الحالي")}</th>
-                <th className="px-4 py-2.5 text-start font-semibold">{t("التقييم (من 5)")}</th>
-                <th className="px-4 py-2.5 text-start font-semibold">{t("نسبة الزيادة %")}</th>
-                <th className="px-4 py-2.5 text-start font-semibold">{t("المرتب الجديد المقترح")}</th>
-                <th className="px-4 py-2.5 text-start font-semibold">{t("الحالة")}</th>
-                <th className="px-4 py-2.5 text-start font-semibold"></th>
+                <th className="sticky start-0 top-0 z-20 bg-stone-50 px-4 py-2.5 text-start font-semibold">{t("الموظف")}</th>
+                <th className="sticky top-0 z-10 bg-stone-50 px-4 py-2.5 text-start font-semibold">{t("الدرجة (Grade)")}</th>
+                <th className="sticky top-0 z-10 bg-stone-50 px-4 py-2.5 text-start font-semibold">{t("المرتب الحالي")}</th>
+                <th className="sticky top-0 z-10 bg-stone-50 px-4 py-2.5 text-start font-semibold">{t("التقييم (من 5)")}</th>
+                <th className="sticky top-0 z-10 bg-stone-50 px-4 py-2.5 text-start font-semibold">{t("نسبة الزيادة %")}</th>
+                <th className="sticky top-0 z-10 bg-stone-50 px-4 py-2.5 text-start font-semibold">{t("المرتب الجديد المقترح")}</th>
+                <th className="sticky top-0 z-10 bg-stone-50 px-4 py-2.5 text-start font-semibold">{t("الحالة")}</th>
+                <th className="sticky top-0 z-10 bg-stone-50 px-4 py-2.5 text-start font-semibold"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-stone-100">
@@ -6494,6 +6511,7 @@ function SalaryIncreaseTab({ employees, allEmployees, reviews, salaryIncreases, 
               })}
             </tbody>
           </table>
+          </div>
         </Card>
       )}
 
@@ -6750,10 +6768,10 @@ function ReportsTab({ employees, activeEmployees, attendance, penalties, advance
         {customReportRows.length === 0 ? (
           <EmptyState text={customReportFiltersActive ? "مفيش طلبات مطابقة للفلتر." : "اختار فترة أو موظف أو نوع طلب عشان تشوف التقرير."} />
         ) : (
-          <div className="overflow-x-auto">
+          <div className="max-h-[65vh] overflow-auto">
             <table className="w-full text-sm">
               <thead><tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-                <th className="sticky start-0 z-10 bg-stone-50 px-3 py-3">{t("الموظف")}</th><th className="px-3 py-3">{t("النوع")}</th><th className="px-3 py-3">{t("التفاصيل")}</th><th className="px-3 py-3">{t("الحالة")}</th><th className="px-3 py-3">{t("تاريخ الطلب")}</th>
+                <th className="sticky start-0 top-0 z-20 bg-stone-50 px-3 py-3">{t("الموظف")}</th><th className="sticky top-0 z-10 bg-stone-50 px-3 py-3">{t("النوع")}</th><th className="sticky top-0 z-10 bg-stone-50 px-3 py-3">{t("التفاصيل")}</th><th className="sticky top-0 z-10 bg-stone-50 px-3 py-3">{t("الحالة")}</th><th className="sticky top-0 z-10 bg-stone-50 px-3 py-3">{t("تاريخ الطلب")}</th>
               </tr></thead>
               <tbody>
                 {customReportRows.map((r) => (
