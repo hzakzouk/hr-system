@@ -336,7 +336,11 @@ async function syncAttendanceRecords(nextAttendance, currentRecords) {
       if (!entry || !entry.status) return;
       const id = `${date}_${employeeId}`;
       nextIds.add(id);
-      ops.push({ type: "set", ref: doc(db, "attendanceRecords", id), data: { date, employeeId, status: entry.status, overtimeHours: Number(entry.overtimeHours) || 0, lateMinutes: Number(entry.lateMinutes) || 0 } });
+      // lateExcused لازم يتبعت هنا برضو - وإلا أي عملية "set" كاملة (زي مسح موظف، أو استيراد
+      // نسخة احتياطية) هتمسح علامة "الإعفاء الرسمي من التأخير" (جاية من موافقة مدير على طلب
+      // تأخير) لكل الموظفين تلقائيًا، لأن entry هنا جاي أصلًا من نفس الـ attendance state
+      // المحلي اللي بيتقرا منه lateExcused تحت (شوف تعليق useMemo الخاص بـ attendance).
+      ops.push({ type: "set", ref: doc(db, "attendanceRecords", id), data: { date, employeeId, status: entry.status, overtimeHours: Number(entry.overtimeHours) || 0, lateMinutes: Number(entry.lateMinutes) || 0, lateExcused: !!entry.lateExcused } });
     });
   });
   currentRecords.forEach((r) => {
@@ -361,10 +365,13 @@ async function syncAttendanceRecords(nextAttendance, currentRecords) {
 // never sent to Firestore at all, so it can never be overwritten with stale data. A falsy
 // `status` deletes the record (matches the toggle-off behavior below).
 async function syncAttendancePatch(patch) {
-  const ops = patch.map(({ date, employeeId, status, overtimeHours, lateMinutes }) => {
+  // lateExcused برضو "set" كامل (مش merge) هنا زي syncAttendanceRecords بالظبط - أي مُنادي
+  // (setStatus/setOvertime/setLateMinutes/importBulk في AttendanceTab) لازم يبعت القيمة الصح
+  // له صراحة عشان ميتمسحش بالغلط لو عدّل حقل تاني (زي ساعات الإضافي) في نفس اليوم المُعفى.
+  const ops = patch.map(({ date, employeeId, status, overtimeHours, lateMinutes, lateExcused }) => {
     const ref = doc(db, "attendanceRecords", `${date}_${employeeId}`);
     return status
-      ? { type: "set", ref, data: { date, employeeId, status, overtimeHours: Number(overtimeHours) || 0, lateMinutes: Number(lateMinutes) || 0 } }
+      ? { type: "set", ref, data: { date, employeeId, status, overtimeHours: Number(overtimeHours) || 0, lateMinutes: Number(lateMinutes) || 0, lateExcused: !!lateExcused } }
       : { type: "delete", ref };
   });
   await commitOpsChunked(ops);
@@ -1455,7 +1462,13 @@ function HRSystem({ adminUser }) {
     const out = {};
     attendanceRecords.forEach((r) => {
       if (!out[r.date]) out[r.date] = {};
-      out[r.date][r.employeeId] = { status: r.status, overtimeHours: r.overtimeHours || 0, lateMinutes: r.lateMinutes || 0 };
+      // lateExcused لازم تتحمل هنا زي أي حقل تاني - ده أصل الباگ اللي بلّغ عنه هاني: يوم "متأخر"
+      // اتسامح فيه المدير (lateExcused: true مسجّلة في Firestore من بوابة الموظف) كان بيترجع
+      // بيانات دقايق التأخير الحقيقية أول ما أي عملية "set" كاملة تحصل هنا (استيراد ملف حضور،
+      // مسح موظف، استرجاع نسخة احتياطية...) - لأن العلامة دي كانت بتتشال من غير قصد في إعادة
+      // البناء دي، فـ shouldSkipAttendanceOverwrite ما كانتش بتشوفها أبدًا (existing.lateExcused
+      // كان دايمًا undefined) فالحماية كانت بتفشل بصمت.
+      out[r.date][r.employeeId] = { status: r.status, overtimeHours: r.overtimeHours || 0, lateMinutes: r.lateMinutes || 0, lateExcused: !!r.lateExcused };
     });
     return out;
   }, [attendanceRecords]);
@@ -3903,7 +3916,9 @@ function AttendanceTab({ employees, attendance, patchAttendance, settings }) {
         touched.add(`${d}_${empId}`);
         return;
       }
-      patch.push({ date: d, employeeId: empId, status: status || current.status, overtimeHours: overtimeHours ?? current.overtimeHours, lateMinutes: lateMinutes ?? current.lateMinutes });
+      // الاستيراد (ملف/جهاز بصمة) مبيحملش أي فكرة عن "إعفاء" - أي يوم بيوصله هنا فعليًا (يعني
+      // عدّى shouldSkipAttendanceOverwrite فوق، فمش يوم معفي محمي) بيتكتب من غير إعفاء.
+      patch.push({ date: d, employeeId: empId, status: status || current.status, overtimeHours: overtimeHours ?? current.overtimeHours, lateMinutes: lateMinutes ?? current.lateMinutes, lateExcused: false });
       touched.add(`${d}_${empId}`);
     });
     if (fillAbsence && fromDate && toDate) {
@@ -3934,11 +3949,16 @@ function AttendanceTab({ employees, attendance, patchAttendance, settings }) {
     // Moving away from "late" (including toggling it off) clears any lateMinutes left over -
     // a day that isn't marked "late" should never carry a leftover minutes figure into payroll.
     const nextLateMinutes = nextStatus === "late" ? current.lateMinutes : 0;
-    patchAttendance([{ date, employeeId: empId, status: nextStatus, overtimeHours: current.overtimeHours, lateMinutes: nextLateMinutes }]);
+    // لو لسه "متأخر"، الإعفاء (lateExcused) بيفضل زي ما هو - الأدمن بيلمس الحالة نفسها مش قرار
+    // الإعفاء. لو اتشال من "متأخر" خالص، الإعفاء مالوش معنى أصلًا فبيترجع false.
+    const nextLateExcused = nextStatus === "late" ? current.lateExcused : false;
+    patchAttendance([{ date, employeeId: empId, status: nextStatus, overtimeHours: current.overtimeHours, lateMinutes: nextLateMinutes, lateExcused: nextLateExcused }]);
   }
   function setOvertime(empId, hours) {
     const current = getAttEntry(attendance, date, empId) || { status: null, overtimeHours: 0, lateMinutes: 0 };
-    patchAttendance([{ date, employeeId: empId, status: current.status, overtimeHours: Number(hours) || 0, lateMinutes: current.lateMinutes }]);
+    // بتحافظ على lateExcused زي ما هي - تعديل ساعات الإضافي مالوش أي علاقة بقرار إعفاء التأخير،
+    // ومن غير كده syncAttendancePatch هيكتب "set" كامل من غيرها فتتمسح بالغلط.
+    patchAttendance([{ date, employeeId: empId, status: current.status, overtimeHours: Number(hours) || 0, lateMinutes: current.lateMinutes, lateExcused: current.lateExcused }]);
   }
   // Entering minutes late auto-promotes the status to "late" (when it's currently unset or
   // "present") - this is the same rule the file importer applies (see buildResult below), so
@@ -3952,7 +3972,11 @@ function AttendanceTab({ employees, attendance, patchAttendance, settings }) {
     const mins = Number(minutes) || 0;
     const nextStatus = mins > 0 && (!current.status || current.status === "present") ? "late" : current.status;
     const nextLateMinutes = nextStatus === "late" ? mins : 0;
-    patchAttendance([{ date, employeeId: empId, status: nextStatus, overtimeHours: current.overtimeHours, lateMinutes: nextLateMinutes }]);
+    // الأدمن بيكتب رقم دقايق حقيقي يدويًا هنا - ده قرار صريح إن التأخير ده مش (أو مبقاش) معفي،
+    // فبيلغي أي إعفاء سابق (lateExcused: false). لو بيصفّر الرقم بس (مين=0) من غير ما يشيل الحالة
+    // خالص، بنسيب الإعفاء زي ما هو (يمكن بيأكّد الإعفاء نفسه من غير قصد إنه يلغيه).
+    const nextLateExcused = mins > 0 ? false : current.lateExcused;
+    patchAttendance([{ date, employeeId: empId, status: nextStatus, overtimeHours: current.overtimeHours, lateMinutes: nextLateMinutes, lateExcused: nextLateExcused }]);
   }
   function shiftDay(delta) { const d = new Date(date); d.setDate(d.getDate() + delta); setDate(d.toISOString().slice(0, 10)); }
 
@@ -4072,7 +4096,12 @@ function AttendanceTab({ employees, attendance, patchAttendance, settings }) {
                       )}
                     </td>
                     <td className="px-4 py-3">
-                      <input type="number" min="0" step="1" className="w-20 rounded-md border border-stone-200 px-2 py-1 text-xs tabular-nums outline-none focus:border-teal-500" value={entry?.lateMinutes || ""} onChange={(e2) => setLateMinutes(e.id, e2.target.value)} placeholder="0" />
+                      <div className="flex items-center gap-1.5">
+                        <input type="number" min="0" step="1" className="w-20 rounded-md border border-stone-200 px-2 py-1 text-xs tabular-nums outline-none focus:border-teal-500" value={entry?.lateMinutes || ""} onChange={(e2) => setLateMinutes(e.id, e2.target.value)} placeholder="0" />
+                        {entry?.status === "late" && entry?.lateExcused && (
+                          <span title={t("اتسامح فيه من مديره (طلب تأخير معتمد) - مش هيتخصم من المرتب")} className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">{t("معفي")}</span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-4 py-3">
                       <input type="number" min="0" step="0.5" className="w-20 rounded-md border border-stone-200 px-2 py-1 text-xs tabular-nums outline-none focus:border-teal-500" value={entry?.overtimeHours || ""} onChange={(e2) => setOvertime(e.id, e2.target.value)} placeholder="0" />
@@ -8363,6 +8392,9 @@ const TRANSLATIONS = {
   "سبب تعديل المرتب (إجباري)": "Reason for Salary Change (Required)",
   "لازم تكتب سبب تعديل المرتب.": "You must enter a reason for the salary change.",
   "مثلًا: علاوة سنوية، ترقية، تعديل سوق العمل...": "e.g. annual raise, promotion, market adjustment...",
+  // --- شارة "معفي" في تاب الحضور - يوم تأخير اتوافق عليه مدير من طلب في بوابة الموظف ---
+  "معفي": "Excused",
+  "اتسامح فيه من مديره (طلب تأخير معتمد) - مش هيتخصم من المرتب": "Excused by their manager (approved late request) - won't be deducted from salary",
 };
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
