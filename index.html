@@ -1723,6 +1723,63 @@ function HRSystem({ adminUser }) {
     track(deleteOrphanedRequests(ids));
   }
 
+  // "تصفير كل بيانات النظام" (زرار Danger Zone في تاب الإعدادات) - طلبها هاني عشان لما يبدأ يحط
+  // بيانات موظفين حقيقيين، يقدر يمسح كل بيانات التجربة/الاختبار الحالية دفعة واحدة من غير ما
+  // يضطر يدخل Firebase Console ويحذف كل collection يدويًا واحدة واحدة (اللي كان بيستهلك حصة
+  // الاستخدام اليومية المجانية بسرعة - هو السبب الفعلي اللي طلب الميزة دي). كل الحذف هنا
+  // batched (commitOpsChunked)، فبيستهلك عمليات أقل بكتير من التصفح والحذف اليدوي.
+  // orgChart بيترجع لقيمته الافتراضية بدل ما يتمسح (هو doc ثابت دايمًا موجود، مش collection).
+  // settings/main وsettings/notifications (سياسة الشركة وإعدادات الإيميل المُعدّة فعليًا) مش
+  // بيتلمسوا خالص عشان النظام يفضل شغال بنفس الإعدادات فورًا بعد التصفير.
+  // ملحوظة: مش بيمسح حسابات دخول بوابة الموظف (Firebase Authentication) - نفس القيد الموجود في
+  // deleteEmployees فوق، والسبب نفسه (الـ client SDK ميقدرش يمسح حساب مستخدم تاني).
+  async function resetAllData() {
+    const targets = [
+      ["employees", employees], ["attendanceRecords", attendanceRecords], ["penalties", penalties],
+      ["penaltyCaseNotes", penaltyCaseNotes], ["payrollMeta", payrollMetaDocs], ["advances", advances],
+      ["documents", documents], ["reviews", reviews], ["salaryIncreases", salaryIncreases],
+      ["publicDirectory", publicDirectory], ["payslips", payslipDocs], ["auditLog", auditLog],
+      ["candidates", candidates], ["requests", requests], ["assets", assets],
+      ["checklistItems", checklistItems], ["positions", positions], ["surveys", surveys],
+      ["surveyResponses", surveyResponses], ["dismissedAlerts", dismissedAlerts],
+    ];
+    const ops = [];
+    const breakdown = [];
+    targets.forEach(([colName, arr]) => {
+      if (arr.length > 0) breakdown.push(`${colName} (${arr.length})`);
+      arr.forEach((item) => ops.push({ type: "delete", ref: doc(db, colName, item.id) }));
+    });
+    const totalDeleted = ops.length;
+
+    await commitOpsChunked(ops);
+    await setDoc(doc(db, "orgChart", "main"), DEFAULT_ORG_CHART);
+    setOpenEmployeeId(null);
+    setPrefillCandidate(null);
+
+    // بيتكتب مباشرة (مش عن طريق writeAuditLog) عشان removedCount يعكس إجمالي عدد السجلات
+    // المحذوفة فعليًا مش عدد الـ collections اللي اتلمست، وعشان ده المفروض يبقى السطر الوحيد
+    // اللي يفضل في سجل النشاط بعد التصفير (auditLog نفسه اتمسح ضمن العملية دي فمفيش أي سجل
+    // قديم نقارن بيه أصلًا).
+    const ref = doc(collection(db, "auditLog"));
+    await setDoc(ref, {
+      at: new Date().toISOString(),
+      actorEmail: adminUser?.email || "",
+      actorUid: adminUser?.uid || "",
+      collection: "systemReset",
+      addedCount: 0, updatedCount: 0, removedCount: totalDeleted,
+      addedSample: [], updatedSample: [],
+      removedSample: breakdown.slice(0, AUDIT_SAMPLE_CAP),
+    });
+  }
+  // مجموع تقريبي لعدد السجلات اللي resetAllData هيمسحها - للعرض بس في مودال التأكيد (مش
+  // مستخدم في منطق الحذف نفسه، اللي بيقرا من نفس الـ arrays مباشرة وقت التنفيذ).
+  const resetTotalRecords = employees.length + attendanceRecords.length + penalties.length
+    + penaltyCaseNotes.length + payrollMetaDocs.length + advances.length + documents.length
+    + reviews.length + salaryIncreases.length + publicDirectory.length + payslipDocs.length
+    + auditLog.length + candidates.length + requests.length + assets.length
+    + checklistItems.length + positions.length + surveys.length + surveyResponses.length
+    + dismissedAlerts.length;
+
   const activeEmployees = useMemo(() => employees.filter((e) => e.status === "active" || !e.status), [employees]);
   const formerEmployees = useMemo(() => employees.filter((e) => e.status === "resigned" || e.status === "terminated"), [employees]);
 
@@ -1823,6 +1880,7 @@ function HRSystem({ adminUser }) {
             settings={settings} setSettings={upd.settings}
             notifySettings={notifySettings} setNotifySettings={upd.notifySettings}
             backupProps={{ employees, attendance, penalties, payrollMeta, advances, documents, reviews, settings, orgChart, upd }}
+            resetProps={{ onReset: resetAllData, totalRecords: resetTotalRecords, employeesCount: employees.length }}
           />}
         </main>
       </div>
@@ -6041,6 +6099,78 @@ function BackupSection({ employees, attendance, penalties, payrollMeta, advances
   );
 }
 
+// "تصفير كل بيانات النظام" - Danger Zone في تاب الإعدادات، تحت النسخ الاحتياطي مباشرة (خد نسخة
+// احتياطية من فوق قبل ما تستخدم الزرار ده). تأكيد مزدوج فعلي: (1) فتح المودال نفسه بزرار منفصل
+// واضح إنه خطر (بورده rose)، (2) زرار التنفيذ الفعلي جوه المودال مقفول تمامًا (disabled) لحد ما
+// الأدمن يكتب كلمة "تصفير" بالظبط في خانة التأكيد - نفس فكرة تأكيد حذف الـ repo في GitHub،
+// وأصعب بكتير من تأكيد بضغطة واحدة زي EmployeeDeleteConfirmModal. onReset (= resetAllData في
+// HRSystem) بيرمي الخطأ لو فشل بدل ما يبلعه، عشان الرسالة هنا تبان دقيقة وموضعية (زي
+// BackupSection.handleImportFile بالظبط) مش alert عام.
+function ResetAllDataSection({ totalRecords, employeesCount, onReset }) {
+  const { t } = useLang();
+  const [open, setOpen] = useState(false);
+  const [confirmText, setConfirmText] = useState("");
+  const [working, setWorking] = useState(false);
+  const [msg, setMsg] = useState(null); // { tone: "teal" | "rose", text }
+  const CONFIRM_WORD = "تصفير";
+  const ready = confirmText.trim() === CONFIRM_WORD;
+
+  function close() { if (working) return; setOpen(false); setConfirmText(""); }
+
+  async function runReset() {
+    if (!ready || working) return;
+    setWorking(true);
+    try {
+      await onReset();
+      setOpen(false);
+      setConfirmText("");
+      setMsg({ tone: "teal", text: t("تم تصفير كل بيانات النظام. الإعدادات العامة وإعدادات الإيميل اتسابت زي ما هي.") });
+    } catch (err) {
+      console.error(err);
+      setMsg({ tone: "rose", text: t("حصل خطأ أثناء التصفير — راجع الاتصال بالإنترنت وصلاحيات الدخول، وتأكد من حالة البيانات في Firebase Console قبل ما تحاول تاني.") });
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  return (
+    <Card className="mb-6 border-rose-200 p-5">
+      <h3 className="mb-1 flex items-center gap-2 font-bold text-rose-700"><AlertTriangle size={16} /> {t("منطقة الخطر")}</h3>
+      <p className="mb-4 text-xs text-slate-500">
+        {t("تصفير كامل لكل بيانات النظام (الموظفين، الحضور، الجزاءات، السلف، المستندات، التقييمات، المرتبات، الطلبات، سجل النشاط، وغيرها) عشان تبدأ ببيانات موظفين حقيقيين من الصفر. الإعدادات العامة وإعدادات الإيميل مش بيتمسحوا. الإجراء ده نهائي ومش هيتم التراجع عنه — خد نسخة احتياطية (الزرار فوق) قبل ما تكمل.")}
+      </p>
+      {msg && <p className={`mb-3 text-xs font-medium ${msg.tone === "rose" ? "text-rose-600" : "text-teal-700"}`}>{msg.text}</p>}
+      <button onClick={() => { setOpen(true); setMsg(null); }} className="flex items-center gap-1.5 rounded-lg border border-rose-500 bg-rose-50 px-3.5 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100">
+        <Trash2 size={15} /> {t("تصفير كل بيانات النظام")}
+      </button>
+
+      <Modal open={open} onClose={close} title="تصفير كل بيانات النظام">
+        <div className="space-y-4">
+          <div className="flex items-start gap-2 rounded-lg bg-rose-50 px-3 py-2.5 text-sm text-rose-700">
+            <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+            <span>{t("الإجراء ده نهائي ومش هيتم التراجع عنه، وهيمسح تقريبًا كل البيانات التشغيلية دفعة واحدة ({n} سجل، منهم {e} موظف).", { n: totalRecords, e: employeesCount })}</span>
+          </div>
+          <ul className="list-inside list-disc space-y-1 rounded-lg border border-stone-200 p-3 text-xs text-slate-600">
+            <li>{t("هيتمسح: الموظفين (الحاليين والسابقين)، الحضور، الجزاءات، السلف، المستندات، التقييمات، المرتبات، زيادات الرواتب، طلبات الموظفين، التوظيف، العهدة، الاستطلاعات، سجل النشاط، وغيرها.")}</li>
+            <li>{t("هيتصفّر (يرجع لوضعه الافتراضي): الهيكل التنظيمي.")}</li>
+            <li>{t("مش هيتلمس خالص: إعدادات النظام العامة (النسب والسياسات) وإعدادات إشعارات الإيميل.")}</li>
+            <li>{t("حسابات دخول بوابة الموظف (Firebase Authentication) مش بتتمسح من هنا - لازم تتحذف يدويًا من Firebase Console لو عايز تقفلها.")}</li>
+          </ul>
+          <Field label={'اكتب كلمة "تصفير" للتأكيد'}>
+            <input autoFocus className={inputCls} value={confirmText} onChange={(e) => setConfirmText(e.target.value)} placeholder={CONFIRM_WORD} disabled={working} />
+          </Field>
+          <div className="flex justify-end gap-2 border-t border-stone-200 pt-4">
+            <button type="button" onClick={close} disabled={working} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50 disabled:opacity-50">{t("إلغاء")}</button>
+            <button type="button" disabled={!ready || working} onClick={runReset} className="flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-40">
+              {working ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />} {t("تصفير كل البيانات نهائيًا")}
+            </button>
+          </div>
+        </div>
+      </Modal>
+    </Card>
+  );
+}
+
 // Stable (untranslated) key -> Arabic label; AuditLogTab/AuditLogEntryCard run every label
 // through t() at render time so the audit log itself stays language-agnostic in Firestore.
 const AUDIT_COLLECTION_LABELS = {
@@ -6059,6 +6189,7 @@ const AUDIT_COLLECTION_LABELS = {
   notifySettings: "إعدادات إشعارات الإيميل",
   surveys: "استطلاعات الرأي",
   surveyResponses: "ردود استطلاعات الرأي",
+  systemReset: "تصفير كامل للنظام",
 };
 
 // Display label for a raw field key inside an "updated" entry's changes[] (e.g. "stage" ->
@@ -7183,7 +7314,7 @@ function NotificationSettingsSection({ notifySettings, setNotifySettings }) {
   );
 }
 
-function SettingsTab({ settings, setSettings, notifySettings, setNotifySettings, backupProps }) {
+function SettingsTab({ settings, setSettings, notifySettings, setNotifySettings, backupProps, resetProps }) {
   const { t } = useLang();
   const [form, setForm] = useState(settings);
   const [holidayForm, setHolidayForm] = useState({ date: "", name: "" });
@@ -7288,6 +7419,8 @@ function SettingsTab({ settings, setSettings, notifySettings, setNotifySettings,
       <NotificationSettingsSection notifySettings={notifySettings} setNotifySettings={setNotifySettings} />
 
       <BackupSection {...backupProps} />
+
+      <ResetAllDataSection {...resetProps} />
 
       <form onSubmit={save} className="space-y-6">
         <Card className="p-5">
@@ -8267,6 +8400,18 @@ const TRANSLATIONS = {
   "الموظفين مش هيشوفوا أي تعديل هنا غير بعد ما تدوس «مزامنة».": "Employees won't see any change here until you press \"Sync\".",
   "النسب دي تقديرية ومسؤوليتك تراجعها وتحدّثها مع محاسب أو مستشار قانوني، خصوصًا إن قوانين التأمينات والضرايب بتتغير كل فترة.": "These rates are estimates — it's your responsibility to review and update them with an accountant or legal advisor, especially since insurance and tax laws change from time to time.",
   "النسخ الاحتياطي والاستعادة": "Backup & Restore",
+  "منطقة الخطر": "Danger Zone",
+  "تصفير كامل لكل بيانات النظام (الموظفين، الحضور، الجزاءات، السلف، المستندات، التقييمات، المرتبات، الطلبات، سجل النشاط، وغيرها) عشان تبدأ ببيانات موظفين حقيقيين من الصفر. الإعدادات العامة وإعدادات الإيميل مش بيتمسحوا. الإجراء ده نهائي ومش هيتم التراجع عنه — خد نسخة احتياطية (الزرار فوق) قبل ما تكمل.": "A full reset of all system data (employees, attendance, penalties, advances, documents, reviews, payroll, requests, activity log, and more) so you can start fresh with real employee data. General settings and email settings are not deleted. This action is final and cannot be undone — take a backup (button above) before continuing.",
+  "تصفير كل بيانات النظام": "Reset All System Data",
+  "تم تصفير كل بيانات النظام. الإعدادات العامة وإعدادات الإيميل اتسابت زي ما هي.": "All system data has been reset. General settings and email settings were left untouched.",
+  "حصل خطأ أثناء التصفير — راجع الاتصال بالإنترنت وصلاحيات الدخول، وتأكد من حالة البيانات في Firebase Console قبل ما تحاول تاني.": "An error occurred during the reset — check your internet connection and sign-in permissions, and verify the data state in the Firebase Console before trying again.",
+  "الإجراء ده نهائي ومش هيتم التراجع عنه، وهيمسح تقريبًا كل البيانات التشغيلية دفعة واحدة ({n} سجل، منهم {e} موظف).": "This action is final and cannot be undone — it will delete nearly all operational data at once ({n} records, including {e} employees).",
+  "هيتمسح: الموظفين (الحاليين والسابقين)، الحضور، الجزاءات، السلف، المستندات، التقييمات، المرتبات، زيادات الرواتب، طلبات الموظفين، التوظيف، العهدة، الاستطلاعات، سجل النشاط، وغيرها.": "Will be deleted: employees (current and former), attendance, penalties, advances, documents, reviews, payroll, salary increases, employee requests, recruitment, assets, surveys, activity log, and more.",
+  "هيتصفّر (يرجع لوضعه الافتراضي): الهيكل التنظيمي.": "Will be reset to default: the org chart.",
+  "مش هيتلمس خالص: إعدادات النظام العامة (النسب والسياسات) وإعدادات إشعارات الإيميل.": "Will not be touched at all: general system settings (rates and policies) and email notification settings.",
+  "حسابات دخول بوابة الموظف (Firebase Authentication) مش بتتمسح من هنا - لازم تتحذف يدويًا من Firebase Console لو عايز تقفلها.": "Employee portal sign-in accounts (Firebase Authentication) are not deleted from here — delete them manually from the Firebase Console if you want to close them.",
+  "تصفير كل البيانات نهائيًا": "Permanently Reset All Data",
+  "اكتب كلمة \"تصفير\" للتأكيد": "Type the word \"reset\" to confirm",
   "النهاردة": "today",
   "الهيكل التنظيمي": "Org Chart",
   "الوظيفة": "Position",
