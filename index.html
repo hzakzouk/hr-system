@@ -37,7 +37,7 @@ import {
   Loader2, Landmark, HandCoins, LogOut, ClipboardList, Star, Settings as SettingsIcon,
   Printer, Cake, ShieldAlert, Bell, Info, Upload, ArrowRight, ArrowLeft, FileSpreadsheet,
   Network, Crown, ChevronDown, ChevronUp, Lock, LogIn, ShieldCheck, Languages, History, BarChart3,
-  UserPlus, Download, Mail, RefreshCw, MessageCircle, Gavel, ShieldOff, MessageSquareText
+  UserPlus, Download, Mail, RefreshCw, MessageCircle, Gavel, ShieldOff, MessageSquareText, CalendarOff
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import emailjs from "@emailjs/browser";
@@ -985,13 +985,20 @@ function computePayrollRow(e, ym, attendance, penalties, advances, settings, met
     if (monthKey(date) !== ym) return;
     const entry = getAttEntry(attendance, date, e.id);
     if (!entry) return;
-    if (entry.status === "absent") absentDays++;
-    // Late-minute deductions only ever come from a day actually marked "late" - AttendanceTab
-    // and the file importer both clear lateMinutes back to 0 whenever a record's status moves
-    // away from "late" (see AttendanceTab.setStatus / AttendanceImportWizard.buildResult), but
-    // this guard is the belt-and-suspenders backstop against any older/imported record that
-    // happens to carry a stray lateMinutes value under a different status.
-    if (entry.status === "late") lateMinutes += Number(entry.lateMinutes) || 0;
+    // يوم عطلة رسمية/أسبوعية (isNonWorkday) مايتحسبش غياب ولا تأخير حتى لو فيه سجل حضور قديم
+    // متبقي عليه حالة "غايب"/"متأخر" من قبل ما العطلة تتسجل في الإعدادات - ده بالظبط الباگ اللي
+    // اتبلّغ عنه (هاني زكزوك أيام 27-28-29 محسوبة تأخير مع إنها أيام عطلة). ساعات الإضافي لسه
+    // بتتحسب عادي - شغل فعلي في يوم عطلة لازم يتحسب.
+    const nonWork = isNonWorkday(e, date, settings.publicHolidays);
+    if (!nonWork) {
+      if (entry.status === "absent") absentDays++;
+      // Late-minute deductions only ever come from a day actually marked "late" - AttendanceTab
+      // and the file importer both clear lateMinutes back to 0 whenever a record's status moves
+      // away from "late" (see AttendanceTab.setStatus / AttendanceImportWizard.buildResult), but
+      // this guard is the belt-and-suspenders backstop against any older/imported record that
+      // happens to carry a stray lateMinutes value under a different status.
+      if (entry.status === "late") lateMinutes += Number(entry.lateMinutes) || 0;
+    }
     overtimeHours += Number(entry.overtimeHours) || 0;
   });
   const base = Number(e.salary) || 0;
@@ -1032,8 +1039,12 @@ function computePayrollBreakdown(e, ym, attendance, penalties, advances, setting
     if (monthKey(date) !== ym) return;
     const entry = getAttEntry(attendance, date, e.id);
     if (!entry) return;
-    if (entry.status === "absent") absentDays++;
-    if (entry.status === "late") lateMinutes += Number(entry.lateMinutes) || 0;
+    // نفس منطق computePayrollRow بالظبط: يوم عطلة رسمية/أسبوعية مايتحسبش غياب ولا تأخير.
+    const nonWork = isNonWorkday(e, date, settings.publicHolidays);
+    if (!nonWork) {
+      if (entry.status === "absent") absentDays++;
+      if (entry.status === "late") lateMinutes += Number(entry.lateMinutes) || 0;
+    }
     overtimeHours += Number(entry.overtimeHours) || 0;
   });
   const base = Number(e.salary) || 0;
@@ -1269,7 +1280,7 @@ function NavItem({ icon, label, active, onClick }) {
 }
 function KpiCard({ label, value, icon, tone }) {
   const { t } = useLang();
-  const tones = { teal: "bg-teal-50 text-teal-700", emerald: "bg-emerald-50 text-emerald-700", rose: "bg-rose-50 text-rose-700", amber: "bg-amber-50 text-amber-700", sky: "bg-sky-50 text-sky-700", purple: "bg-purple-50 text-purple-700", indigo: "bg-indigo-50 text-indigo-700" };
+  const tones = { teal: "bg-teal-50 text-teal-700", emerald: "bg-emerald-50 text-emerald-700", rose: "bg-rose-50 text-rose-700", amber: "bg-amber-50 text-amber-700", sky: "bg-sky-50 text-sky-700", purple: "bg-purple-50 text-purple-700", indigo: "bg-indigo-50 text-indigo-700", slate: "bg-slate-100 text-slate-600" };
   return (
     <Card className="p-4">
       <div className={`mb-3 inline-flex h-9 w-9 items-center justify-center rounded-lg ${tones[tone]}`}>{icon}</div>
@@ -1551,9 +1562,23 @@ function HRSystem({ adminUser }) {
   return (
     <div dir={dir} className="min-h-[700px] w-full bg-stone-50 font-sans text-slate-800 print:bg-white">
       <style>{`@media print { .no-print { display: none !important; } .print-area { display: block !important; } }`}</style>
-      {/* شعار Focus - ثابت في أعلى الشاشة في المنتصف (left-1/2 + translate بغض النظر عن اتجاه
-          RTL) طول الوقت وفوق كل حاجة تانية، وبيختفي وقت الطباعة. حجم أكبر من الأول (h-16 بدل h-9). */}
-      <img src={FOCUS_LOGO_SRC} alt="Focus" className="no-print fixed left-1/2 top-3 z-50 h-16 w-auto -translate-x-1/2 rounded-md shadow-sm" />
+      {/* شعار Focus - ثابت في أعلى الشاشة في المنتصف طول الوقت وفوق كل حاجة تانية، وبيختفي وقت
+          الطباعة. حجم أكبر من الأول (64px بدل 36px).
+          الـ position/top/left/transform هنا متحطوطة كـ inline style صريح بدل ما تتسحب من
+          كلاسات Tailwind (fixed/top-3/left-1/2/-translate-x-1/2) - ده عشان اتبلّغنا إن اللوجو
+          كان بينزل مع السكرول بدل ما يفضل ثابت، وده باگ معروف بيحصل بطريقتين: (أ) لو الكلاسات
+          دي اتفوّتت أو اتطبّقت متأخر من Tailwind CDN (JIT شغال وقت التحميل، ومحتاج يلحق كل
+          re-render من React) الـ inline style هنا بيتطبّق فورًا ومضمون 100% مهما حصل مع الـ CDN،
+          (ب) لو المتصفح مش بيعمل compositing layer منفصلة للعنصر (بيحصل مع Chrome على ويندوز مع
+          صفحات فيها re-renders كتير زي الداشبورد ده) بيسبب "scroll jank" - اللوجو بيتأخر شوية عن
+          موضعه الثابت أثناء السكرول الفعلي وبيبان كإنه بينزل مع المحتوى. translateZ(0) +
+          willChange بيجبروا المتصفح يعمل layer منفصلة للوجو من الأول فيمنع التأخير ده. */}
+      <img
+        src={FOCUS_LOGO_SRC}
+        alt="Focus"
+        className="no-print z-50 h-16 w-auto rounded-md shadow-sm"
+        style={{ position: "fixed", top: 12, left: "50%", transform: "translate(-50%, 0) translateZ(0)", willChange: "transform" }}
+      />
       <div className="mx-auto flex max-w-7xl flex-col gap-6 p-4 lg:flex-row lg:p-6">
         <aside className="no-print w-full shrink-0 rounded-2xl border border-stone-200 bg-white p-4 shadow-sm lg:sticky lg:top-6 lg:h-fit lg:max-h-[calc(100vh-3rem)] lg:w-60 lg:self-start lg:overflow-y-auto">
           <div className="mb-6 flex items-center gap-2 px-2">
@@ -1981,13 +2006,20 @@ function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penal
   function shiftAttendanceDate(delta) { const d = new Date(attendanceDate); d.setDate(d.getDate() + delta); setAttendanceDate(d.toISOString().slice(0, 10)); }
   // المتأخر لسه حاضر فعليًا (جه الشغل بس متأخر) - يتحسب جوه "حاضر"، و"متأخر" بيبقى بس توضيح
   // لكام واحد من الحاضرين ده كان متأخر (مش فئة منفصلة بتتشال من إجمالي الحاضرين). عشان كده
-  // حاضر + غايب + إجازة + مرضي + مأمورية لازم يساووا إجمالي الموظفين دايمًا (لأي يوم شغل).
-  const presentToday = employees.filter((e) => { const s = getAttEntry(attendance, attendanceDate, e.id)?.status; return s === "present" || s === "late"; }).length;
-  const absentToday = employees.filter((e) => getAttEntry(attendance, attendanceDate, e.id)?.status === "absent").length;
-  const lateToday = employees.filter((e) => getAttEntry(attendance, attendanceDate, e.id)?.status === "late").length;
-  const leaveOnDate = employees.filter((e) => getAttEntry(attendance, attendanceDate, e.id)?.status === "leave").length;
-  const sickOnDate = employees.filter((e) => getAttEntry(attendance, attendanceDate, e.id)?.status === "sick").length;
-  const missionOnDate = employees.filter((e) => getAttEntry(attendance, attendanceDate, e.id)?.status === "mission").length;
+  // حاضر + غايب + إجازة + مرضي + مأمورية + عطلة لازم يساووا إجمالي الموظفين دايمًا.
+  //
+  // يوم عطلة رسمية/أسبوعية (isNonWorkday) بيتحسب "عطلة" لكل موظف عليه العطلة دي، بغض النظر عن
+  // أي سجل حضور خام مسجّل على نفس اليوم (زي بيانات مزامنة قديمة من قبل ما العطلة تتسجل في
+  // الإعدادات) - ده اللي كان بيخلي الهيدر يعرض "42 حاضر" ليوم متسجل رسميًا كعطلة. نفس القاعدة
+  // اللي تاب الحضور والانصراف بيطبّقها في عرض الصف الفردي (نص "عطلة رسمية"/"إجازة أسبوعية" بدل
+  // أزرار الحالة) - هنا بنطبّقها على أرقام الهيدر كمان عشان الاتنين يتفقوا مع بعض.
+  const holidayToday = employees.filter((e) => isNonWorkday(e, attendanceDate, settings.publicHolidays)).length;
+  const presentToday = employees.filter((e) => { if (isNonWorkday(e, attendanceDate, settings.publicHolidays)) return false; const s = getAttEntry(attendance, attendanceDate, e.id)?.status; return s === "present" || s === "late"; }).length;
+  const absentToday = employees.filter((e) => !isNonWorkday(e, attendanceDate, settings.publicHolidays) && getAttEntry(attendance, attendanceDate, e.id)?.status === "absent").length;
+  const lateToday = employees.filter((e) => !isNonWorkday(e, attendanceDate, settings.publicHolidays) && getAttEntry(attendance, attendanceDate, e.id)?.status === "late").length;
+  const leaveOnDate = employees.filter((e) => !isNonWorkday(e, attendanceDate, settings.publicHolidays) && getAttEntry(attendance, attendanceDate, e.id)?.status === "leave").length;
+  const sickOnDate = employees.filter((e) => !isNonWorkday(e, attendanceDate, settings.publicHolidays) && getAttEntry(attendance, attendanceDate, e.id)?.status === "sick").length;
+  const missionOnDate = employees.filter((e) => !isNonWorkday(e, attendanceDate, settings.publicHolidays) && getAttEntry(attendance, attendanceDate, e.id)?.status === "mission").length;
 
   const thisMonth = monthKey(today);
   const penaltiesTotal = penalties.filter((p) => monthKey(p.date) === thisMonth && p.actionType === "خصم مالي").reduce((s, p) => s + (Number(p.amount) || 0), 0);
@@ -2047,7 +2079,7 @@ function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penal
         )}
       </div>
 
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-4 xl:grid-cols-7">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-4 xl:grid-cols-8">
         <KpiCard label="إجمالي الموظفين" value={employees.length} icon={<Users size={18} />} tone="teal" />
         <KpiCard label="حاضر" value={presentToday} icon={<Check size={18} />} tone="emerald" />
         <KpiCard label="غايب" value={absentToday} icon={<UserX size={18} />} tone="rose" />
@@ -2055,6 +2087,7 @@ function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penal
         <KpiCard label="إجازة" value={leaveOnDate} icon={<CalendarCheck size={18} />} tone="sky" />
         <KpiCard label="مرضي" value={sickOnDate} icon={<AlertTriangle size={18} />} tone="purple" />
         <KpiCard label="مأمورية" value={missionOnDate} icon={<Network size={18} />} tone="indigo" />
+        <KpiCard label="عطلة" value={holidayToday} icon={<CalendarOff size={18} />} tone="slate" />
       </div>
 
       <Card className="mt-4 flex flex-wrap items-center justify-between gap-3 p-4">
@@ -3776,7 +3809,16 @@ function AttendanceTab({ employees, attendance, patchAttendance, settings }) {
   }
   function shiftDay(delta) { const d = new Date(date); d.setDate(d.getDate() + delta); setDate(d.toISOString().slice(0, 10)); }
 
-  const counts = employees.reduce((acc, e) => { const st = getAttEntry(attendance, date, e.id)?.status; if (st) acc[st] = (acc[st] || 0) + 1; return acc; }, { present: 0, absent: 0, late: 0, leave: 0, sick: 0, mission: 0 });
+  // يوم عطلة رسمية/أسبوعية (isNonWorkday) بيتحسب "holiday" لكل موظف عليه العطلة دي، بغض النظر
+  // عن أي سجل حضور خام مسجّل على نفس اليوم (زي بيانات مزامنة قديمة من قبل ما العطلة تتسجل) -
+  // نفس القاعدة اللي صف الموظف الفردي تحت بيطبّقها (بادج "عطلة رسمية"/"إجازة أسبوعية" بدل أزرار
+  // الحالة)، عشان كروت الإحصائيات فوق تتفق مع الجدول تحتها بدل ما تناقضه.
+  const counts = employees.reduce((acc, e) => {
+    if (isNonWorkday(e, date, settings.publicHolidays)) { acc.holiday++; return acc; }
+    const st = getAttEntry(attendance, date, e.id)?.status;
+    if (st) acc[st] = (acc[st] || 0) + 1;
+    return acc;
+  }, { present: 0, absent: 0, late: 0, leave: 0, sick: 0, mission: 0, holiday: 0 });
   // المتأخر لسه حاضر فعليًا - نفس القاعدة المتبعة في لوحة المتابعة وتقرير معدل الحضور:
   // كارت "حاضر" هنا لازم يشمل المتأخرين، و"متأخر" بيبقى بس توضيح لكام واحد من الحاضرين
   // ده كان متأخر (مش فئة منفصلة بتتشال من العدد).
@@ -3829,13 +3871,14 @@ function AttendanceTab({ employees, attendance, patchAttendance, settings }) {
         </div>
       } />
 
-      <div className="mb-5 grid grid-cols-3 gap-3 lg:grid-cols-6">
+      <div className="mb-5 grid grid-cols-3 gap-3 lg:grid-cols-7">
         <div className="rounded-xl bg-emerald-50 px-4 py-3 text-emerald-700"><div className="text-xl font-bold tabular-nums">{presentIncludingLate}</div><div className="text-xs font-medium">{t("حاضر")}</div></div>
         <div className="rounded-xl bg-rose-50 px-4 py-3 text-rose-700"><div className="text-xl font-bold tabular-nums">{counts.absent}</div><div className="text-xs font-medium">{t("غايب")}</div></div>
         <div className="rounded-xl bg-amber-50 px-4 py-3 text-amber-700"><div className="text-xl font-bold tabular-nums">{counts.late}</div><div className="text-xs font-medium">{t("متأخر")}</div></div>
         <div className="rounded-xl bg-sky-50 px-4 py-3 text-sky-700"><div className="text-xl font-bold tabular-nums">{counts.leave}</div><div className="text-xs font-medium">{t("إجازة")}</div></div>
         <div className="rounded-xl bg-purple-50 px-4 py-3 text-purple-700"><div className="text-xl font-bold tabular-nums">{counts.sick}</div><div className="text-xs font-medium">{t("مرضي")}</div></div>
         <div className="rounded-xl bg-indigo-50 px-4 py-3 text-indigo-700"><div className="text-xl font-bold tabular-nums">{counts.mission}</div><div className="text-xs font-medium">{t("مأمورية")}</div></div>
+        <div className="rounded-xl bg-slate-100 px-4 py-3 text-slate-600"><div className="text-xl font-bold tabular-nums">{counts.holiday}</div><div className="text-xs font-medium">{t("عطلة")}</div></div>
       </div>
 
       {employees.length > 0 && (
