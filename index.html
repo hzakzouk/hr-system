@@ -1810,7 +1810,7 @@ function HRSystem({ adminUser }) {
           {tab === "evaluations" && <EvaluationsTab employees={employees} reviews={reviews} onOpenEmployee={setOpenEmployeeId} />}
           {tab === "attendance" && <AttendanceTab employees={activeEmployees} attendance={attendance} patchAttendance={upd.attendancePatch} settings={settings} />}
           {tab === "requests" && <EmployeeRequestsTab requests={requests} />}
-          {tab === "payroll" && <PayrollTab employees={activeEmployees} setEmployees={upd.employees} attendance={attendance} penalties={penalties} payrollMeta={payrollMeta} setPayrollMeta={upd.payrollMeta} advances={advances} settings={settings} payslipDocs={payslipDocs} onSyncPayslips={upd.payslips} />}
+          {tab === "payroll" && <PayrollTab employees={activeEmployees} allEmployees={employees} setEmployees={upd.employees} attendance={attendance} penalties={penalties} payrollMeta={payrollMeta} setPayrollMeta={upd.payrollMeta} advances={advances} settings={settings} payslipDocs={payslipDocs} onSyncPayslips={upd.payslips} />}
           {tab === "salaryIncrease" && <SalaryIncreaseTab employees={activeEmployees} allEmployees={employees} reviews={reviews} salaryIncreases={salaryIncreases} setSalaryIncreases={upd.salaryIncreases} setEmployees={upd.employees} settings={settings} adminUser={adminUser} onOpenEmployee={setOpenEmployeeId} />}
           {tab === "penalties" && <PenaltiesTab employees={activeEmployees} penalties={penalties} setPenalties={upd.penalties} penaltyCaseNotes={penaltyCaseNotes} setPenaltyCaseNotes={upd.penaltyCaseNotes} onPrintCase={setPrintPenaltyCase} />}
           {tab === "surveys" && <SurveysTab employees={activeEmployees} surveys={surveys} setSurveys={upd.surveys} surveyResponses={surveyResponses} setSurveyResponses={upd.surveyResponses} />}
@@ -2697,6 +2697,33 @@ function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, s
     alert(t("تم التحديث: {updated} موظف موجود، وإضافة {created} موظف جديد.", { updated: updatedCount, created: createdCount }));
   }
 
+  // نفس أعمدة EMPLOYEE_IMPORT_FIELDS بالظبط (نفس الترتيب والتسميات) عشان أي ملف مُصدَّر من هنا
+  // يبقى قابل لإعادة الاستيراد المباشر من غير أي إعادة تعريب/ترتيب - بيحترم فلتر البحث زي باقي
+  // شاشات "تصدير Excel" في التطبيق (الفلتر بيأثر على الجدول والتصدير مع بعض).
+  function exportExcel() {
+    const rows = filtered.map((e) => ({
+      [t("كود الموظف")]: e.employeeCode || "",
+      [t("الاسم")]: e.name || "",
+      [t("القسم")]: e.department || "",
+      [t("الوظيفة")]: e.position || "",
+      [t("الدرجة (Grade)")]: e.grade || "",
+      [t("المستوى الوظيفي (Level)")]: e.level || "",
+      [t("الفرع (لو الشركة أكتر من موقع)")]: e.branch || "",
+      [t("رقم الموبايل")]: e.phone || "",
+      [t("الرقم القومي")]: e.nationalId || "",
+      [t("الإيميل")]: e.email || "",
+      [t("تاريخ الميلاد")]: e.birthDate || "",
+      [t("تاريخ التعيين")]: e.hireDate || "",
+      [t("الراتب الأساسي")]: e.salary || 0,
+      [t("نوع العقد")]: e.contractType || "",
+      [t("بداية العقد")]: e.contractStart || "",
+      [t("نهاية العقد")]: e.contractEnd || "",
+      [t("رصيد الإجازة السنوي")]: e.leaveEntitlement ?? "",
+      [t("أيام الإجازة الأسبوعية")]: getWeeklyOffDays(e).join("، "),
+    }));
+    exportRowsToExcel(rows, t("الموظفون والعقود"), "employees");
+  }
+
   return (
     <div>
       <SectionTitle eyebrow={t("{n} موظف نشط", { n: visible.length })} title="الموظفون والعقود" action={
@@ -2716,6 +2743,9 @@ function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, s
               <ShieldCheck size={16} /> {t("تثبيت اللي خلصت فترة اختبارهم ({n})", { n: overdueProbationEmployees.length })}
             </button>
           )}
+          <button onClick={exportExcel} disabled={filtered.length === 0} className="flex items-center gap-1.5 rounded-lg border border-teal-700 px-3.5 py-2 text-sm font-semibold text-teal-800 hover:bg-teal-50 disabled:opacity-40">
+            <FileSpreadsheet size={16} /> {t("تصدير Excel")}
+          </button>
           <button onClick={() => setImportOpen(true)} className="flex items-center gap-1.5 rounded-lg border border-teal-700 px-3.5 py-2 text-sm font-semibold text-teal-800 hover:bg-teal-50">
             <Upload size={16} /> {t("استيراد جماعي")}
           </button>
@@ -5463,7 +5493,7 @@ const PAYROLL_LINE_ITEMS = [
   { key: "taxDeduction", overrideKey: "taxDeductionOverride", reasonKey: "taxDeductionReason", label: "ضريبة", sign: -1 },
   { key: "overtimePay", overrideKey: "overtimePayOverride", reasonKey: "overtimePayReason", label: "إضافي", sign: 1 },
 ];
-function PayrollTab({ employees, setEmployees, attendance, penalties, payrollMeta, setPayrollMeta, advances, settings, payslipDocs, onSyncPayslips }) {
+function PayrollTab({ employees, allEmployees, setEmployees, attendance, penalties, payrollMeta, setPayrollMeta, advances, settings, payslipDocs, onSyncPayslips }) {
   const { t, lang } = useLang();
   // عمود اسم الموظف بيفضل ثابت (sticky) وانت بتعمل سكرول أفقي في الجدول العريض ده - عشان
   // تعرف صاحب الصف وانت شايف أي بند. start-0 (بدل left-0/right-0) بتتبع اتجاه اللغة تلقائيًا
@@ -5503,8 +5533,13 @@ function PayrollTab({ employees, setEmployees, attendance, penalties, payrollMet
     if (!(nextSalary >= 0)) { setSalaryReasonError("لازم تدخل رقم صحيح للمرتب."); return; }
     if (nextSalary === editingSalary.currentSalary) { closeSalaryEdit(); return; } // مفيش تغيير فعلي - مفيش داعي لسبب ولا تعديل
     if (!salaryReason.trim()) { setSalaryReasonError("لازم تكتب سبب تعديل المرتب."); return; }
+    // لازم نبني القايمة الكاملة من allEmployees (كل الموظفين نشطين وسابقين) مش من employees
+    // (النشطين بس - PayrollTab بتاخدها كـ prop عشان تعرض وتحسب المرتبات الحالية بس) -
+    // setEmployees/upd.employees بيستبدل مجموعة employees في Firestore بالكامل بالمصفوفة اللي
+    // بتتبعتله، فلو استخدمنا employees هنا كانت هتمسح كل الموظفين السابقين نهائيًا من قاعدة
+    // البيانات (باگ حقيقي حصل فعلاً - اتبلّغ عنه من المستخدم).
     setEmployees(
-      employees.map((e2) => (e2.id === editingSalary.empId ? { ...e2, salary: nextSalary } : e2)),
+      allEmployees.map((e2) => (e2.id === editingSalary.empId ? { ...e2, salary: nextSalary } : e2)),
       { employeeName: editingSalary.empName, reason: salaryReason.trim() }
     );
     closeSalaryEdit();
@@ -6367,9 +6402,13 @@ function SalaryIncreaseTab({ employees, allEmployees, reviews, salaryIncreases, 
     updateRecord(s.id, { suggestedPercent: calc.suggestedPercent, proposedSalary: calc.proposedSalary });
   }
   function approve(s, reason) {
+    // لازم نبني القايمة الكاملة من allEmployees (كل الموظفين نشطين وسابقين) مش من employees
+    // (النشطين بس، اللي المكوّن بياخدها كـ prop للفلترة والعرض) - setEmployees/upd.employees
+    // بيستبدل مجموعة employees في Firestore بالكامل بالمصفوفة اللي بتتبعتله، فلو استخدمنا
+    // employees هنا كانت هتمسح كل الموظفين السابقين نهائيًا من قاعدة البيانات (باگ حقيقي حصل).
     const emp = empById[s.employeeId];
     setEmployees(
-      employees.map((e) => (e.id === s.employeeId ? { ...e, salary: s.proposedSalary } : e)),
+      allEmployees.map((e) => (e.id === s.employeeId ? { ...e, salary: s.proposedSalary } : e)),
       { employeeName: emp?.name || s.employeeId, reason }
     );
     updateRecord(s.id, { status: "approved", decidedAt: todayISO(), decidedBy: adminUser?.email || "" });
