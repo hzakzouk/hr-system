@@ -1018,6 +1018,65 @@ function computePayrollRow(e, ym, attendance, penalties, advances, settings, met
   return { emp: e, absentDays, overtimeHours, lateMinutes, absenceDeduction, penaltyDeduction, advanceDeduction, lateDeduction, insuranceDeduction, taxDeduction, overtimePay, bonus, net, paid: !!empMeta.paid };
 }
 
+// نسخة تفصيلية من computePayrollRow فوق - نفس بالظبط المعادلات (perDay/hourlyRate/التأمينات/
+// الضريبة...) بس بترجّع تفاصيل كل بند (المعدل، عدد الوحدات، وقايمة الجزاءات/الأقساط الفردية)
+// مش بس الرقم النهائي - عشان تتعرض في شاشة "تفاصيل الخصم" (بالضغط على اسم الموظف في تاب
+// المرتبات). اتعملت كدالة منفصلة قصدًا (مش بتنادي ولا بتتنادى من computePayrollRow) عشان صفر
+// مخاطرة على computePayrollRow الأصلية ومصفوفة الاختبارات الموجودة ليها بالفعل في
+// test_reports.mjs - اختبارات test_payroll_breakdown.mjs الجديدة بتتأكد إن أرقامها النهائية
+// مطابقة بالظبط لأرقام computePayrollRow لنفس المدخلات، فمفيش احتمال يحصل اختلاف بين الاتنين
+// بمرور الوقت من غير ما اختبار يمسكه فورًا.
+function computePayrollBreakdown(e, ym, attendance, penalties, advances, settings, meta) {
+  let absentDays = 0, overtimeHours = 0, lateMinutes = 0;
+  Object.keys(attendance).forEach((date) => {
+    if (monthKey(date) !== ym) return;
+    const entry = getAttEntry(attendance, date, e.id);
+    if (!entry) return;
+    if (entry.status === "absent") absentDays++;
+    if (entry.status === "late") lateMinutes += Number(entry.lateMinutes) || 0;
+    overtimeHours += Number(entry.overtimeHours) || 0;
+  });
+  const base = Number(e.salary) || 0;
+  const perDayRate = base / 30;
+  const absenceDeduction = Math.round(perDayRate * absentDays);
+  const hourlyRate = base / (30 * 8);
+  const perMinuteRate = hourlyRate / 60;
+  const lateDeduction = Math.round(perMinuteRate * lateMinutes);
+  const overtimeMultiplier = settings.overtimeMultiplier;
+  const overtimePay = Math.round(hourlyRate * overtimeMultiplier * overtimeHours);
+
+  const monthPenalties = penalties.filter((p) => p.employeeId === e.id && monthKey(p.date) === ym && p.actionType === "خصم مالي");
+  const penaltyDeduction = monthPenalties.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+
+  const empAdvances = advances.filter((a) => a.employeeId === e.id);
+  const advanceLines = empAdvances
+    .map((a) => ({ advance: a, monthlyInstallment: advanceDeductionForMonth(a, ym) }))
+    .filter((l) => l.monthlyInstallment > 0);
+  const advanceDeduction = advanceLines.reduce((s, l) => s + l.monthlyInstallment, 0);
+
+  const insuranceRate = settings.insuranceRate;
+  const insuranceDeduction = Math.round((base * insuranceRate) / 100);
+  const annualTaxable = Math.max(0, base * 12 - insuranceDeduction * 12 - settings.personalExemptionAnnual);
+  const taxDeduction = Math.round(computeTax(annualTaxable, settings.taxBrackets) / 12);
+
+  const empMeta = (meta || {})[e.id] || {};
+  const bonus = Number(empMeta.bonus) || 0;
+
+  const net = base - absenceDeduction - penaltyDeduction - advanceDeduction - insuranceDeduction - taxDeduction - lateDeduction + overtimePay + bonus;
+
+  return {
+    emp: e, base,
+    absentDays, perDayRate, absenceDeduction,
+    lateMinutes, hourlyRate, perMinuteRate, lateDeduction,
+    overtimeHours, overtimeMultiplier, overtimePay,
+    monthPenalties, penaltyDeduction,
+    advanceLines, advanceDeduction,
+    insuranceRate, insuranceDeduction,
+    annualTaxable, taxBrackets: settings.taxBrackets, taxDeduction,
+    bonus, net,
+  };
+}
+
 /* ---------- reports (pure, testable helpers - see ReportsTab for the tab that renders them) ---------- */
 
 // True if the employee was on the books at ANY point during month `ym` ("YYYY-MM") - hired on
@@ -4994,11 +5053,16 @@ function PayrollTab({ employees, attendance, penalties, payrollMeta, setPayrollM
   const { t, lang } = useLang();
   const [ym, setYm] = useState(todayISO().slice(0, 7));
   const [payslipEmp, setPayslipEmp] = useState(null);
+  const [breakdownEmpId, setBreakdownEmpId] = useState(null);
   const [query, setQuery] = useState("");
   const [paidFilter, setPaidFilter] = useState("الكل");
   const meta = payrollMeta[ym] || {};
 
   function setMetaFor(empId, patch) { setPayrollMeta({ ...payrollMeta, [ym]: { ...meta, [empId]: { ...(meta[empId] || {}), ...patch } } }); }
+  // بنحسب تفاصيل الخصم بس للموظف المفتوح حاليًا (مش لكل صف في الجدول) - نفس فلسفة payslipEmp
+  // جنبه، توفير حساب مش لازم يتكرر لكل موظف كل render.
+  const breakdownEmp = employees.find((e) => e.id === breakdownEmpId);
+  const breakdown = breakdownEmp ? computePayrollBreakdown(breakdownEmp, ym, attendance, penalties, advances, settings, meta) : null;
 
   const rows = employees.map((e) => computePayrollRow(e, ym, attendance, penalties, advances, settings, meta));
   const syncedCount = payslipDocs.filter((d) => d.id.startsWith(`${ym}_`)).length;
@@ -5111,7 +5175,7 @@ function PayrollTab({ employees, attendance, penalties, payrollMeta, setPayrollM
               <tbody>
                 {filteredRows.map((r) => (
                   <tr key={r.emp.id} className="border-b border-stone-100 last:border-0 hover:bg-stone-50">
-                    <td className="px-3 py-3 font-medium text-slate-800 whitespace-nowrap">{r.emp.name}</td>
+                    <td className="px-3 py-3 font-medium text-slate-800 whitespace-nowrap"><button onClick={() => setBreakdownEmpId(r.emp.id)} className="hover:underline hover:text-teal-800">{r.emp.name}</button></td>
                     <td className="px-3 py-3 tabular-nums text-slate-600">{fmtMoney(r.emp.salary)}</td>
                     <td className="px-3 py-3 tabular-nums text-rose-600">-{fmtMoney(r.absenceDeduction)}</td>
                     <td className="px-3 py-3 tabular-nums text-rose-600">-{fmtMoney(r.lateDeduction)}</td>
@@ -5137,6 +5201,118 @@ function PayrollTab({ employees, attendance, penalties, payrollMeta, setPayrollM
       )}
 
       {payslipEmp && <PayslipModal row={payslipEmp} ym={ym} onClose={() => setPayslipEmp(null)} />}
+      {breakdown && <PayrollBreakdownModal b={breakdown} ym={ym} onClose={() => setBreakdownEmpId(null)} />}
+    </div>
+  );
+}
+
+// شاشة "تفاصيل خصم المرتب" - بالضغط على اسم الموظف في تاب المرتبات. على عكس PayslipModal (إيصال
+// نهائي للطباعة، أرقام بس) الهدف هنا إنه يوضّح "إزاي اتحسب كل رقم" (المعادلة والمدخلات) - عشان
+// المستخدم يقدر يراجع صحة الخصم بنفسه من غير ما يفتح ملف الإكسل أو يحسبها يدوي.
+function PayrollBreakdownModal({ b, ym, onClose }) {
+  const { t, lang } = useLang();
+  const dateFmt = (d) => d || "—";
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+      <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white shadow-xl">
+        <div className="flex items-center justify-between border-b border-stone-200 px-6 py-4">
+          <div>
+            <h3 className="text-lg font-bold text-slate-800">{t("تفاصيل خصم المرتب")}</h3>
+            <p className="text-xs text-slate-400">{b.emp.name} — {ym}</p>
+          </div>
+          <button onClick={onClose} className="rounded-full p-1.5 text-slate-400 hover:bg-stone-100"><X size={18} /></button>
+        </div>
+        <div className="space-y-3 p-6">
+          <BreakdownLine title={t("الراتب الأساسي")} formula={t("—")} amount={b.base} positive />
+
+          <BreakdownLine
+            title={t("خصم الغياب")}
+            formula={b.absentDays > 0
+              ? t("{days} يوم غياب × {rate} ج.م/يوم (الأساسي ÷ 30)", { days: b.absentDays, rate: fmtMoney(b.perDayRate) })
+              : t("مفيش أيام غياب مسجلة الشهر ده")}
+            amount={-b.absenceDeduction}
+          />
+
+          <BreakdownLine
+            title={t("خصم التأخير")}
+            formula={b.lateMinutes > 0
+              ? t("{mins} دقيقة تأخير × {rate} ج.م/دقيقة (الأساسي ÷ 240 ساعة ÷ 60)", { mins: b.lateMinutes, rate: (Math.round(b.perMinuteRate * 100) / 100).toLocaleString("en-US") })
+              : t("مفيش دقايق تأخير مسجلة الشهر ده")}
+            amount={-b.lateDeduction}
+          />
+
+          <BreakdownLine
+            title={t("خصم الجزاءات")}
+            formula={b.monthPenalties.length === 0 ? t("مفيش جزاءات مالية الشهر ده") : null}
+            amount={-b.penaltyDeduction}
+          >
+            {b.monthPenalties.length > 0 && (
+              <ul className="mt-1 space-y-0.5 text-[11px] text-slate-400">
+                {b.monthPenalties.map((p) => (
+                  <li key={p.id}>{dateFmt(p.date)} — {p.reason || t("بدون سبب مسجل")} — {fmtMoney(p.amount)} {t("ج.م")}</li>
+                ))}
+              </ul>
+            )}
+          </BreakdownLine>
+
+          <BreakdownLine
+            title={t("خصم أقساط السلف")}
+            formula={b.advanceLines.length === 0 ? t("مفيش سلف نشطة الشهر ده") : null}
+            amount={-b.advanceDeduction}
+          >
+            {b.advanceLines.length > 0 && (
+              <ul className="mt-1 space-y-0.5 text-[11px] text-slate-400">
+                {b.advanceLines.map((l) => (
+                  <li key={l.advance.id}>{t("سلفة {date} — قسط شهري {amount} ج.م", { date: dateFmt(l.advance.date), amount: fmtMoney(l.monthlyInstallment) })}</li>
+                ))}
+              </ul>
+            )}
+          </BreakdownLine>
+
+          <BreakdownLine
+            title={t("التأمينات الاجتماعية")}
+            formula={t("{rate}% × الأساسي ({base} ج.م)", { rate: b.insuranceRate, base: fmtMoney(b.base) })}
+            amount={-b.insuranceDeduction}
+          />
+
+          <BreakdownLine
+            title={t("ضريبة كسب العمل")}
+            formula={t("الوعاء السنوي الخاضع للضريبة {taxable} ج.م، حسب شرائح الضريبة في الإعدادات — القيمة هنا نصيب الشهر (÷12)", { taxable: fmtMoney(b.annualTaxable) })}
+            amount={-b.taxDeduction}
+          />
+
+          <BreakdownLine
+            title={t("مقابل الوقت الإضافي")}
+            formula={b.overtimeHours > 0
+              ? t("{hours} ساعة × {rate} ج.م/ساعة × {mult} (معامل الإضافي)", { hours: b.overtimeHours, rate: fmtMoney(b.hourlyRate), mult: b.overtimeMultiplier })
+              : t("مفيش ساعات إضافي مسجلة الشهر ده")}
+            amount={b.overtimePay}
+            positive
+          />
+
+          <BreakdownLine title={t("مكافأة")} formula={t("مُدخلة يدويًا لهذا الشهر")} amount={b.bonus} positive />
+
+          <div className="flex items-center justify-between rounded-xl bg-teal-800 px-4 py-3">
+            <span className="text-sm font-bold text-white">{t("صافي المستحق")}</span>
+            <span className="text-lg font-bold tabular-nums text-white">{fmtMoney(b.net)} {t("ج.م")}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+function BreakdownLine({ title, formula, amount, positive, children }) {
+  const { t } = useLang();
+  return (
+    <div className="rounded-lg border border-stone-100 px-3 py-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm font-semibold text-slate-700">{title}</span>
+        <span className={`tabular-nums text-sm font-bold ${positive ? "text-emerald-600" : amount < 0 ? "text-rose-600" : "text-slate-500"}`}>
+          {amount > 0 && positive ? "+" : ""}{fmtMoney(amount)} {t("ج.م")}
+        </span>
+      </div>
+      {formula && <p className="mt-0.5 text-[11px] text-slate-400">{formula}</p>}
+      {children}
     </div>
   );
 }
@@ -7380,6 +7556,23 @@ const TRANSLATIONS = {
   "مسددة بالكامل": "Fully settled",
   "آخر يوم عمل: {date}": "Last working day: {date}",
   "طلب استقالة": "Resignation Request",
+  "{days} يوم غياب × {rate} ج.م/يوم (الأساسي ÷ 30)": "{days} absent days × {rate} EGP/day (base ÷ 30)",
+  "{hours} ساعة × {rate} ج.م/ساعة × {mult} (معامل الإضافي)": "{hours} hours × {rate} EGP/hour × {mult} (overtime multiplier)",
+  "{mins} دقيقة تأخير × {rate} ج.م/دقيقة (الأساسي ÷ 240 ساعة ÷ 60)": "{mins} late minutes × {rate} EGP/minute (base ÷ 240 hours ÷ 60)",
+  "{rate}% × الأساسي ({base} ج.م)": "{rate}% × base ({base} EGP)",
+  "الوعاء السنوي الخاضع للضريبة {taxable} ج.م، حسب شرائح الضريبة في الإعدادات — القيمة هنا نصيب الشهر (÷12)": "Annual taxable base {taxable} EGP, per the tax brackets in Settings — the amount here is the month's share (÷12)",
+  "بدون سبب مسجل": "No reason recorded",
+  "تفاصيل خصم المرتب": "Salary Deduction Details",
+  "خصم أقساط السلف": "Advance Installment Deduction",
+  "خصم التأخير": "Late Deduction",
+  "خصم الغياب": "Absence Deduction",
+  "سلفة {date} — قسط شهري {amount} ج.م": "Advance {date} — monthly installment {amount} EGP",
+  "مفيش أيام غياب مسجلة الشهر ده": "No absence days recorded this month",
+  "مفيش جزاءات مالية الشهر ده": "No financial penalties this month",
+  "مفيش دقايق تأخير مسجلة الشهر ده": "No late minutes recorded this month",
+  "مفيش ساعات إضافي مسجلة الشهر ده": "No overtime hours recorded this month",
+  "مفيش سلف نشطة الشهر ده": "No active advances this month",
+  "مُدخلة يدويًا لهذا الشهر": "Entered manually for this month",
   "تنفيذ الاستقالة": "Process resignation",
   "طلبات استقالة اتوافق عليها ({n}) - محتاجة تنفيذ": "Approved resignation requests ({n}) - need processing",
   "مفيش موظفين مطابقين للفلتر.": "No employees match the filter.",
