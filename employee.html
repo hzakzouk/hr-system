@@ -230,12 +230,22 @@ function planAttendanceWritesForDecision(req, status) {
   const leaveLikeStatus = LEAVE_LIKE_KIND_TO_STATUS[req.kind];
   if (status === "approved") {
     if (leaveLikeStatus) return dateRange(req.dateFrom, req.dateTo).map((d) => ({ date: d, status: leaveLikeStatus }));
-    if (req.kind === "late") return [{ date: req.date, status: "late", lateMinutes: 0 }];
+    // lateExcused: true بيعلّم اليوم ده كـ "متأخر لكن اتسامح فيه رسميًا" - مش بس lateMinutes:0.
+    // ده ضروري لأن يوم "متأخر" (على عكس إجازة/مرضي/مأمورية) مش من الحالات المحمية أصلاً
+    // (PROTECTED_ATTENDANCE_STATUSES في hr-system.jsx وPROTECTED_STATUSES في سكريبتات
+    // المزامنة) - فمن غير العلامة دي، أول ما يوم البصمة يترفع/يتزامن تاني لنفس التاريخ،
+    // الدقايق الحقيقية هترجع تاني فوق الصفر اللي المدير وافق عليه، ويرجع يتخصم من المرتب
+    // من غير ما حد يلاحظ. راجع hr-system.jsx (shouldSkipAttendanceOverwrite) وسكريبتات
+    // auto_sync (نفس الاسم) - المكان اللي بيقرا العلامة دي فعليًا ويحميها.
+    if (req.kind === "late") return [{ date: req.date, status: "late", lateMinutes: 0, lateExcused: true }];
     return [];
   }
   if (status === "rejected") {
     if (leaveLikeStatus) return dateRange(req.dateFrom, req.dateTo).map((d) => ({ date: d, status: "absent" }));
-    if (req.kind === "late") return [{ date: req.date, status: "late", lateMinutes: Number(req.minutes) || 0 }];
+    // الرفض بيمسح أي إعفاء سابق صراحة (lateExcused: false) - لو الموظف كان اتسامح في تأخير
+    // قديم لنفس اليوم بالغلط وبعدين المدير رفض طلب جديد لنفس اليوم، الدقايق الحقيقية لازم
+    // تترجع وتتخصم زي أي تأخير عادي.
+    if (req.kind === "late") return [{ date: req.date, status: "late", lateMinutes: Number(req.minutes) || 0, lateExcused: false }];
     return [];
   }
   return [];
@@ -676,11 +686,15 @@ function TeamRequestsSection({ employee, requests, loaded, orgChart }) {
 
       await updateDoc(doc(db, "requests", req.id), { status, decidedByName: employee.name, decidedAt: new Date().toISOString() });
       const writes = planAttendanceWritesForDecision(req, status);
-      await Promise.all(writes.map((w) =>
-        setDoc(doc(db, "attendanceRecords", `${w.date}_${req.employeeId}`),
-          { date: w.date, employeeId: req.employeeId, status: w.status, ...(w.lateMinutes !== undefined ? { lateMinutes: w.lateMinutes } : {}) },
-          { merge: true })
-      ));
+      // بننشر أي حقول إضافية رجعت من planAttendanceWritesForDecision (lateMinutes,
+      // lateExcused, ...) عمومًا بدل ما نعدد كل حقل لوحده - عشان لو اتضاف حقل جديد هناك يتكتب
+      // فعليًا من غير ما حد ينسى يحدّث السطر ده كمان.
+      await Promise.all(writes.map((w) => {
+        const { date: d, status: attStatus, ...extra } = w;
+        return setDoc(doc(db, "attendanceRecords", `${d}_${req.employeeId}`),
+          { date: d, employeeId: req.employeeId, status: attStatus, ...extra },
+          { merge: true });
+      }));
       if (status === "approved" && req.kind === "advance") {
         await setDoc(doc(db, "advances", `req_${req.id}`), {
           employeeId: req.employeeId,
