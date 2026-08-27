@@ -484,7 +484,7 @@ function useFirestoreDoc(colName, docId, defaultValue) {
 // تحت "إجازة" و"مأمورية" تحت "حاضر" في سكريبتات المزامنة بس (مش هنا)، وده كان بيدي صورة غلط
 // عن رصيد الإجازة السنوي الحقيقي. دلوقتي كل حالة منفصلة وواضحة في كل شاشات الحضور والتقارير.
 const STATUS_LABELS = { present: "حاضر", absent: "غائب", late: "متأخر", leave: "إجازة", sick: "مرضي", mission: "مأمورية" };
-const REQUEST_KIND_LABELS = { leave: "إجازة", casual: "إجازة عارضة", sick: "إجازة مرضية", mission: "مأمورية", late: "إذن تأخير", advance: "سلفة" };
+const REQUEST_KIND_LABELS = { leave: "إجازة", casual: "إجازة عارضة", sick: "إجازة مرضية", mission: "مأمورية", late: "إذن تأخير", advance: "سلفة", resign: "طلب استقالة" };
 const REQUEST_STATUS_LABELS = { pending: "معلّق", pending_ceo: "معلّق - عند الرئيس التنفيذي", approved: "موافق عليه", rejected: "مرفوض" };
 const STATUS_COLORS = {
   present: "bg-emerald-50 text-emerald-700 border-emerald-200",
@@ -1545,6 +1545,7 @@ function HRSystem({ adminUser }) {
             prefillCandidate={prefillCandidate} onPrefillConsumed={() => setPrefillCandidate(null)}
             onCandidateConverted={handleCandidateConverted}
             checklistItems={checklistItems} setChecklistItems={upd.checklistItems}
+            requests={requests}
           />}
           {tab === "orgchart" && <OrgChartTab employees={activeEmployees} orgChart={orgChart} setOrgChart={upd.orgChart} onPrint={() => setOrgChartPrintOpen(true)} />}
           {tab === "evaluations" && <EvaluationsTab employees={employees} reviews={reviews} onOpenEmployee={setOpenEmployeeId} />}
@@ -2238,7 +2239,7 @@ function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penal
 }
 
 /* ================= EMPLOYEES ================= */
-function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, setAttendance, penalties, setPenalties, advances, setAdvances, documents, setDocuments, reviews, setReviews, payrollMeta, setPayrollMeta, onDelete, prefillCandidate, onPrefillConsumed, onCandidateConverted, checklistItems, setChecklistItems }) {
+function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, setAttendance, penalties, setPenalties, advances, setAdvances, documents, setDocuments, reviews, setReviews, payrollMeta, setPayrollMeta, onDelete, prefillCandidate, onPrefillConsumed, onCandidateConverted, checklistItems, setChecklistItems, requests }) {
   const { t } = useLang();
   const [modalOpen, setModalOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -2266,6 +2267,19 @@ function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, s
     setEmployees(next);
     alert(t("تم تثبيت {n} موظف تلقائيًا (فترة اختبارهم كانت خلصت من غير قرار صريح).", { n: overdueProbationEmployees.length }));
   }
+
+  // طلبات استقالة اتوافق عليها المدير من بوابة الموظف (بوابة الموظف مالهاش صلاحية تكتب على
+  // employees/checklistItems مباشرة - راجع firestore.rules)، لسه محتاجة الأدمن ينفّذها فعليًا
+  // (markResigned تحت - بينقل الموظف لموظفين سابقين وبيولّد تشيك ليست الخروج). بمجرد التنفيذ
+  // الموظف بيطلع من "visible" فالبند ده بيختفي من هنا لوحده تلقائيًا - مفيش داعي نعلّم الطلب
+  // نفسه كـ"متعالج" في requests.
+  const approvedResignations = useMemo(
+    () => (requests || [])
+      .filter((r) => r.kind === "resign" && r.status === "approved")
+      .map((r) => ({ req: r, emp: visible.find((e) => e.id === r.employeeId) }))
+      .filter((x) => x.emp),
+    [requests, visible]
+  );
 
   // A candidate handed off from RecruitmentTab's "تحويل لموظف" - open the New Employee modal
   // pre-filled from their info, then immediately tell HRSystem we've picked it up (clears
@@ -2421,6 +2435,29 @@ function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, s
         <Search size={16} className="text-slate-400" />
         <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t("دور بالاسم أو الوظيفة أو القسم...")} className="w-full text-sm outline-none" />
       </div>
+
+      {approvedResignations.length > 0 && (
+        <Card className="mb-4 border-amber-300 bg-amber-50 p-4">
+          <div className="mb-2 flex items-center gap-1.5 text-sm font-bold text-amber-800">
+            <LogOut size={16} /> {t("طلبات استقالة اتوافق عليها ({n}) - محتاجة تنفيذ", { n: approvedResignations.length })}
+          </div>
+          <div className="space-y-2">
+            {approvedResignations.map(({ req, emp }) => (
+              <div key={req.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-white px-3 py-2">
+                <div className="text-sm">
+                  <span className="font-semibold text-slate-700">{emp.name}</span>
+                  <span className="mx-1.5 text-slate-300">—</span>
+                  <span className="text-slate-500">{t("آخر يوم عمل: {date}", { date: req.lastWorkingDay || "—" })}</span>
+                  {req.reason && <span className="ms-1.5 text-xs text-slate-400">({req.reason})</span>}
+                </div>
+                <button onClick={() => markResigned(emp)} className="flex items-center gap-1.5 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-700">
+                  <LogOut size={14} /> {t("تنفيذ الاستقالة")}
+                </button>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       {filtered.length === 0 ? <Card className="p-0"><EmptyState text={visible.length === 0 ? "لسه معملتش أي موظف." : "مفيش نتائج مطابقة."} /></Card> : (
         <Card className="overflow-x-auto p-0">
@@ -7335,6 +7372,10 @@ const TRANSLATIONS = {
   "مفيش سلف مسجلة.": "No advances recorded.",
   "متبقية": "Outstanding",
   "مسددة بالكامل": "Fully settled",
+  "آخر يوم عمل: {date}": "Last working day: {date}",
+  "طلب استقالة": "Resignation Request",
+  "تنفيذ الاستقالة": "Process resignation",
+  "طلبات استقالة اتوافق عليها ({n}) - محتاجة تنفيذ": "Approved resignation requests ({n}) - need processing",
   "مفيش موظفين مطابقين للفلتر.": "No employees match the filter.",
   "مفيش عطلات مسجلة.": "No holidays recorded.",
   "مفيش مستندات مسجلة.": "No documents recorded.",
