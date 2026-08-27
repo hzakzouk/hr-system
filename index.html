@@ -2737,25 +2737,25 @@ function EmployeesTab({ employees, setEmployees, settings, onOpen, attendance, s
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-                <th className="w-8 px-4 py-3">
+                <th className="w-8 px-3 py-2.5">
                   <input type="checkbox" checked={allFilteredSelected} ref={(el) => { if (el) el.indeterminate = someFilteredSelected && !allFilteredSelected; }} onChange={toggleSelectAllFiltered} className="h-4 w-4 rounded border-stone-300" />
                 </th>
-                <th className="px-4 py-3">{t("كود")}</th><th className="px-4 py-3">{t("الاسم")}</th><th className="px-4 py-3">{t("الوظيفة")}</th><th className="px-4 py-3">{t("القسم")}</th>
-                <th className="px-4 py-3">{t("نوع العقد")}</th><th className="px-4 py-3">{t("نهاية العقد")}</th><th className="px-4 py-3">{t("الراتب الأساسي")}</th><th className="px-4 py-3"></th>
+                <th className="px-2.5 py-2.5">{t("كود")}</th><th className="px-2.5 py-2.5">{t("الاسم")}</th><th className="px-2.5 py-2.5">{t("الوظيفة")}</th><th className="px-2.5 py-2.5">{t("القسم")}</th>
+                <th className="px-2.5 py-2.5">{t("نوع العقد")}</th><th className="px-2.5 py-2.5">{t("نهاية العقد")}</th><th className="px-2.5 py-2.5">{t("الراتب الأساسي")}</th><th className="px-2.5 py-2.5"></th>
               </tr>
             </thead>
             <tbody>
               {filtered.map((e) => (
                 <tr key={e.id} className={`border-b border-stone-100 last:border-0 hover:bg-stone-50 ${selected.has(e.id) ? "bg-rose-50/40" : ""}`}>
-                  <td className="px-4 py-3"><input type="checkbox" checked={selected.has(e.id)} onChange={() => toggleSelected(e.id)} className="h-4 w-4 rounded border-stone-300" /></td>
-                  <td className="px-4 py-3 text-slate-500 tabular-nums">{e.employeeCode || "—"}</td>
-                  <td className="px-4 py-3 font-medium text-teal-800 cursor-pointer hover:underline" onClick={() => onOpen(e.id)}>{e.name}</td>
-                  <td className="px-4 py-3 text-slate-600">{e.position || "—"}</td>
-                  <td className="px-4 py-3 text-slate-600">{e.department || "—"}</td>
-                  <td className="px-4 py-3"><StampBadge tone="teal">{e.contractType || "—"}</StampBadge></td>
-                  <td className="px-4 py-3 text-slate-600">{e.contractEnd || t("غير محدد")}</td>
-                  <td className="px-4 py-3 tabular-nums text-slate-700">{fmtMoney(e.salary)} {t("ج.م")}</td>
-                  <td className="px-4 py-3">
+                  <td className="px-3 py-2"><input type="checkbox" checked={selected.has(e.id)} onChange={() => toggleSelected(e.id)} className="h-4 w-4 rounded border-stone-300" /></td>
+                  <td className="px-2.5 py-2 text-slate-500 tabular-nums whitespace-nowrap">{e.employeeCode || "—"}</td>
+                  <td className="px-2.5 py-2 font-medium text-teal-800 cursor-pointer hover:underline whitespace-nowrap" onClick={() => onOpen(e.id)}>{e.name}</td>
+                  <td className="px-2.5 py-2 text-slate-600 whitespace-nowrap">{e.position || "—"}</td>
+                  <td className="px-2.5 py-2 text-slate-600 whitespace-nowrap">{e.department || "—"}</td>
+                  <td className="px-2.5 py-2"><StampBadge tone="teal">{e.contractType || "—"}</StampBadge></td>
+                  <td className="px-2.5 py-2 text-slate-600 whitespace-nowrap">{e.contractEnd || t("غير محدد")}</td>
+                  <td className="px-2.5 py-2 tabular-nums text-slate-700 whitespace-nowrap">{fmtMoney(e.salary)} {t("ج.م")}</td>
+                  <td className="px-2.5 py-2">
                     <div className="flex items-center gap-1">
                       <button onClick={() => { setEditing(e); setModalOpen(true); }} className="rounded-md p-1.5 text-slate-400 hover:bg-stone-100 hover:text-teal-700"><Pencil size={15} /></button>
                       <button onClick={() => markResigned(e)} title={t("نقل لموظفين سابقين")} className="rounded-md p-1.5 text-slate-400 hover:bg-amber-50 hover:text-amber-600"><LogOut size={15} /></button>
@@ -4465,7 +4465,7 @@ function PenaltiesTab({ employees, penalties, setPenalties, penaltyCaseNotes, se
         <Card className="overflow-x-auto p-0">
           <table className="w-full text-sm">
             <thead><tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-              <th className="px-4 py-3">{t("الموظف")}</th><th className="px-4 py-3">{t("التاريخ")}</th><th className="px-4 py-3">{t("نوع الإجراء")}</th><th className="px-4 py-3">{t("الحالة")}</th><th className="px-4 py-3">{t("السبب")}</th><th className="px-4 py-3">{t("الخصم")}</th><th className="px-4 py-3"></th>
+              <th className="sticky start-0 z-10 bg-stone-50 px-4 py-3">{t("الموظف")}</th><th className="px-4 py-3">{t("التاريخ")}</th><th className="px-4 py-3">{t("نوع الإجراء")}</th><th className="px-4 py-3">{t("الحالة")}</th><th className="px-4 py-3">{t("السبب")}</th><th className="px-4 py-3">{t("الخصم")}</th><th className="px-4 py-3"></th>
             </tr></thead>
             <tbody>
               {sorted.map((p) => {
@@ -4473,7 +4473,7 @@ function PenaltiesTab({ employees, penalties, setPenalties, penaltyCaseNotes, se
                 const deadline = computePenaltyCaseDeadline(p, today);
                 return (
                   <tr key={p.id} className="border-b border-stone-100 last:border-0 hover:bg-stone-50">
-                    <td className="px-4 py-3 font-medium text-slate-800">{empName(p.employeeId)}</td>
+                    <td className="sticky start-0 z-10 bg-white px-4 py-3 font-medium text-slate-800">{empName(p.employeeId)}</td>
                     <td className="px-4 py-3 text-slate-500">{p.date}</td>
                     <td className="px-4 py-3">{p.cleared ? <StampBadge tone="emerald">{t("ثبوت البراءة")}</StampBadge> : p.actionType ? <StampBadge tone={toneFor(p.actionType)}>{t(p.actionType)}</StampBadge> : <span className="text-xs text-slate-400">{t("لسه محددش")}</span>}</td>
                     <td className="px-4 py-3">
@@ -5128,12 +5128,12 @@ function AdvancesTab({ employees, advances, setAdvances }) {
         <Card className="overflow-x-auto p-0">
           <table className="w-full text-sm">
             <thead><tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-              <th className="px-4 py-3">{t("الموظف")}</th><th className="px-4 py-3">{t("تاريخ الصرف")}</th><th className="px-4 py-3">{t("القيمة")}</th><th className="px-4 py-3">{t("عدد الأقساط")}</th><th className="px-4 py-3">{t("القسط الشهري")}</th><th className="px-4 py-3">{t("المتبقي")}</th><th className="px-4 py-3"></th>
+              <th className="sticky start-0 z-10 bg-stone-50 px-4 py-3">{t("الموظف")}</th><th className="px-4 py-3">{t("تاريخ الصرف")}</th><th className="px-4 py-3">{t("القيمة")}</th><th className="px-4 py-3">{t("عدد الأقساط")}</th><th className="px-4 py-3">{t("القسط الشهري")}</th><th className="px-4 py-3">{t("المتبقي")}</th><th className="px-4 py-3"></th>
             </tr></thead>
             <tbody>
               {filteredAdvances.map((a) => (
                 <tr key={a.id} className="border-b border-stone-100 last:border-0 hover:bg-stone-50">
-                  <td className="px-4 py-3 font-medium text-slate-800">{empName(a.employeeId)}</td>
+                  <td className="sticky start-0 z-10 bg-white px-4 py-3 font-medium text-slate-800">{empName(a.employeeId)}</td>
                   <td className="px-4 py-3 text-slate-500">{a.date}</td>
                   <td className="px-4 py-3 tabular-nums text-slate-700">{fmtMoney(a.totalAmount)} {t("ج.م")}</td>
                   <td className="px-4 py-3 tabular-nums text-slate-600">{a.installments}</td>
@@ -5432,6 +5432,11 @@ const PAYROLL_LINE_ITEMS = [
 ];
 function PayrollTab({ employees, setEmployees, attendance, penalties, payrollMeta, setPayrollMeta, advances, settings, payslipDocs, onSyncPayslips }) {
   const { t, lang } = useLang();
+  // عمود اسم الموظف بيفضل ثابت (sticky) وانت بتعمل سكرول أفقي في الجدول العريض ده - عشان
+  // تعرف صاحب الصف وانت شايف أي بند. start-0 (بدل left-0/right-0) بتتبع اتجاه اللغة تلقائيًا
+  // (يمين في RTL عربي، شمال في LTR إنجليزي) - نفس فكرة text-start المستخدمة في EvaluationsTab/
+  // SalaryIncreaseTab، مدعومة في نفس نسخة Tailwind (CDN) المستخدمة في الملف.
+  const stickyColCls = "sticky start-0";
   const [ym, setYm] = useState(todayISO().slice(0, 7));
   const [payslipEmp, setPayslipEmp] = useState(null);
   const [breakdownEmpId, setBreakdownEmpId] = useState(null);
@@ -5615,45 +5620,43 @@ function PayrollTab({ employees, setEmployees, attendance, penalties, payrollMet
         <Card className="p-0"><EmptyState text="مفيش موظفين مطابقين للفلتر." /></Card>
       ) : (
         <Card className="overflow-x-auto p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead><tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-                <th className="px-3 py-3">{t("الموظف")}</th><th className="px-3 py-3">{t("الأساسي")}</th><th className="px-3 py-3">{t("غياب")}</th><th className="px-3 py-3">{t("خصم تأخير")}</th><th className="px-3 py-3">{t("جزاءات")}</th>
-                <th className="px-3 py-3">{t("سلف")}</th><th className="px-3 py-3">{t("تأمينات")}</th><th className="px-3 py-3">{t("ضريبة")}</th><th className="px-3 py-3">{t("إضافي")}</th>
-                <th className="px-3 py-3">{t("مكافأة")}</th><th className="px-3 py-3">{t("الصافي")}</th><th className="px-3 py-3">{t("الحالة")}</th><th className="px-3 py-3"></th>
-              </tr></thead>
-              <tbody>
-                {filteredRows.map((r) => (
-                  <tr key={r.emp.id} className="border-b border-stone-100 last:border-0 hover:bg-stone-50">
-                    <td className="px-3 py-3 font-medium text-slate-800 whitespace-nowrap"><button onClick={() => setBreakdownEmpId(r.emp.id)} className="hover:underline hover:text-teal-800">{r.emp.name}</button></td>
-                    <td className="px-3 py-3 tabular-nums text-slate-600">
-                      <button type="button" onClick={() => openSalaryEdit(r.emp)} title={t("تعديل المرتب الأساسي")} className="rounded-md px-1.5 py-1 hover:bg-teal-50 hover:text-teal-800">
-                        {fmtMoney(r.emp.salary)} <Pencil size={11} className="mb-0.5 inline-block opacity-50" />
-                      </button>
-                    </td>
-                    {PAYROLL_LINE_ITEMS.map((item) => {
-                      const overridden = r[item.key] !== r.computed[item.key];
-                      return (
-                        <td key={item.key} className={`px-3 py-3 tabular-nums ${item.sign < 0 ? "text-rose-600" : "text-emerald-600"}`}>
-                          <button type="button" onClick={() => openLineEdit(item, r)} title={t(overridden ? "متعدّل يدويًا - اضغط للتعديل" : "تعديل يدوي")} className={`rounded-md px-1.5 py-1 hover:bg-teal-50 hover:text-teal-800 ${overridden ? "underline decoration-dotted underline-offset-2" : ""}`}>
-                            {item.sign < 0 ? "-" : "+"}{fmtMoney(r[item.key])} <Pencil size={11} className="mb-0.5 inline-block opacity-50" />
-                          </button>
-                        </td>
-                      );
-                    })}
-                    <td className="px-3 py-3">
-                      <input type="number" min="0" className="w-16 rounded-md border border-stone-200 px-1.5 py-1 text-xs tabular-nums outline-none focus:border-teal-500" value={meta[r.emp.id]?.bonus || ""} onChange={(e) => setMetaFor(r.emp.id, { bonus: e.target.value })} placeholder="0" />
-                    </td>
-                    <td className="px-3 py-3 tabular-nums font-bold text-slate-800 whitespace-nowrap">{fmtMoney(r.net)}</td>
-                    <td className="px-3 py-3">
-                      <button onClick={() => setMetaFor(r.emp.id, { paid: !r.paid })} className={`whitespace-nowrap rounded-full border px-2.5 py-1 text-xs font-semibold ${r.paid ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-stone-200 text-slate-400"}`}>{r.paid ? t("تم الصرف") : t("لسه")}</button>
-                    </td>
-                    <td className="px-3 py-3"><button onClick={() => setPayslipEmp(r)} className="rounded-md p-1.5 text-slate-400 hover:bg-teal-50 hover:text-teal-700"><Printer size={15} /></button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <table className="w-full text-sm">
+            <thead><tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
+              <th className={`${stickyColCls} z-10 bg-stone-50 px-2.5 py-2.5`}>{t("الموظف")}</th><th className="px-2 py-2.5">{t("الأساسي")}</th><th className="px-2 py-2.5">{t("غياب")}</th><th className="px-2 py-2.5">{t("خصم تأخير")}</th><th className="px-2 py-2.5">{t("جزاءات")}</th>
+              <th className="px-2 py-2.5">{t("سلف")}</th><th className="px-2 py-2.5">{t("تأمينات")}</th><th className="px-2 py-2.5">{t("ضريبة")}</th><th className="px-2 py-2.5">{t("إضافي")}</th>
+              <th className="px-2 py-2.5">{t("مكافأة")}</th><th className="px-2 py-2.5">{t("الصافي")}</th><th className="px-2 py-2.5">{t("الحالة")}</th><th className="px-2 py-2.5"></th>
+            </tr></thead>
+            <tbody>
+              {filteredRows.map((r) => (
+                <tr key={r.emp.id} className="border-b border-stone-100 last:border-0 hover:bg-stone-50">
+                  <td className={`${stickyColCls} z-10 bg-white px-2.5 py-2 font-medium text-slate-800 whitespace-nowrap`}><button onClick={() => setBreakdownEmpId(r.emp.id)} className="hover:underline hover:text-teal-800">{r.emp.name}</button></td>
+                  <td className="px-2 py-2 tabular-nums text-slate-600 whitespace-nowrap">
+                    <button type="button" onClick={() => openSalaryEdit(r.emp)} title={t("تعديل المرتب الأساسي")} className="rounded-md px-1 py-0.5 hover:bg-teal-50 hover:text-teal-800">
+                      {fmtMoney(r.emp.salary)} <Pencil size={10} className="mb-0.5 inline-block opacity-50" />
+                    </button>
+                  </td>
+                  {PAYROLL_LINE_ITEMS.map((item) => {
+                    const overridden = r[item.key] !== r.computed[item.key];
+                    return (
+                      <td key={item.key} className={`px-2 py-2 tabular-nums whitespace-nowrap ${item.sign < 0 ? "text-rose-600" : "text-emerald-600"}`}>
+                        <button type="button" onClick={() => openLineEdit(item, r)} title={t(overridden ? "متعدّل يدويًا - اضغط للتعديل" : "تعديل يدوي")} className={`rounded-md px-1 py-0.5 hover:bg-teal-50 hover:text-teal-800 ${overridden ? "underline decoration-dotted underline-offset-2" : ""}`}>
+                          {item.sign < 0 ? "-" : "+"}{fmtMoney(r[item.key])} <Pencil size={10} className="mb-0.5 inline-block opacity-50" />
+                        </button>
+                      </td>
+                    );
+                  })}
+                  <td className="px-2 py-2">
+                    <input type="number" min="0" className="w-14 rounded-md border border-stone-200 px-1 py-1 text-xs tabular-nums outline-none focus:border-teal-500" value={meta[r.emp.id]?.bonus || ""} onChange={(e) => setMetaFor(r.emp.id, { bonus: e.target.value })} placeholder="0" />
+                  </td>
+                  <td className="px-2 py-2 tabular-nums font-bold text-slate-800 whitespace-nowrap">{fmtMoney(r.net)}</td>
+                  <td className="px-2 py-2 whitespace-nowrap">
+                    <button onClick={() => setMetaFor(r.emp.id, { paid: !r.paid })} className={`whitespace-nowrap rounded-full border px-2 py-1 text-xs font-semibold ${r.paid ? "border-emerald-300 bg-emerald-50 text-emerald-700" : "border-stone-200 text-slate-400"}`}>{r.paid ? t("تم الصرف") : t("لسه")}</button>
+                  </td>
+                  <td className="px-2 py-2"><button onClick={() => setPayslipEmp(r)} className="rounded-md p-1.5 text-slate-400 hover:bg-teal-50 hover:text-teal-700"><Printer size={15} /></button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </Card>
       )}
 
@@ -6238,7 +6241,7 @@ function EvaluationsTab({ employees, reviews, onOpenEmployee }) {
           <table className="w-full text-sm">
             <thead className="bg-stone-50 text-xs text-slate-400">
               <tr>
-                <th className="px-4 py-2.5 text-start font-semibold">{t("الموظف")}</th>
+                <th className="sticky start-0 z-10 bg-stone-50 px-4 py-2.5 text-start font-semibold">{t("الموظف")}</th>
                 <th className="px-4 py-2.5 text-start font-semibold">{t("القسم")}</th>
                 <th className="px-4 py-2.5 text-start font-semibold">{t("النوع")}</th>
                 <th className="px-4 py-2.5 text-start font-semibold">{t("السنة")}</th>
@@ -6255,7 +6258,7 @@ function EvaluationsTab({ employees, reviews, onOpenEmployee }) {
                 const ratingTone = rating.includes("ممتاز") ? "emerald" : rating.includes("جيد جداً") ? "teal" : rating.includes("مرضي") ? "amber" : rating ? "rose" : "slate";
                 return (
                   <tr key={r.id} onClick={() => onOpenEmployee(r.employeeId)} className="cursor-pointer hover:bg-stone-50">
-                    <td className="px-4 py-2.5 font-medium text-slate-700">{r.employee.name}</td>
+                    <td className="sticky start-0 z-10 bg-white px-4 py-2.5 font-medium text-slate-700">{r.employee.name}</td>
                     <td className="px-4 py-2.5 text-slate-500">{r.employee.department || "—"}</td>
                     <td className="px-4 py-2.5 text-slate-500">{t(r.reviewType)}</td>
                     <td className="px-4 py-2.5 tabular-nums text-slate-500">{r.year || "—"}</td>
@@ -6428,7 +6431,7 @@ function SalaryIncreaseTab({ employees, allEmployees, reviews, salaryIncreases, 
           <table className="w-full text-sm">
             <thead className="bg-stone-50 text-xs text-slate-400">
               <tr>
-                <th className="px-4 py-2.5 text-start font-semibold">{t("الموظف")}</th>
+                <th className="sticky start-0 z-10 bg-stone-50 px-4 py-2.5 text-start font-semibold">{t("الموظف")}</th>
                 <th className="px-4 py-2.5 text-start font-semibold">{t("الدرجة (Grade)")}</th>
                 <th className="px-4 py-2.5 text-start font-semibold">{t("المرتب الحالي")}</th>
                 <th className="px-4 py-2.5 text-start font-semibold">{t("التقييم (من 5)")}</th>
@@ -6445,7 +6448,7 @@ function SalaryIncreaseTab({ employees, allEmployees, reviews, salaryIncreases, 
                 const cellCls = `w-24 rounded-lg border px-2 py-1.5 text-sm tabular-nums ${editable ? "border-stone-300 bg-white focus:border-teal-600 focus:ring-2 focus:ring-teal-100 outline-none" : "border-transparent bg-transparent text-slate-500"}`;
                 return (
                   <tr key={s.id} className="hover:bg-stone-50">
-                    <td className="px-4 py-2.5 font-medium text-slate-700">
+                    <td className="sticky start-0 z-10 bg-white px-4 py-2.5 font-medium text-slate-700">
                       {emp ? <button onClick={() => onOpenEmployee(emp.id)} className="hover:underline">{emp.name}</button> : (s.employeeId || "—")}
                     </td>
                     <td className="px-4 py-2.5">
@@ -6665,35 +6668,33 @@ function ReportsTab({ employees, activeEmployees, attendance, penalties, advance
         </Card>
       </div>
 
-      <Card className="mt-6 overflow-hidden p-0">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead><tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-              <th className="px-3 py-3">{t("الشهر")}</th>
-              <th className="px-3 py-3">{t("عدد الموظفين")}</th>
-              <th className="px-3 py-3">{t("معدل الحضور")}</th>
-              <th className="px-3 py-3">{t("تكلفة المرتبات")}</th>
-              <th className="px-3 py-3">{t("خصومات الجزاءات")}</th>
-              <th className="px-3 py-3">{t("سلف جديدة")}</th>
-              <th className="px-3 py-3">{t("تعيينات")}</th>
-              <th className="px-3 py-3">{t("استقالات")}</th>
-            </tr></thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.ym} className="border-b border-stone-100 last:border-0 hover:bg-stone-50">
-                  <td className="px-3 py-3 font-medium text-slate-800 whitespace-nowrap">{monthLabel(r.ym)}</td>
-                  <td className="px-3 py-3 tabular-nums text-slate-600">{r.headcount}</td>
-                  <td className="px-3 py-3 tabular-nums text-slate-600">{r.attendanceRate === null ? "—" : `${r.attendanceRate}%`}</td>
-                  <td className="px-3 py-3 tabular-nums font-semibold text-slate-800">{fmtMoney(r.payrollCost)}</td>
-                  <td className="px-3 py-3 tabular-nums text-rose-600">{r.penaltiesTotal ? `-${fmtMoney(r.penaltiesTotal)}` : "—"}</td>
-                  <td className="px-3 py-3 tabular-nums text-amber-600">{r.advancesTotal ? fmtMoney(r.advancesTotal) : "—"}</td>
-                  <td className="px-3 py-3 tabular-nums text-emerald-600">{r.hires || "—"}</td>
-                  <td className="px-3 py-3 tabular-nums text-rose-600">{r.resignations || "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      <Card className="mt-6 overflow-x-auto p-0">
+        <table className="w-full text-sm">
+          <thead><tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
+            <th className="sticky start-0 z-10 bg-stone-50 px-3 py-3">{t("الشهر")}</th>
+            <th className="px-3 py-3">{t("عدد الموظفين")}</th>
+            <th className="px-3 py-3">{t("معدل الحضور")}</th>
+            <th className="px-3 py-3">{t("تكلفة المرتبات")}</th>
+            <th className="px-3 py-3">{t("خصومات الجزاءات")}</th>
+            <th className="px-3 py-3">{t("سلف جديدة")}</th>
+            <th className="px-3 py-3">{t("تعيينات")}</th>
+            <th className="px-3 py-3">{t("استقالات")}</th>
+          </tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.ym} className="border-b border-stone-100 last:border-0 hover:bg-stone-50">
+                <td className="sticky start-0 z-10 bg-white px-3 py-3 font-medium text-slate-800 whitespace-nowrap">{monthLabel(r.ym)}</td>
+                <td className="px-3 py-3 tabular-nums text-slate-600">{r.headcount}</td>
+                <td className="px-3 py-3 tabular-nums text-slate-600">{r.attendanceRate === null ? "—" : `${r.attendanceRate}%`}</td>
+                <td className="px-3 py-3 tabular-nums font-semibold text-slate-800">{fmtMoney(r.payrollCost)}</td>
+                <td className="px-3 py-3 tabular-nums text-rose-600">{r.penaltiesTotal ? `-${fmtMoney(r.penaltiesTotal)}` : "—"}</td>
+                <td className="px-3 py-3 tabular-nums text-amber-600">{r.advancesTotal ? fmtMoney(r.advancesTotal) : "—"}</td>
+                <td className="px-3 py-3 tabular-nums text-emerald-600">{r.hires || "—"}</td>
+                <td className="px-3 py-3 tabular-nums text-rose-600">{r.resignations || "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </Card>
 
       <div className="mb-5 mt-8 flex items-end justify-between gap-4 border-b-2 border-amber-500/70 pb-3">
@@ -6703,7 +6704,7 @@ function ReportsTab({ employees, activeEmployees, attendance, penalties, advance
       <Card className="overflow-x-auto p-0">
         <table className="w-full text-sm">
           <thead><tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-            <th className="px-3 py-3">{t("النوع")}</th>
+            <th className="sticky start-0 z-10 bg-stone-50 px-3 py-3">{t("النوع")}</th>
             <th className="px-3 py-3">{t("الإجمالي")}</th>
             <th className="px-3 py-3">{t("معلّق")}</th>
             <th className="px-3 py-3">{t("موافق عليه")}</th>
@@ -6712,7 +6713,7 @@ function ReportsTab({ employees, activeEmployees, attendance, penalties, advance
           <tbody>
             {requestsBalance.map((b) => (
               <tr key={b.kind} className="border-b border-stone-100 last:border-0 hover:bg-stone-50">
-                <td className="px-3 py-3 font-medium text-slate-800 whitespace-nowrap">{t(REQUEST_KIND_LABELS[b.kind] || b.kind)}</td>
+                <td className="sticky start-0 z-10 bg-white px-3 py-3 font-medium text-slate-800 whitespace-nowrap">{t(REQUEST_KIND_LABELS[b.kind] || b.kind)}</td>
                 <td className="px-3 py-3 tabular-nums font-semibold text-slate-800">{b.total}</td>
                 <td className="px-3 py-3 tabular-nums text-amber-600">{b.pending || "—"}</td>
                 <td className="px-3 py-3 tabular-nums text-emerald-600">{b.approved || "—"}</td>
@@ -6752,12 +6753,12 @@ function ReportsTab({ employees, activeEmployees, attendance, penalties, advance
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr className="border-b border-stone-200 bg-stone-50 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-                <th className="px-3 py-3">{t("الموظف")}</th><th className="px-3 py-3">{t("النوع")}</th><th className="px-3 py-3">{t("التفاصيل")}</th><th className="px-3 py-3">{t("الحالة")}</th><th className="px-3 py-3">{t("تاريخ الطلب")}</th>
+                <th className="sticky start-0 z-10 bg-stone-50 px-3 py-3">{t("الموظف")}</th><th className="px-3 py-3">{t("النوع")}</th><th className="px-3 py-3">{t("التفاصيل")}</th><th className="px-3 py-3">{t("الحالة")}</th><th className="px-3 py-3">{t("تاريخ الطلب")}</th>
               </tr></thead>
               <tbody>
                 {customReportRows.map((r) => (
                   <tr key={r.id} className="border-b border-stone-100 last:border-0 hover:bg-stone-50">
-                    <td className="px-3 py-3 font-medium text-slate-800 whitespace-nowrap">{r.employeeName}</td>
+                    <td className="sticky start-0 z-10 bg-white px-3 py-3 font-medium text-slate-800 whitespace-nowrap">{r.employeeName}</td>
                     <td className="px-3 py-3 text-slate-600 whitespace-nowrap">{t(REQUEST_KIND_LABELS[r.kind] || r.kind)}</td>
                     <td className="px-3 py-3 text-slate-500">{formatRequestDetail(r, t)}</td>
                     <td className="px-3 py-3"><span className={`rounded-full border px-2.5 py-0.5 text-xs font-semibold ${REQUEST_STATUS_COLORS[r.status] || ""}`}>{t(REQUEST_STATUS_LABELS[r.status] || r.status)}</span></td>
