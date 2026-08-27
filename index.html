@@ -500,6 +500,26 @@ const STATUS_COLORS = {
 // اتحولت "متأخر" لما شيت البصمة اتزامن تاني وكان لسه فيه سطر ليها). لو الاستيراد نفسه رجّع
 // حالة من النوع ده (يعني الشيت موافق إنها إجازة/مرضي/مأمورية)، التحديث بيتسمح بيه عادي.
 const PROTECTED_ATTENDANCE_STATUSES = new Set(["leave", "sick", "mission"]);
+// دالة صافية (pure) بتقرر لو استيراد/مزامنة (يدوي أو تلقائي) مسموحله يكتب فوق يوم متسجل
+// بالفعل، ولا لأ - بتتقدر تتاختبر من غير أي state/Firestore. حالتين محميتين:
+//   1. الحالة نفسها من النوع المعتمد (leave/sick/mission) والاستيراد الجديد مش برضه من
+//      النوع ده - نفس مشكلة هاني زكزوك الأصلية (يوم إجازة رجع "متأخر").
+//   2. يوم "متأخر" اتسامح فيه رسميًا (lateExcused: true - جاي من موافقة مدير على طلب تأخير
+//      في بوابة الموظف) والاستيراد الجديد مش برضه بيحمل lateExcused - وإلا الدقايق الحقيقية
+//      هترجع تاني فوق الصفر اللي المدير وافق عليه أول ما يوم البصمة يترفع/يتزامن تاني.
+// نفس الدالة بالظبط (بنفس الاسم) موجودة في auto_sync/sync_attendance.mjs و
+// auto_sync/pipedream_sync_step.js - الملفات التلاتة مالهاش أي imports مشتركة، فأي تعديل هنا
+// لازم يتظبط في التلاتة.
+function shouldSkipAttendanceOverwrite(existing, incoming) {
+  if (!existing || !incoming.status) return false; // مفيش اقتراح حالة جديدة أصلاً (مثلاً تحديث ساعات إضافي بس) - مفيش حاجة تتحمي منها
+  if (PROTECTED_ATTENDANCE_STATUSES.has(existing.status) && !PROTECTED_ATTENDANCE_STATUSES.has(incoming.status)) {
+    return true;
+  }
+  if (existing.status === "late" && existing.lateExcused === true && !incoming.lateExcused) {
+    return true;
+  }
+  return false;
+}
 // الإجازة العارضة: 6 أيام بالسنة بالظبط، بحد أقصى يومين في الطلب الواحد - نفس الرقمين
 // مكرّرين في employee-portal.jsx (مفيش imports مشتركة بين الملفين) فأي تعديل هنا لازم
 // يتظبط هناك كمان.
@@ -3576,7 +3596,7 @@ function AttendanceTab({ employees, attendance, patchAttendance, settings }) {
     const touched = new Set();
     entries.forEach(({ empId, date: d, status, overtimeHours, lateMinutes }) => {
       const current = getAttEntry(attendance, d, empId) || { status: null, overtimeHours: 0, lateMinutes: 0 };
-      if (PROTECTED_ATTENDANCE_STATUSES.has(current.status) && status && !PROTECTED_ATTENDANCE_STATUSES.has(status)) {
+      if (shouldSkipAttendanceOverwrite(current, { status, lateMinutes })) {
         touched.add(`${d}_${empId}`);
         return;
       }
