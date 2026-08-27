@@ -2175,7 +2175,13 @@ function CommandCenterTab({ employees, allEmployees, orgChart, attendance, penal
 
         <CommandCenterSection title="تشيك ليست ضم/خروج لسه ناقصة" icon={<Check size={16} />} tone="slate" items={incompleteChecklists} emptyText="مفيش تشيك ليست ناقصة دلوقتي.">
           {(c) => {
-            const emp = findEmployee(c.employeeId);
+            // findEmployee (النشطين بس) مش findAnyEmployee (كل الموظفين) - غلط كان بيسبب اسم
+            // الموظف يظهر فاضي (بيرجع رقم الـ id الخام بدل الاسم) وزرار "مراجعة" مايعملش حاجة
+            // خالص (emp && onOpenEmployee(...) كانت بتقف عند emp=undefined) لأي خطوة تشيك ليست
+            // خروج (offboarding) - بالظبط الحالة اللي بتحصل لأي موظف اتنقل لموظفين سابقين، لأنه
+            // بيطلع بره activeEmployees فورًا. خطوات الضم (onboarding) كانت شغالة عادي لأن
+            // الموظف المعني لسه نشط وقتها.
+            const emp = findAnyEmployee(c.employeeId);
             return (
               <div key={`${c.employeeId}_${c.type}`} className="flex items-center justify-between rounded-lg border border-stone-100 px-3 py-2 text-sm">
                 <div>
