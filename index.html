@@ -1879,7 +1879,11 @@ function HRSystem({ adminUser }) {
           {tab === "settings" && <SettingsTab
             settings={settings} setSettings={upd.settings}
             notifySettings={notifySettings} setNotifySettings={upd.notifySettings}
-            backupProps={{ employees, attendance, penalties, payrollMeta, advances, documents, reviews, settings, orgChart, upd }}
+            backupProps={{
+              employees, attendance, penalties, penaltyCaseNotes, payrollMeta, advances, documents, reviews,
+              salaryIncreases, payslipDocs, auditLog, candidates, requests, assets, checklistItems, positions,
+              surveys, surveyResponses, dismissedAlerts, settings, notifySettings, orgChart, upd,
+            }}
             resetProps={{ onReset: resetAllData, totalRecords: resetTotalRecords, employeesCount: employees.length, confirmPassword: settings.confirmPassword }}
           />}
         </main>
@@ -6023,9 +6027,23 @@ function Row({ label, value, vars }) {
 // hr_payroll, ...) so a file downloaded before the Firestore migration is still a valid
 // import here — this doubles as the one-time migration tool: export from Firestore any
 // time as a safety copy, or import an old localStorage backup straight into Firestore.
-const BACKUP_KEYS = ["hr_employees", "hr_attendance", "hr_penalties", "hr_payroll", "hr_advances", "hr_documents", "hr_reviews", "hr_settings", "hr_orgchart"];
+// وسّعنا القايمة دي (وexportBackup/handleImportFile تحت) عشان تغطي كل الـ 20 collection اللي
+// resetAllData (في HRSystem) بيمسحها - قبل كده كانت 9 بس، فلو حد عمل تصفير كامل واستعاد من نسخة
+// احتياطية قديمة، حاجات زي التوظيف والطلبات والعهدة وزيادات الرواتب وقسائم المرتب وسجل النشاط
+// كانت هتتفقد نهائي رغم وجود "نسخة احتياطية". publicDirectory مستثناة عمدًا - مش بيانات مصدر،
+// بترجع تلقائي أول ما upd.employees يشتغل (syncPublicDirectory).
+const BACKUP_KEYS = [
+  "hr_employees", "hr_attendance", "hr_penalties", "hr_penaltyCaseNotes", "hr_payroll", "hr_advances",
+  "hr_documents", "hr_reviews", "hr_salaryIncreases", "hr_payslips", "hr_auditLog", "hr_candidates",
+  "hr_requests", "hr_assets", "hr_checklistItems", "hr_positions", "hr_surveys", "hr_surveyResponses",
+  "hr_dismissedAlerts", "hr_settings", "hr_notifySettings", "hr_orgchart",
+];
 
-function BackupSection({ employees, attendance, penalties, payrollMeta, advances, documents, reviews, settings, orgChart, upd }) {
+function BackupSection({
+  employees, attendance, penalties, penaltyCaseNotes, payrollMeta, advances, documents, reviews,
+  salaryIncreases, payslipDocs, auditLog, candidates, requests, assets, checklistItems, positions,
+  surveys, surveyResponses, dismissedAlerts, settings, notifySettings, orgChart, upd,
+}) {
   const { t } = useLang();
   const fileRef = useRef(null);
   const [msg, setMsg] = useState(null); // { tone: "teal" | "rose", text }
@@ -6036,8 +6054,13 @@ function BackupSection({ employees, attendance, penalties, payrollMeta, advances
       app: "hr-system", exportedAt: new Date().toISOString(),
       data: {
         hr_employees: employees, hr_attendance: attendance, hr_penalties: penalties,
-        hr_payroll: payrollMeta, hr_advances: advances, hr_documents: documents,
-        hr_reviews: reviews, hr_settings: settings, hr_orgchart: orgChart,
+        hr_penaltyCaseNotes: penaltyCaseNotes, hr_payroll: payrollMeta, hr_advances: advances,
+        hr_documents: documents, hr_reviews: reviews, hr_salaryIncreases: salaryIncreases,
+        hr_payslips: payslipDocs, hr_auditLog: auditLog, hr_candidates: candidates,
+        hr_requests: requests, hr_assets: assets, hr_checklistItems: checklistItems,
+        hr_positions: positions, hr_surveys: surveys, hr_surveyResponses: surveyResponses,
+        hr_dismissedAlerts: dismissedAlerts, hr_settings: settings, hr_notifySettings: notifySettings,
+        hr_orgchart: orgChart,
       },
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
@@ -6063,11 +6086,27 @@ function BackupSection({ employees, attendance, penalties, payrollMeta, advances
       if (data.hr_employees) { upd.employees(data.hr_employees); imported.push("الموظفين"); }
       if (data.hr_attendance) { upd.attendance(data.hr_attendance); imported.push("الحضور"); }
       if (data.hr_penalties) { upd.penalties(data.hr_penalties); imported.push("الجزاءات"); }
+      if (data.hr_penaltyCaseNotes) { upd.penaltyCaseNotes(data.hr_penaltyCaseNotes); imported.push("محاضر التحقيقات"); }
       if (data.hr_payroll) { upd.payrollMeta(data.hr_payroll); imported.push("المرتبات"); }
       if (data.hr_advances) { upd.advances(data.hr_advances); imported.push("السلف"); }
       if (data.hr_documents) { upd.documents(data.hr_documents); imported.push("المستندات"); }
       if (data.hr_reviews) { upd.reviews(data.hr_reviews); imported.push("التقييمات"); }
+      if (data.hr_salaryIncreases) { upd.salaryIncreases(data.hr_salaryIncreases); imported.push("زيادات الرواتب"); }
+      // payslips وauditLog وrequests مالهاش setter بسيط جوه upd (الأول شكله شهري، والتانيين مش
+      // بيتكتبوا من الأدمن أصلًا في السير العادي) - بنستخدم syncCollection المشتركة مباشرة، بنفس
+      // منطق syncCollection جوه upd.* تمامًا، بس من غير سطر إضافي في سجل النشاط.
+      if (data.hr_payslips) { await syncCollection("payslips", payslipDocs, data.hr_payslips); imported.push("قسائم المرتب"); }
+      if (data.hr_auditLog) { await syncCollection("auditLog", auditLog, data.hr_auditLog); imported.push("سجل النشاط"); }
+      if (data.hr_candidates) { upd.candidates(data.hr_candidates); imported.push("التوظيف"); }
+      if (data.hr_requests) { await syncCollection("requests", requests, data.hr_requests); imported.push("طلبات الموظفين"); }
+      if (data.hr_assets) { upd.assets(data.hr_assets); imported.push("العهدة"); }
+      if (data.hr_checklistItems) { upd.checklistItems(data.hr_checklistItems); imported.push("خطوات الضم والخروج"); }
+      if (data.hr_positions) { upd.positions(data.hr_positions); imported.push("الوظائف الشاغرة"); }
+      if (data.hr_surveys) { upd.surveys(data.hr_surveys); imported.push("استطلاعات الرأي"); }
+      if (data.hr_surveyResponses) { upd.surveyResponses(data.hr_surveyResponses); imported.push("ردود الاستطلاعات"); }
+      if (data.hr_dismissedAlerts) { upd.dismissedAlerts(data.hr_dismissedAlerts); imported.push("التنبيهات المُخفاة"); }
       if (data.hr_settings) { upd.settings({ ...DEFAULT_SETTINGS, ...data.hr_settings }); imported.push("الإعدادات"); }
+      if (data.hr_notifySettings) { upd.notifySettings({ ...DEFAULT_NOTIFY_SETTINGS, ...data.hr_notifySettings }); imported.push("إعدادات إشعارات الإيميل"); }
       if (data.hr_orgchart) { upd.orgChart({ ...DEFAULT_ORG_CHART, ...data.hr_orgchart }); imported.push("الهيكل التنظيمي"); }
       if (imported.length === 0) { setMsg({ tone: "rose", text: t("الملف ده مش نسخة احتياطية من النظام ده — مفيش أي بيانات معروفة فيه.") }); return; }
       setMsg({ tone: "teal", text: t("تم إرسال {n} من مجموعات البيانات لقاعدة البيانات — التحديث بيظهر تلقائي في الشاشة خلال ثواني.", { n: imported.length }) });
@@ -6083,7 +6122,7 @@ function BackupSection({ employees, attendance, penalties, payrollMeta, advances
     <Card className="mb-6 p-5">
       <h3 className="mb-1 flex items-center gap-2 font-bold text-slate-800"><Save size={16} /> {t("النسخ الاحتياطي والاستعادة")}</h3>
       <p className="mb-4 text-xs text-slate-500">
-        {t("البيانات دلوقتي متخزنة في قاعدة بيانات Firestore المشتركة، مش في متصفحك بس. برضه خد نسخة احتياطية بانتظام واحفظها في مكان آمن — نفس الزرار بيستخدم كمان لاستيراد نسخة قديمة (حتى لو كانت من زمن التخزين المحلي) مباشرة في قاعدة البيانات.")}
+        {t("البيانات دلوقتي متخزنة في قاعدة بيانات Firestore المشتركة، مش في متصفحك بس. برضه خد نسخة احتياطية بانتظام واحفظها في مكان آمن — نفس الزرار بيستخدم كمان لاستيراد نسخة قديمة (حتى لو كانت من زمن التخزين المحلي) مباشرة في قاعدة البيانات. النسخة الاحتياطية دلوقتي بتغطي كل بيانات النظام تقريبًا (الموظفين، الحضور، الجزاءات، المرتبات، التوظيف، الطلبات، العهدة، الاستطلاعات، سجل النشاط، وغيرها).")}
       </p>
       <div className="flex flex-wrap items-center gap-2">
         <button onClick={exportBackup} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-900">
@@ -8371,6 +8410,7 @@ const TRANSLATIONS = {
   "الاسم": "Name",
   "الاسم بالكامل": "Full Name",
   "البيانات دلوقتي متخزنة في قاعدة بيانات Firestore المشتركة، مش في متصفحك بس. برضه خد نسخة احتياطية بانتظام واحفظها في مكان آمن — نفس الزرار بيستخدم كمان لاستيراد نسخة قديمة (حتى لو كانت من زمن التخزين المحلي) مباشرة في قاعدة البيانات.": "Data now lives in the shared Firestore database, not just your browser. Still, take regular backups and keep them somewhere safe — the same button can also import an older backup (even from the local-storage era) straight into the database.",
+  "البيانات دلوقتي متخزنة في قاعدة بيانات Firestore المشتركة، مش في متصفحك بس. برضه خد نسخة احتياطية بانتظام واحفظها في مكان آمن — نفس الزرار بيستخدم كمان لاستيراد نسخة قديمة (حتى لو كانت من زمن التخزين المحلي) مباشرة في قاعدة البيانات. النسخة الاحتياطية دلوقتي بتغطي كل بيانات النظام تقريبًا (الموظفين، الحضور، الجزاءات، المرتبات، التوظيف، الطلبات، العهدة، الاستطلاعات، سجل النشاط، وغيرها).": "Data now lives in the shared Firestore database, not just your browser. Still, take regular backups and keep them somewhere safe — the same button can also import an older backup (even from the local-storage era) straight into the database. The backup now covers nearly all system data (employees, attendance, penalties, payroll, recruitment, requests, assets, surveys, activity log, and more).",
   "التأمينات الاجتماعية": "Social Insurance",
   "التأمينات والإجازات والإضافي": "Insurance, Leave & Overtime",
   "التاريخ": "Date",
