@@ -810,6 +810,11 @@ const DEFAULT_SETTINGS = {
   // تاني في تاب الإعدادات (حتى منه هو نفسه) هيطلب إدخالها تاني للتأكيد قبل ما يتحفظ - انظر
   // guardedApply جوه SettingsTab.
   confirmPassword: "",
+  // كلمة سر إجبارية مخصصة لزرار "تصفير كل بيانات النظام" (Danger Zone في تاب الإعدادات) - منفصلة
+  // تمامًا عن confirmPassword فوق (اللي ممكن تفضل فاضية/اختيارية). فاضية = الزرار مقفول تمامًا
+  // (مش بيظهر أصلًا) لحد ما الأدمن يحطها بنفسه من جوه ResetAllDataSection - انظر تعليق
+  // resetAllData جوه HRSystem وResetAllDataSection تحت.
+  resetPassword: "",
 };
 
 // The org chart is derived from each employee's existing "department" field, plus two
@@ -1884,7 +1889,7 @@ function HRSystem({ adminUser }) {
               salaryIncreases, payslipDocs, auditLog, candidates, requests, assets, checklistItems, positions,
               surveys, surveyResponses, dismissedAlerts, settings, notifySettings, orgChart, upd,
             }}
-            resetProps={{ onReset: resetAllData, totalRecords: resetTotalRecords, employeesCount: employees.length, confirmPassword: settings.confirmPassword }}
+            resetProps={{ onReset: resetAllData, totalRecords: resetTotalRecords, employeesCount: employees.length, settings, setSettings: upd.settings }}
           />}
         </main>
       </div>
@@ -6139,31 +6144,41 @@ function BackupSection({
 }
 
 // "تصفير كل بيانات النظام" - Danger Zone في تاب الإعدادات، تحت النسخ الاحتياطي مباشرة (خد نسخة
-// احتياطية من فوق قبل ما تستخدم الزرار ده). تأكيد مزدوج فعلي: (1) فتح المودال نفسه بزرار منفصل
-// واضح إنه خطر (بورده rose)، (2) زرار التنفيذ الفعلي جوه المودال مقفول تمامًا (disabled) لحد ما
-// الأدمن يكتب كلمة "تصفير" بالظبط في خانة التأكيد - نفس فكرة تأكيد حذف الـ repo في GitHub،
-// وأصعب بكتير من تأكيد بضغطة واحدة زي EmployeeDeleteConfirmModal. onReset (= resetAllData في
+// احتياطية من فوق قبل ما تستخدم الزرار ده). حماية على 3 مستويات:
+// (1) settings.resetPassword (مخصصة لزرار التصفير بس، منفصلة عن settings.confirmPassword العامة)
+//     إجبارية - لو فاضية، الزرار نفسه مش بيظهر خالص واللي بيظهر بدل منه هو فورم "حط كلمة سر
+//     التصفير" الأول. مفيش أي طريقة تستخدم زرار التصفير من غير ما تحط الكلمة دي بنفسك مرة الأول.
+// (2) بعد ما تحطها، فتح مودال التصفير نفسه بزرار منفصل واضح إنه خطر (بورده rose).
+// (3) جوه المودال، زرار التنفيذ الفعلي مقفول تمامًا (disabled) لحد ما تكتب كلمة "تصفير" بالظبط
+//     *و* تدخل resetPassword صح - نفس فكرة تأكيد حذف الـ repo في GitHub، وأصعب بكتير من تأكيد
+//     بضغطة واحدة زي EmployeeDeleteConfirmModal.
+// تغيير كلمة سر متسجّلة بيتطلب معرفة القديمة الأول (زي أي "change password" عادي) - عشان محدش
+// يقدر "يسرق" الحماية دي بتغييرها من غير ما يعرف القديمة أصلًا. onReset (= resetAllData في
 // HRSystem) بيرمي الخطأ لو فشل بدل ما يبلعه، عشان الرسالة هنا تبان دقيقة وموضعية (زي
 // BackupSection.handleImportFile بالظبط) مش alert عام.
-function ResetAllDataSection({ totalRecords, employeesCount, onReset, confirmPassword }) {
+function ResetAllDataSection({ totalRecords, employeesCount, onReset, settings, setSettings }) {
   const { t } = useLang();
+  const resetPassword = settings.resetPassword || "";
+  const hasResetPassword = !!resetPassword;
+
   const [open, setOpen] = useState(false);
   const [confirmText, setConfirmText] = useState("");
   const [pwInput, setPwInput] = useState("");
   const [pwError, setPwError] = useState("");
   const [working, setWorking] = useState(false);
   const [msg, setMsg] = useState(null); // { tone: "teal" | "rose", text }
+  // { mode: "set" | "change", current, next, confirm, error } | null - فورم حط/تغيير كلمة سر
+  // التصفير، منفصل تمامًا عن مودال التصفير نفسه.
+  const [pwForm, setPwForm] = useState(null);
+
   const CONFIRM_WORD = "تصفير";
-  // نفس "كلمة سر تأكيد التعديلات" اللي محطوطة (لو محطوطة) لحماية أي حفظ تاني في تاب الإعدادات
-  // (guardedApply/confirmPendingSave فوق) - لو الأدمن مسجّلها، الزرار الأحمر هنا بيتقفل ليها
-  // برضو، مش بس لكلمة "تصفير". لو مفيش كلمة سر متسجّلة أصلًا، التأكيد بكلمة "تصفير" لوحدها كافي.
-  const ready = confirmText.trim() === CONFIRM_WORD && (!confirmPassword || pwInput === confirmPassword);
+  const ready = hasResetPassword && confirmText.trim() === CONFIRM_WORD && pwInput === resetPassword;
 
   function close() { if (working) return; setOpen(false); setConfirmText(""); setPwInput(""); setPwError(""); }
 
   async function runReset() {
-    if (confirmText.trim() !== CONFIRM_WORD || working) return;
-    if (confirmPassword && pwInput !== confirmPassword) { setPwError(t("كلمة السر غلط.")); return; }
+    if (!hasResetPassword || confirmText.trim() !== CONFIRM_WORD || working) return;
+    if (pwInput !== resetPassword) { setPwError(t("كلمة السر غلط.")); return; }
     setWorking(true);
     try {
       await onReset();
@@ -6179,6 +6194,20 @@ function ResetAllDataSection({ totalRecords, employeesCount, onReset, confirmPas
     }
   }
 
+  function startSetPassword() { setMsg(null); setPwForm({ mode: "set", current: "", next: "", confirm: "", error: "" }); }
+  function startChangePassword() { setMsg(null); setPwForm({ mode: "change", current: "", next: "", confirm: "", error: "" }); }
+  function cancelPwForm() { setPwForm(null); }
+  function savePwForm(e) {
+    e.preventDefault();
+    if (!pwForm) return;
+    if (pwForm.mode === "change" && pwForm.current !== resetPassword) { setPwForm({ ...pwForm, error: t("كلمة السر الحالية غلط.") }); return; }
+    if (!pwForm.next.trim()) { setPwForm({ ...pwForm, error: t("لازم تكتب كلمة سر جديدة.") }); return; }
+    if (pwForm.next !== pwForm.confirm) { setPwForm({ ...pwForm, error: t("كلمة السر الجديدة والتأكيد مش متطابقين.") }); return; }
+    setSettings({ ...settings, resetPassword: pwForm.next });
+    setPwForm(null);
+    setMsg({ tone: "teal", text: t("اتحفظت كلمة سر التصفير.") });
+  }
+
   return (
     <Card className="mb-6 border-rose-200 p-5">
       <h3 className="mb-1 flex items-center gap-2 font-bold text-rose-700"><AlertTriangle size={16} /> {t("منطقة الخطر")}</h3>
@@ -6186,9 +6215,47 @@ function ResetAllDataSection({ totalRecords, employeesCount, onReset, confirmPas
         {t("تصفير كامل لكل بيانات النظام (الموظفين، الحضور، الجزاءات، السلف، المستندات، التقييمات، المرتبات، الطلبات، سجل النشاط، وغيرها) عشان تبدأ ببيانات موظفين حقيقيين من الصفر. الإعدادات العامة وإعدادات الإيميل مش بيتمسحوا. الإجراء ده نهائي ومش هيتم التراجع عنه — خد نسخة احتياطية (الزرار فوق) قبل ما تكمل.")}
       </p>
       {msg && <p className={`mb-3 text-xs font-medium ${msg.tone === "rose" ? "text-rose-600" : "text-teal-700"}`}>{msg.text}</p>}
-      <button onClick={() => { setOpen(true); setMsg(null); }} className="flex items-center gap-1.5 rounded-lg border border-rose-500 bg-rose-50 px-3.5 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100">
-        <Trash2 size={15} /> {t("تصفير كل بيانات النظام")}
-      </button>
+
+      {!hasResetPassword && !pwForm && (
+        <div className="mb-4 flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2.5 text-sm text-amber-700">
+          <Lock size={16} className="mt-0.5 shrink-0" />
+          <div>
+            <p className="font-medium">{t("زرار التصفير مقفول لحد ما تحط كلمة سر مخصصة له - منفصلة عن أي كلمة سر تانية في النظام.")}</p>
+            <button type="button" onClick={startSetPassword} className="mt-1.5 text-xs font-semibold text-teal-700 underline hover:text-teal-900">{t("حط كلمة سر التصفير دلوقتي")}</button>
+          </div>
+        </div>
+      )}
+
+      {pwForm && (
+        <form onSubmit={savePwForm} className="mb-4 space-y-3 rounded-lg border border-stone-200 p-3">
+          <h4 className="text-sm font-bold text-slate-700">{pwForm.mode === "set" ? t("حط كلمة سر مخصصة للتصفير") : t("غيّر كلمة سر التصفير")}</h4>
+          {pwForm.mode === "change" && (
+            <Field label="كلمة السر الحالية">
+              <input autoFocus type="password" className={inputCls} value={pwForm.current} onChange={(e) => setPwForm({ ...pwForm, current: e.target.value, error: "" })} />
+            </Field>
+          )}
+          <Field label={t("كلمة السر الجديدة")}>
+            <input autoFocus={pwForm.mode === "set"} type="password" className={inputCls} value={pwForm.next} onChange={(e) => setPwForm({ ...pwForm, next: e.target.value, error: "" })} />
+          </Field>
+          <Field label={t("تأكيد كلمة السر")}>
+            <input type="password" className={inputCls} value={pwForm.confirm} onChange={(e) => setPwForm({ ...pwForm, confirm: e.target.value, error: "" })} />
+          </Field>
+          {pwForm.error && <p className="text-xs font-medium text-rose-600">{pwForm.error}</p>}
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={cancelPwForm} className="rounded-lg border border-stone-300 px-3.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-stone-50">{t("إلغاء")}</button>
+            <button type="submit" className="rounded-lg bg-teal-800 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-teal-900">{t("حفظ")}</button>
+          </div>
+        </form>
+      )}
+
+      {hasResetPassword && !pwForm && (
+        <div className="flex flex-wrap items-center gap-3">
+          <button onClick={() => { setOpen(true); setMsg(null); }} className="flex items-center gap-1.5 rounded-lg border border-rose-500 bg-rose-50 px-3.5 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100">
+            <Trash2 size={15} /> {t("تصفير كل بيانات النظام")}
+          </button>
+          <button type="button" onClick={startChangePassword} className="text-xs font-medium text-slate-500 underline hover:text-slate-700">{t("تغيير كلمة سر التصفير")}</button>
+        </div>
+      )}
 
       <Modal open={open} onClose={close} title="تصفير كل بيانات النظام">
         <div className="space-y-4">
@@ -6205,12 +6272,10 @@ function ResetAllDataSection({ totalRecords, employeesCount, onReset, confirmPas
           <Field label={'اكتب كلمة "تصفير" للتأكيد'}>
             <input autoFocus className={inputCls} value={confirmText} onChange={(e) => setConfirmText(e.target.value)} placeholder={CONFIRM_WORD} disabled={working} />
           </Field>
-          {confirmPassword && (
-            <Field label="كلمة السر">
-              <input type="password" className={inputCls} value={pwInput} onChange={(e) => { setPwInput(e.target.value); setPwError(""); }} disabled={working} />
-              {pwError && <p className="mt-1 text-xs font-medium text-rose-600">{pwError}</p>}
-            </Field>
-          )}
+          <Field label={t("كلمة سر التصفير")}>
+            <input type="password" className={inputCls} value={pwInput} onChange={(e) => { setPwInput(e.target.value); setPwError(""); }} disabled={working} />
+            {pwError && <p className="mt-1 text-xs font-medium text-rose-600">{pwError}</p>}
+          </Field>
           <div className="flex justify-end gap-2 border-t border-stone-200 pt-4">
             <button type="button" onClick={close} disabled={working} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50 disabled:opacity-50">{t("إلغاء")}</button>
             <button type="button" disabled={!ready || working} onClick={runReset} className="flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-40">
@@ -8465,6 +8530,19 @@ const TRANSLATIONS = {
   "حسابات دخول بوابة الموظف (Firebase Authentication) مش بتتمسح من هنا - لازم تتحذف يدويًا من Firebase Console لو عايز تقفلها.": "Employee portal sign-in accounts (Firebase Authentication) are not deleted from here — delete them manually from the Firebase Console if you want to close them.",
   "تصفير كل البيانات نهائيًا": "Permanently Reset All Data",
   "اكتب كلمة \"تصفير\" للتأكيد": "Type the word \"reset\" to confirm",
+  "زرار التصفير مقفول لحد ما تحط كلمة سر مخصصة له - منفصلة عن أي كلمة سر تانية في النظام.": "The reset button is locked until you set a dedicated password for it — separate from any other password in the system.",
+  "حط كلمة سر التصفير دلوقتي": "Set the reset password now",
+  "حط كلمة سر مخصصة للتصفير": "Set a dedicated reset password",
+  "غيّر كلمة سر التصفير": "Change the reset password",
+  "تغيير كلمة سر التصفير": "Change reset password",
+  "كلمة سر التصفير": "Reset password",
+  "كلمة السر الحالية": "Current password",
+  "كلمة السر الجديدة": "New password",
+  "تأكيد كلمة السر": "Confirm password",
+  "كلمة السر الحالية غلط.": "The current password is incorrect.",
+  "لازم تكتب كلمة سر جديدة.": "You must enter a new password.",
+  "كلمة السر الجديدة والتأكيد مش متطابقين.": "The new password and confirmation don't match.",
+  "اتحفظت كلمة سر التصفير.": "The reset password has been saved.",
   "النهاردة": "today",
   "الهيكل التنظيمي": "Org Chart",
   "الوظيفة": "Position",
