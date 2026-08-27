@@ -1061,6 +1061,17 @@ function advanceRemaining(adv) {
 // across past months). Pulled out as a standalone function (rather than staying a closure
 // inside PayrollTab) specifically so ReportsTab can reuse the exact same math instead of
 // drifting out of sync with a second copy of it.
+// كل بند محسوب في المرتب (غير الأساسي، اللي بقى إجازة PayrollTab يعدّله مباشرة في سجل الموظف
+// نفسه) بقى ممكن الأدمن "يعدّله" شهريًا من تاب المرتبات - override بيتخزّن في payrollMeta[empId]
+// (نفس مكان "مكافأة" بالظبط)، ومعاه سبب إجباري (Reason) في نفس الـ payrollMeta - فبيتسجّل
+// تلقائيًا في سجل النشاط زي أي تعديل تاني في payrollMeta (upd.payrollMeta بيعمل diffSummary
+// عام أصلًا، مش محتاج أي كود إضافي زي ما عملنا مع الراتب الأساسي). لو مفيش override محفوظ
+// (null/undefined) بيرجع يستخدم القيمة المحسوبة تلقائيًا زي ما هي - مفيش أي تغيير في السلوك
+// الافتراضي، فمفيش خطر على أي مرتب متسجل بالفعل من غير أي override.
+function applyPayrollOverride(computed, empMeta, overrideKey) {
+  const raw = empMeta ? empMeta[overrideKey] : undefined;
+  return raw !== undefined && raw !== null && raw !== "" ? Number(raw) || 0 : computed;
+}
 function computePayrollRow(e, ym, attendance, penalties, advances, settings, meta) {
   let absentDays = 0, overtimeHours = 0, lateMinutes = 0;
   Object.keys(attendance).forEach((date) => {
@@ -1085,26 +1096,42 @@ function computePayrollRow(e, ym, attendance, penalties, advances, settings, met
   });
   const base = Number(e.salary) || 0;
   const perDay = base / 30;
-  const absenceDeduction = Math.round(perDay * absentDays);
+  const empMeta = (meta || {})[e.id] || {};
+  const computedAbsenceDeduction = Math.round(perDay * absentDays);
+  const absenceDeduction = applyPayrollOverride(computedAbsenceDeduction, empMeta, "absenceDeductionOverride");
   const monthPenalties = penalties.filter((p) => p.employeeId === e.id && monthKey(p.date) === ym && p.actionType === "خصم مالي");
-  const penaltyDeduction = monthPenalties.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  const computedPenaltyDeduction = monthPenalties.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  const penaltyDeduction = applyPayrollOverride(computedPenaltyDeduction, empMeta, "penaltyDeductionOverride");
   const empAdvances = advances.filter((a) => a.employeeId === e.id);
-  const advanceDeduction = empAdvances.reduce((s, a) => s + advanceDeductionForMonth(a, ym), 0);
+  const computedAdvanceDeduction = empAdvances.reduce((s, a) => s + advanceDeductionForMonth(a, ym), 0);
+  const advanceDeduction = applyPayrollOverride(computedAdvanceDeduction, empMeta, "advanceDeductionOverride");
   const hourlyRate = base / (30 * 8);
-  const overtimePay = Math.round(hourlyRate * settings.overtimeMultiplier * overtimeHours);
+  const computedOvertimePay = Math.round(hourlyRate * settings.overtimeMultiplier * overtimeHours);
+  const overtimePay = applyPayrollOverride(computedOvertimePay, empMeta, "overtimePayOverride");
   // Same per-hour basis as overtimePay above (base / (30 days * 8 hours)), just further divided
   // into a per-minute rate - so an hour of lateness costs exactly as much as an hour of
   // overtime pays, before the overtime multiplier.
-  const lateDeduction = Math.round((hourlyRate / 60) * lateMinutes);
-  const empMeta = (meta || {})[e.id] || {};
+  const computedLateDeduction = Math.round((hourlyRate / 60) * lateMinutes);
+  const lateDeduction = applyPayrollOverride(computedLateDeduction, empMeta, "lateDeductionOverride");
   const bonus = Number(empMeta.bonus) || 0;
 
-  const insuranceDeduction = Math.round((base * settings.insuranceRate) / 100);
-  const annualTaxable = Math.max(0, base * 12 - insuranceDeduction * 12 - settings.personalExemptionAnnual);
-  const taxDeduction = Math.round(computeTax(annualTaxable, settings.taxBrackets) / 12);
+  const computedInsuranceDeduction = Math.round((base * settings.insuranceRate) / 100);
+  const insuranceDeduction = applyPayrollOverride(computedInsuranceDeduction, empMeta, "insuranceDeductionOverride");
+  const annualTaxable = Math.max(0, base * 12 - computedInsuranceDeduction * 12 - settings.personalExemptionAnnual);
+  const computedTaxDeduction = Math.round(computeTax(annualTaxable, settings.taxBrackets) / 12);
+  const taxDeduction = applyPayrollOverride(computedTaxDeduction, empMeta, "taxDeductionOverride");
 
   const net = base - absenceDeduction - penaltyDeduction - advanceDeduction - insuranceDeduction - taxDeduction - lateDeduction + overtimePay + bonus;
-  return { emp: e, absentDays, overtimeHours, lateMinutes, absenceDeduction, penaltyDeduction, advanceDeduction, lateDeduction, insuranceDeduction, taxDeduction, overtimePay, bonus, net, paid: !!empMeta.paid };
+  return {
+    emp: e, absentDays, overtimeHours, lateMinutes,
+    absenceDeduction, penaltyDeduction, advanceDeduction, lateDeduction, insuranceDeduction, taxDeduction, overtimePay, bonus, net, paid: !!empMeta.paid,
+    // القيم المحسوبة تلقائيًا (قبل أي override) - عشان شاشة التعديل تقدر تعرضها كمرجع، ومقارنة
+    // overridden تحدد لو الأدمن كان عدّل البند ده يدويًا (يعني القيمتين مختلفتين).
+    computed: {
+      absenceDeduction: computedAbsenceDeduction, penaltyDeduction: computedPenaltyDeduction, advanceDeduction: computedAdvanceDeduction,
+      lateDeduction: computedLateDeduction, insuranceDeduction: computedInsuranceDeduction, taxDeduction: computedTaxDeduction, overtimePay: computedOvertimePay,
+    },
+  };
 }
 
 // نسخة تفصيلية من computePayrollRow فوق - نفس بالظبط المعادلات (perDay/hourlyRate/التأمينات/
@@ -1130,29 +1157,36 @@ function computePayrollBreakdown(e, ym, attendance, penalties, advances, setting
     overtimeHours += Number(entry.overtimeHours) || 0;
   });
   const base = Number(e.salary) || 0;
+  const empMeta = (meta || {})[e.id] || {};
   const perDayRate = base / 30;
-  const absenceDeduction = Math.round(perDayRate * absentDays);
+  const computedAbsenceDeduction = Math.round(perDayRate * absentDays);
+  const absenceDeduction = applyPayrollOverride(computedAbsenceDeduction, empMeta, "absenceDeductionOverride");
   const hourlyRate = base / (30 * 8);
   const perMinuteRate = hourlyRate / 60;
-  const lateDeduction = Math.round(perMinuteRate * lateMinutes);
+  const computedLateDeduction = Math.round(perMinuteRate * lateMinutes);
+  const lateDeduction = applyPayrollOverride(computedLateDeduction, empMeta, "lateDeductionOverride");
   const overtimeMultiplier = settings.overtimeMultiplier;
-  const overtimePay = Math.round(hourlyRate * overtimeMultiplier * overtimeHours);
+  const computedOvertimePay = Math.round(hourlyRate * overtimeMultiplier * overtimeHours);
+  const overtimePay = applyPayrollOverride(computedOvertimePay, empMeta, "overtimePayOverride");
 
   const monthPenalties = penalties.filter((p) => p.employeeId === e.id && monthKey(p.date) === ym && p.actionType === "خصم مالي");
-  const penaltyDeduction = monthPenalties.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  const computedPenaltyDeduction = monthPenalties.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  const penaltyDeduction = applyPayrollOverride(computedPenaltyDeduction, empMeta, "penaltyDeductionOverride");
 
   const empAdvances = advances.filter((a) => a.employeeId === e.id);
   const advanceLines = empAdvances
     .map((a) => ({ advance: a, monthlyInstallment: advanceDeductionForMonth(a, ym) }))
     .filter((l) => l.monthlyInstallment > 0);
-  const advanceDeduction = advanceLines.reduce((s, l) => s + l.monthlyInstallment, 0);
+  const computedAdvanceDeduction = advanceLines.reduce((s, l) => s + l.monthlyInstallment, 0);
+  const advanceDeduction = applyPayrollOverride(computedAdvanceDeduction, empMeta, "advanceDeductionOverride");
 
   const insuranceRate = settings.insuranceRate;
-  const insuranceDeduction = Math.round((base * insuranceRate) / 100);
-  const annualTaxable = Math.max(0, base * 12 - insuranceDeduction * 12 - settings.personalExemptionAnnual);
-  const taxDeduction = Math.round(computeTax(annualTaxable, settings.taxBrackets) / 12);
+  const computedInsuranceDeduction = Math.round((base * insuranceRate) / 100);
+  const insuranceDeduction = applyPayrollOverride(computedInsuranceDeduction, empMeta, "insuranceDeductionOverride");
+  const annualTaxable = Math.max(0, base * 12 - computedInsuranceDeduction * 12 - settings.personalExemptionAnnual);
+  const computedTaxDeduction = Math.round(computeTax(annualTaxable, settings.taxBrackets) / 12);
+  const taxDeduction = applyPayrollOverride(computedTaxDeduction, empMeta, "taxDeductionOverride");
 
-  const empMeta = (meta || {})[e.id] || {};
   const bonus = Number(empMeta.bonus) || 0;
 
   const net = base - absenceDeduction - penaltyDeduction - advanceDeduction - insuranceDeduction - taxDeduction - lateDeduction + overtimePay + bonus;
@@ -1167,6 +1201,16 @@ function computePayrollBreakdown(e, ym, attendance, penalties, advances, setting
     insuranceRate, insuranceDeduction,
     annualTaxable, taxBrackets: settings.taxBrackets, taxDeduction,
     bonus, net,
+    // زي computePayrollRow بالظبط - القيم المحسوبة تلقائيًا (قبل أي override) وأسباب أي تعديل
+    // يدوي مسجّل، عشان شاشة "تفاصيل الخصم" توضّح لما رقم يكون معدّل يدويًا وليه.
+    computed: {
+      absenceDeduction: computedAbsenceDeduction, penaltyDeduction: computedPenaltyDeduction, advanceDeduction: computedAdvanceDeduction,
+      lateDeduction: computedLateDeduction, insuranceDeduction: computedInsuranceDeduction, taxDeduction: computedTaxDeduction, overtimePay: computedOvertimePay,
+    },
+    reasons: {
+      absenceDeduction: empMeta.absenceDeductionReason || "", penaltyDeduction: empMeta.penaltyDeductionReason || "", advanceDeduction: empMeta.advanceDeductionReason || "",
+      lateDeduction: empMeta.lateDeductionReason || "", insuranceDeduction: empMeta.insuranceDeductionReason || "", taxDeduction: empMeta.taxDeductionReason || "", overtimePay: empMeta.overtimePayReason || "",
+    },
   };
 }
 
@@ -1745,7 +1789,7 @@ function HRSystem({ adminUser }) {
           {tab === "evaluations" && <EvaluationsTab employees={employees} reviews={reviews} onOpenEmployee={setOpenEmployeeId} />}
           {tab === "attendance" && <AttendanceTab employees={activeEmployees} attendance={attendance} patchAttendance={upd.attendancePatch} settings={settings} />}
           {tab === "requests" && <EmployeeRequestsTab requests={requests} />}
-          {tab === "payroll" && <PayrollTab employees={activeEmployees} attendance={attendance} penalties={penalties} payrollMeta={payrollMeta} setPayrollMeta={upd.payrollMeta} advances={advances} settings={settings} payslipDocs={payslipDocs} onSyncPayslips={upd.payslips} />}
+          {tab === "payroll" && <PayrollTab employees={activeEmployees} setEmployees={upd.employees} attendance={attendance} penalties={penalties} payrollMeta={payrollMeta} setPayrollMeta={upd.payrollMeta} advances={advances} settings={settings} payslipDocs={payslipDocs} onSyncPayslips={upd.payslips} />}
           {tab === "salaryIncrease" && <SalaryIncreaseTab employees={activeEmployees} allEmployees={employees} reviews={reviews} salaryIncreases={salaryIncreases} setSalaryIncreases={upd.salaryIncreases} setEmployees={upd.employees} settings={settings} adminUser={adminUser} onOpenEmployee={setOpenEmployeeId} />}
           {tab === "penalties" && <PenaltiesTab employees={activeEmployees} penalties={penalties} setPenalties={upd.penalties} penaltyCaseNotes={penaltyCaseNotes} setPenaltyCaseNotes={upd.penaltyCaseNotes} onPrintCase={setPrintPenaltyCase} />}
           {tab === "surveys" && <SurveysTab employees={activeEmployees} surveys={surveys} setSurveys={upd.surveys} surveyResponses={surveyResponses} setSurveyResponses={upd.surveyResponses} />}
@@ -5373,7 +5417,20 @@ function SettlementForm({ emp, onSave, onCancel }) {
 }
 
 /* ================= PAYROLL ================= */
-function PayrollTab({ employees, attendance, penalties, payrollMeta, setPayrollMeta, advances, settings, payslipDocs, onSyncPayslips }) {
+// بنود المرتب المحسوبة (غير الأساسي، اللي بيتعدّل في سجل الموظف نفسه) اللي ممكن الأدمن يعدّلها
+// يدويًا شهريًا من تاب المرتبات - كل بند مربوط بمفتاح override ومفتاح سبب في payrollMeta[empId]
+// (راجع applyPayrollOverride وcomputePayrollRow/computePayrollBreakdown فوق). sign بس للعرض
+// (+/- قبل الرقم في الجدول ولون الخط).
+const PAYROLL_LINE_ITEMS = [
+  { key: "absenceDeduction", overrideKey: "absenceDeductionOverride", reasonKey: "absenceDeductionReason", label: "خصم الغياب", sign: -1 },
+  { key: "lateDeduction", overrideKey: "lateDeductionOverride", reasonKey: "lateDeductionReason", label: "خصم التأخير", sign: -1 },
+  { key: "penaltyDeduction", overrideKey: "penaltyDeductionOverride", reasonKey: "penaltyDeductionReason", label: "جزاءات", sign: -1 },
+  { key: "advanceDeduction", overrideKey: "advanceDeductionOverride", reasonKey: "advanceDeductionReason", label: "سلف", sign: -1 },
+  { key: "insuranceDeduction", overrideKey: "insuranceDeductionOverride", reasonKey: "insuranceDeductionReason", label: "تأمينات", sign: -1 },
+  { key: "taxDeduction", overrideKey: "taxDeductionOverride", reasonKey: "taxDeductionReason", label: "ضريبة", sign: -1 },
+  { key: "overtimePay", overrideKey: "overtimePayOverride", reasonKey: "overtimePayReason", label: "إضافي", sign: 1 },
+];
+function PayrollTab({ employees, setEmployees, attendance, penalties, payrollMeta, setPayrollMeta, advances, settings, payslipDocs, onSyncPayslips }) {
   const { t, lang } = useLang();
   const [ym, setYm] = useState(todayISO().slice(0, 7));
   const [payslipEmp, setPayslipEmp] = useState(null);
@@ -5382,7 +5439,76 @@ function PayrollTab({ employees, attendance, penalties, payrollMeta, setPayrollM
   const [paidFilter, setPaidFilter] = useState("الكل");
   const meta = payrollMeta[ym] || {};
 
+  // تعديل مباشر للراتب الأساسي من نفس تاب المرتبات - المكان اللي الأدمن أصلًا بيراجع فيه
+  // الأرقام شهريًا، بدل ما يضطر يفتح فورم تعديل الموظف الكامل. زي أي تعديل تاني في المرتب،
+  // لازم سبب إجباري - نفس بالظبط منطق EmployeeForm وSalaryIncreaseTab.approve (راجع
+  // upd.employees في HRSystem: بيسجّل التغيير نفسه تلقائيًا + سطر منفصل للسبب في سجل النشاط).
+  const [editingSalary, setEditingSalary] = useState(null); // { empId, empName, currentSalary }
+  const [salaryInput, setSalaryInput] = useState("");
+  const [salaryReason, setSalaryReason] = useState("");
+  const [salaryReasonError, setSalaryReasonError] = useState("");
+  function openSalaryEdit(emp) {
+    setEditingSalary({ empId: emp.id, empName: emp.name, currentSalary: Number(emp.salary) || 0 });
+    setSalaryInput(String(emp.salary ?? ""));
+    setSalaryReason("");
+    setSalaryReasonError("");
+  }
+  function closeSalaryEdit() {
+    setEditingSalary(null);
+    setSalaryInput("");
+    setSalaryReason("");
+    setSalaryReasonError("");
+  }
+  function confirmSalaryEdit(e) {
+    e.preventDefault();
+    const nextSalary = Number(salaryInput);
+    if (!(nextSalary >= 0)) { setSalaryReasonError("لازم تدخل رقم صحيح للمرتب."); return; }
+    if (nextSalary === editingSalary.currentSalary) { closeSalaryEdit(); return; } // مفيش تغيير فعلي - مفيش داعي لسبب ولا تعديل
+    if (!salaryReason.trim()) { setSalaryReasonError("لازم تكتب سبب تعديل المرتب."); return; }
+    setEmployees(
+      employees.map((e2) => (e2.id === editingSalary.empId ? { ...e2, salary: nextSalary } : e2)),
+      { employeeName: editingSalary.empName, reason: salaryReason.trim() }
+    );
+    closeSalaryEdit();
+  }
+
   function setMetaFor(empId, patch) { setPayrollMeta({ ...payrollMeta, [ym]: { ...meta, [empId]: { ...(meta[empId] || {}), ...patch } } }); }
+
+  // تعديل أي بند تاني من مفردات المرتب (غياب/تأخير/جزاءات/سلف/تأمينات/ضريبة/إضافي) - مش بس
+  // الأساسي. القيمة بتتخزّن كـ override في payrollMeta[empId] لنفس الشهر (زي "مكافأة" بالظبط)،
+  // فبتتسجّل تلقائيًا في سجل النشاط لأن upd.payrollMeta أصلًا بيعمل diffSummary عام على كل
+  // حقول payrollMeta - مش محتاجين أي كود إضافي زي ما عملنا مع الراتب الأساسي (upd.employees).
+  const [editingLine, setEditingLine] = useState(null); // { empId, empName, item, currentValue, computedValue, overridden }
+  const [lineInput, setLineInput] = useState("");
+  const [lineReason, setLineReason] = useState("");
+  const [lineReasonError, setLineReasonError] = useState("");
+  function openLineEdit(item, row) {
+    const currentValue = row[item.key];
+    const computedValue = row.computed[item.key];
+    setEditingLine({ empId: row.emp.id, empName: row.emp.name, item, currentValue, computedValue, overridden: currentValue !== computedValue });
+    setLineInput(String(currentValue ?? ""));
+    setLineReason(meta[row.emp.id]?.[item.reasonKey] || "");
+    setLineReasonError("");
+  }
+  function closeLineEdit() {
+    setEditingLine(null);
+    setLineInput("");
+    setLineReason("");
+    setLineReasonError("");
+  }
+  function confirmLineEdit(e) {
+    e.preventDefault();
+    const nextValue = Number(lineInput);
+    if (!(nextValue >= 0)) { setLineReasonError("لازم تدخل رقم صحيح."); return; }
+    if (nextValue === editingLine.currentValue) { closeLineEdit(); return; } // مفيش تغيير فعلي
+    if (!lineReason.trim()) { setLineReasonError("لازم تكتب سبب التعديل."); return; }
+    setMetaFor(editingLine.empId, { [editingLine.item.overrideKey]: nextValue, [editingLine.item.reasonKey]: lineReason.trim() });
+    closeLineEdit();
+  }
+  // رجوع البند لقيمته المحسوبة تلقائيًا (إلغاء الـ override) - بيمسح مفتاحي القيمة والسبب سوا.
+  function resetLineToComputed(item, row) {
+    setMetaFor(row.emp.id, { [item.overrideKey]: null, [item.reasonKey]: null });
+  }
   // بنحسب تفاصيل الخصم بس للموظف المفتوح حاليًا (مش لكل صف في الجدول) - نفس فلسفة payslipEmp
   // جنبه، توفير حساب مش لازم يتكرر لكل موظف كل render.
   const breakdownEmp = employees.find((e) => e.id === breakdownEmpId);
@@ -5500,14 +5626,21 @@ function PayrollTab({ employees, attendance, penalties, payrollMeta, setPayrollM
                 {filteredRows.map((r) => (
                   <tr key={r.emp.id} className="border-b border-stone-100 last:border-0 hover:bg-stone-50">
                     <td className="px-3 py-3 font-medium text-slate-800 whitespace-nowrap"><button onClick={() => setBreakdownEmpId(r.emp.id)} className="hover:underline hover:text-teal-800">{r.emp.name}</button></td>
-                    <td className="px-3 py-3 tabular-nums text-slate-600">{fmtMoney(r.emp.salary)}</td>
-                    <td className="px-3 py-3 tabular-nums text-rose-600">-{fmtMoney(r.absenceDeduction)}</td>
-                    <td className="px-3 py-3 tabular-nums text-rose-600">-{fmtMoney(r.lateDeduction)}</td>
-                    <td className="px-3 py-3 tabular-nums text-rose-600">-{fmtMoney(r.penaltyDeduction)}</td>
-                    <td className="px-3 py-3 tabular-nums text-rose-600">-{fmtMoney(r.advanceDeduction)}</td>
-                    <td className="px-3 py-3 tabular-nums text-rose-600">-{fmtMoney(r.insuranceDeduction)}</td>
-                    <td className="px-3 py-3 tabular-nums text-rose-600">-{fmtMoney(r.taxDeduction)}</td>
-                    <td className="px-3 py-3 tabular-nums text-emerald-600">+{fmtMoney(r.overtimePay)}</td>
+                    <td className="px-3 py-3 tabular-nums text-slate-600">
+                      <button type="button" onClick={() => openSalaryEdit(r.emp)} title={t("تعديل المرتب الأساسي")} className="rounded-md px-1.5 py-1 hover:bg-teal-50 hover:text-teal-800">
+                        {fmtMoney(r.emp.salary)} <Pencil size={11} className="mb-0.5 inline-block opacity-50" />
+                      </button>
+                    </td>
+                    {PAYROLL_LINE_ITEMS.map((item) => {
+                      const overridden = r[item.key] !== r.computed[item.key];
+                      return (
+                        <td key={item.key} className={`px-3 py-3 tabular-nums ${item.sign < 0 ? "text-rose-600" : "text-emerald-600"}`}>
+                          <button type="button" onClick={() => openLineEdit(item, r)} title={t(overridden ? "متعدّل يدويًا - اضغط للتعديل" : "تعديل يدوي")} className={`rounded-md px-1.5 py-1 hover:bg-teal-50 hover:text-teal-800 ${overridden ? "underline decoration-dotted underline-offset-2" : ""}`}>
+                            {item.sign < 0 ? "-" : "+"}{fmtMoney(r[item.key])} <Pencil size={11} className="mb-0.5 inline-block opacity-50" />
+                          </button>
+                        </td>
+                      );
+                    })}
                     <td className="px-3 py-3">
                       <input type="number" min="0" className="w-16 rounded-md border border-stone-200 px-1.5 py-1 text-xs tabular-nums outline-none focus:border-teal-500" value={meta[r.emp.id]?.bonus || ""} onChange={(e) => setMetaFor(r.emp.id, { bonus: e.target.value })} placeholder="0" />
                     </td>
@@ -5526,6 +5659,53 @@ function PayrollTab({ employees, attendance, penalties, payrollMeta, setPayrollM
 
       {payslipEmp && <PayslipModal row={payslipEmp} ym={ym} onClose={() => setPayslipEmp(null)} />}
       {breakdown && <PayrollBreakdownModal b={breakdown} ym={ym} onClose={() => setBreakdownEmpId(null)} />}
+
+      <Modal open={!!editingSalary} onClose={closeSalaryEdit} title="تعديل المرتب الأساسي">
+        {editingSalary && (
+          <form onSubmit={confirmSalaryEdit} className="space-y-4">
+            <p className="text-sm text-slate-600">{t("مرتب {name} الحالي: {salary} ج.م.", { name: editingSalary.empName, salary: fmtMoney(editingSalary.currentSalary) })}</p>
+            <Field label="المرتب الأساسي الجديد"><input autoFocus type="number" min="0" className={inputCls} value={salaryInput} onChange={(e) => { setSalaryInput(e.target.value); if (salaryReasonError) setSalaryReasonError(""); }} /></Field>
+            {Number(salaryInput) !== editingSalary.currentSalary && (
+              <Field label="سبب التعديل (إجباري)">
+                <input className={inputCls} value={salaryReason} onChange={(e) => { setSalaryReason(e.target.value); if (salaryReasonError) setSalaryReasonError(""); }} placeholder={t("مثلًا: علاوة سنوية، ترقية، تعديل سوق العمل...")} />
+              </Field>
+            )}
+            {salaryReasonError && <p className="text-xs font-medium text-rose-600">{t(salaryReasonError)}</p>}
+            <div className="flex justify-end gap-2 border-t border-stone-200 pt-4">
+              <button type="button" onClick={closeSalaryEdit} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50">{t("إلغاء")}</button>
+              <button type="submit" className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Save size={15} /> {t("حفظ")}</button>
+            </div>
+          </form>
+        )}
+      </Modal>
+
+      <Modal open={!!editingLine} onClose={closeLineEdit} title="تعديل بند المرتب">
+        {editingLine && (
+          <form onSubmit={confirmLineEdit} className="space-y-4">
+            <p className="text-sm text-slate-600">
+              {t("{item} لـ {name} - القيمة المحسوبة تلقائيًا: {computed} ج.م.", {
+                item: t(editingLine.item.label), name: editingLine.empName, computed: fmtMoney(editingLine.computedValue),
+              })}
+            </p>
+            <Field label="القيمة الجديدة"><input autoFocus type="number" min="0" className={inputCls} value={lineInput} onChange={(e) => { setLineInput(e.target.value); if (lineReasonError) setLineReasonError(""); }} /></Field>
+            {Number(lineInput) !== editingLine.currentValue && (
+              <Field label="سبب التعديل (إجباري)">
+                <input className={inputCls} value={lineReason} onChange={(e) => { setLineReason(e.target.value); if (lineReasonError) setLineReasonError(""); }} placeholder={t("مثلًا: تصحيح خطأ في الحساب، اتفاق خاص مع الموظف...")} />
+              </Field>
+            )}
+            {lineReasonError && <p className="text-xs font-medium text-rose-600">{t(lineReasonError)}</p>}
+            <div className="flex items-center justify-between gap-2 border-t border-stone-200 pt-4">
+              {editingLine.overridden ? (
+                <button type="button" onClick={() => { resetLineToComputed(editingLine.item, { emp: { id: editingLine.empId } }); closeLineEdit(); }} className="text-xs font-medium text-slate-400 hover:text-rose-600">{t("رجّع القيمة المحسوبة تلقائيًا")}</button>
+              ) : <span />}
+              <div className="flex gap-2">
+                <button type="button" onClick={closeLineEdit} className="rounded-lg border border-stone-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-stone-50">{t("إلغاء")}</button>
+                <button type="submit" className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Save size={15} /> {t("حفظ")}</button>
+              </div>
+            </div>
+          </form>
+        )}
+      </Modal>
     </div>
   );
 }
@@ -5536,6 +5716,12 @@ function PayrollTab({ employees, attendance, penalties, payrollMeta, setPayrollM
 function PayrollBreakdownModal({ b, ym, onClose }) {
   const { t, lang } = useLang();
   const dateFmt = (d) => d || "—";
+  // لما بند يكون معدّل يدويًا من تاب المرتبات (overridden - مختلف عن القيمة المحسوبة تلقائيًا في
+  // b.computed)، بيظهر توضيح تحت الصيغة الأصلية يوضّح القيمة اللي كانت هتتحسب، والسبب المسجّل.
+  function overrideNoteFor(key) {
+    if (!b.computed || b[key] === b.computed[key]) return null;
+    return t("معدّل يدويًا (كان {computed} ج.م تلقائيًا) - السبب: {reason}", { computed: fmtMoney(b.computed[key]), reason: (b.reasons && b.reasons[key]) || t("بدون سبب مسجل") });
+  }
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
       <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white shadow-xl">
@@ -5555,6 +5741,7 @@ function PayrollBreakdownModal({ b, ym, onClose }) {
               ? t("{days} يوم غياب × {rate} ج.م/يوم (الأساسي ÷ 30)", { days: b.absentDays, rate: fmtMoney(b.perDayRate) })
               : t("مفيش أيام غياب مسجلة الشهر ده")}
             amount={-b.absenceDeduction}
+            overrideNote={overrideNoteFor("absenceDeduction")}
           />
 
           <BreakdownLine
@@ -5563,12 +5750,14 @@ function PayrollBreakdownModal({ b, ym, onClose }) {
               ? t("{mins} دقيقة تأخير × {rate} ج.م/دقيقة (الأساسي ÷ 240 ساعة ÷ 60)", { mins: b.lateMinutes, rate: (Math.round(b.perMinuteRate * 100) / 100).toLocaleString("en-US") })
               : t("مفيش دقايق تأخير مسجلة الشهر ده")}
             amount={-b.lateDeduction}
+            overrideNote={overrideNoteFor("lateDeduction")}
           />
 
           <BreakdownLine
             title={t("خصم الجزاءات")}
             formula={b.monthPenalties.length === 0 ? t("مفيش جزاءات مالية الشهر ده") : null}
             amount={-b.penaltyDeduction}
+            overrideNote={overrideNoteFor("penaltyDeduction")}
           >
             {b.monthPenalties.length > 0 && (
               <ul className="mt-1 space-y-0.5 text-[11px] text-slate-400">
@@ -5583,6 +5772,7 @@ function PayrollBreakdownModal({ b, ym, onClose }) {
             title={t("خصم أقساط السلف")}
             formula={b.advanceLines.length === 0 ? t("مفيش سلف نشطة الشهر ده") : null}
             amount={-b.advanceDeduction}
+            overrideNote={overrideNoteFor("advanceDeduction")}
           >
             {b.advanceLines.length > 0 && (
               <ul className="mt-1 space-y-0.5 text-[11px] text-slate-400">
@@ -5597,12 +5787,14 @@ function PayrollBreakdownModal({ b, ym, onClose }) {
             title={t("التأمينات الاجتماعية")}
             formula={t("{rate}% × الأساسي ({base} ج.م)", { rate: b.insuranceRate, base: fmtMoney(b.base) })}
             amount={-b.insuranceDeduction}
+            overrideNote={overrideNoteFor("insuranceDeduction")}
           />
 
           <BreakdownLine
             title={t("ضريبة كسب العمل")}
             formula={t("الوعاء السنوي الخاضع للضريبة {taxable} ج.م، حسب شرائح الضريبة في الإعدادات — القيمة هنا نصيب الشهر (÷12)", { taxable: fmtMoney(b.annualTaxable) })}
             amount={-b.taxDeduction}
+            overrideNote={overrideNoteFor("taxDeduction")}
           />
 
           <BreakdownLine
@@ -5612,6 +5804,7 @@ function PayrollBreakdownModal({ b, ym, onClose }) {
               : t("مفيش ساعات إضافي مسجلة الشهر ده")}
             amount={b.overtimePay}
             positive
+            overrideNote={overrideNoteFor("overtimePay")}
           />
 
           <BreakdownLine title={t("مكافأة")} formula={t("مُدخلة يدويًا لهذا الشهر")} amount={b.bonus} positive />
@@ -5625,7 +5818,7 @@ function PayrollBreakdownModal({ b, ym, onClose }) {
     </div>
   );
 }
-function BreakdownLine({ title, formula, amount, positive, children }) {
+function BreakdownLine({ title, formula, amount, positive, overrideNote, children }) {
   const { t } = useLang();
   return (
     <div className="rounded-lg border border-stone-100 px-3 py-2.5">
@@ -5636,6 +5829,9 @@ function BreakdownLine({ title, formula, amount, positive, children }) {
         </span>
       </div>
       {formula && <p className="mt-0.5 text-[11px] text-slate-400">{formula}</p>}
+      {overrideNote && (
+        <p className="mt-1 flex items-center gap-1 text-[11px] font-medium text-amber-600"><Pencil size={10} /> {overrideNote}</p>
+      )}
       {children}
     </div>
   );
@@ -5814,6 +6010,14 @@ const AUDIT_FIELD_LABELS = {
   taxBrackets: "شرائح الضريبة", publicHolidays: "الإجازات الرسمية",
   notifyServiceId: "معرّف خدمة الإيميل", notifyTemplateId: "معرّف قالب الإيميل",
   notifyPublicKey: "المفتاح العام", notifyRecipientEmail: "إيميل المستلم",
+  // --- تعديل بنود المرتب يدويًا من تاب المرتبات (override + سبب لكل بند - راجع PAYROLL_LINE_ITEMS) ---
+  absenceDeductionOverride: "خصم الغياب (تعديل يدوي)", absenceDeductionReason: "سبب تعديل خصم الغياب",
+  lateDeductionOverride: "خصم التأخير (تعديل يدوي)", lateDeductionReason: "سبب تعديل خصم التأخير",
+  penaltyDeductionOverride: "الجزاءات (تعديل يدوي)", penaltyDeductionReason: "سبب تعديل الجزاءات",
+  advanceDeductionOverride: "السلف (تعديل يدوي)", advanceDeductionReason: "سبب تعديل خصم السلف",
+  insuranceDeductionOverride: "التأمينات (تعديل يدوي)", insuranceDeductionReason: "سبب تعديل التأمينات",
+  taxDeductionOverride: "الضريبة (تعديل يدوي)", taxDeductionReason: "سبب تعديل الضريبة",
+  overtimePayOverride: "الإضافي (تعديل يدوي)", overtimePayReason: "سبب تعديل الإضافي",
 };
 
 // Turns one changed field's raw value (from or to) into short displayable text - passed
@@ -8449,6 +8653,38 @@ const TRANSLATIONS = {
   "لازم تكتب سبب اعتماد الزيادة.": "You must enter a reason for approving the increase.",
   "مثلًا: زيادة سنوية بناءً على نتيجة التقييم": "e.g. annual increase based on review result",
   "تأكيد الاعتماد": "Confirm Approval",
+  // --- تعديل المرتب الأساسي مباشرة من تاب المرتبات (سبب إجباري) ---
+  "تعديل المرتب الأساسي": "Edit Base Salary",
+  "مرتب {name} الحالي: {salary} ج.م.": "{name}'s current salary: {salary} EGP.",
+  "المرتب الأساسي الجديد": "New Base Salary",
+  // --- تعديل أي بند تاني من مفردات المرتب (غياب/تأخير/جزاءات/سلف/تأمينات/ضريبة/إضافي) - سبب إجباري ---
+  "تعديل بند المرتب": "Edit Payroll Item",
+  "{item} لـ {name} - القيمة المحسوبة تلقائيًا: {computed} ج.م.": "{item} for {name} - automatically computed value: {computed} EGP.",
+  "القيمة الجديدة": "New Value",
+  "سبب التعديل (إجباري)": "Reason for the Change (Required)",
+  "مثلًا: تصحيح خطأ في الحساب، اتفاق خاص مع الموظف...": "e.g. correcting a calculation error, a special arrangement with the employee...",
+  "لازم تدخل رقم صحيح.": "You must enter a valid number.",
+  "لازم تدخل رقم صحيح للمرتب.": "You must enter a valid salary number.",
+  "لازم تكتب سبب التعديل.": "You must enter a reason for the change.",
+  "رجّع القيمة المحسوبة تلقائيًا": "Reset to Automatically Computed Value",
+  "معدّل يدويًا (كان {computed} ج.م تلقائيًا) - السبب: {reason}": "Manually edited (was {computed} EGP automatically) - reason: {reason}",
+  "متعدّل يدويًا - اضغط للتعديل": "Manually edited - click to change",
+  "تعديل يدوي": "Manual edit",
+  // --- تسميات بنود المرتب المعدّلة يدويًا في سجل النشاط (AUDIT_FIELD_LABELS) ---
+  "خصم الغياب (تعديل يدوي)": "Absence Deduction (Manual Edit)",
+  "سبب تعديل خصم الغياب": "Reason for Absence Deduction Change",
+  "خصم التأخير (تعديل يدوي)": "Late Deduction (Manual Edit)",
+  "سبب تعديل خصم التأخير": "Reason for Late Deduction Change",
+  "الجزاءات (تعديل يدوي)": "Penalties (Manual Edit)",
+  "سبب تعديل الجزاءات": "Reason for Penalties Change",
+  "السلف (تعديل يدوي)": "Advances (Manual Edit)",
+  "سبب تعديل خصم السلف": "Reason for Advance Deduction Change",
+  "التأمينات (تعديل يدوي)": "Insurance (Manual Edit)",
+  "سبب تعديل التأمينات": "Reason for Insurance Change",
+  "الضريبة (تعديل يدوي)": "Tax (Manual Edit)",
+  "سبب تعديل الضريبة": "Reason for Tax Change",
+  "الإضافي (تعديل يدوي)": "Overtime (Manual Edit)",
+  "سبب تعديل الإضافي": "Reason for Overtime Change",
 };
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
