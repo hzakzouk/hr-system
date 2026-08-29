@@ -1354,7 +1354,7 @@ function StampBadge({ tone = "teal", children }) {
     rose: "border-rose-600 text-rose-700", slate: "border-slate-400 text-slate-500",
     emerald: "border-emerald-600 text-emerald-700",
   };
-  return <span className={`inline-flex items-center gap-1 rounded-full border-2 px-2.5 py-0.5 text-xs font-semibold tracking-wide ${tones[tone]}`}>{autoT(t, children)}</span>;
+  return <span className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full border-2 px-2.5 py-0.5 text-xs font-semibold tracking-wide ${tones[tone]}`}>{autoT(t, children)}</span>;
 }
 function Card({ children, className = "" }) {
   return <div className={`rounded-2xl border border-stone-200 bg-white shadow-sm ${className}`}>{children}</div>;
@@ -5390,7 +5390,7 @@ function EmployeeRequestsTab({ requests }) {
                     {r.reason && <span className="mx-1.5 text-xs text-slate-400">({r.reason})</span>}
                   </td>
                   <td className="px-4 py-3">
-                    <span className={`rounded-full border px-2.5 py-0.5 text-xs font-semibold ${REQUEST_STATUS_COLORS[r.status] || ""}`}>{t(REQUEST_STATUS_LABELS[r.status] || r.status)}</span>
+                    <span className={`whitespace-nowrap rounded-full border px-2.5 py-0.5 text-xs font-semibold ${REQUEST_STATUS_COLORS[r.status] || ""}`}>{t(REQUEST_STATUS_LABELS[r.status] || r.status)}</span>
                     {r.status !== "pending" && r.status !== "pending_ceo" && r.decidedByName && (
                       <div className="mt-1 text-[11px] text-slate-400">{t("تم البت بواسطة {name}", { name: r.decidedByName })}</div>
                     )}
@@ -7087,7 +7087,7 @@ function ReportsTab({ employees, activeEmployees, attendance, penalties, advance
                     <td className="sticky start-0 z-10 bg-white px-3 py-3 font-medium text-slate-800 whitespace-nowrap">{r.employeeName}</td>
                     <td className="px-3 py-3 text-slate-600 whitespace-nowrap">{t(REQUEST_KIND_LABELS[r.kind] || r.kind)}</td>
                     <td className="px-3 py-3 text-slate-500">{formatRequestDetail(r, t)}</td>
-                    <td className="px-3 py-3"><span className={`rounded-full border px-2.5 py-0.5 text-xs font-semibold ${REQUEST_STATUS_COLORS[r.status] || ""}`}>{t(REQUEST_STATUS_LABELS[r.status] || r.status)}</span></td>
+                    <td className="px-3 py-3"><span className={`whitespace-nowrap rounded-full border px-2.5 py-0.5 text-xs font-semibold ${REQUEST_STATUS_COLORS[r.status] || ""}`}>{t(REQUEST_STATUS_LABELS[r.status] || r.status)}</span></td>
                     <td className="px-3 py-3 whitespace-nowrap text-slate-500">{(r.createdAt || "").slice(0, 10)}</td>
                   </tr>
                 ))}
