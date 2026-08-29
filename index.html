@@ -1882,7 +1882,7 @@ function HRSystem({ adminUser }) {
           {tab === "surveys" && <SurveysTab employees={activeEmployees} surveys={surveys} setSurveys={upd.surveys} surveyResponses={surveyResponses} setSurveyResponses={upd.surveyResponses} />}
           {tab === "advances" && <AdvancesTab employees={activeEmployees} advances={advances} setAdvances={upd.advances} />}
           {tab === "former" && <FormerEmployeesTab employees={formerEmployees} setEmployees={upd.employees} allEmployees={employees} onDelete={deleteEmployees} />}
-          {tab === "recruitment" && <RecruitmentTab candidates={candidates} setCandidates={upd.candidates} positions={positions} setPositions={upd.positions} onConvert={handleConvertCandidate} />}
+          {tab === "recruitment" && <RecruitmentTab candidates={candidates} setCandidates={upd.candidates} positions={positions} setPositions={upd.positions} onConvert={handleConvertCandidate} settings={settings} />}
           {tab === "reports" && <ReportsTab employees={employees} activeEmployees={activeEmployees} attendance={attendance} penalties={penalties} advances={advances} payrollMeta={payrollMeta} settings={settings} requests={requests} reviews={reviews} />}
           {tab === "auditLog" && <AuditLogTab auditLog={auditLog} />}
           {tab === "settings" && <SettingsTab
@@ -6472,8 +6472,14 @@ const REPORT_RANGES = [3, 6, 12];
 function MiniBarChart({ bars, formatValue, maxValue }) {
   const max = maxValue ?? Math.max(1, ...bars.map((b) => Math.abs(b.value) || 0));
   const toneCls = { teal: "bg-teal-700", emerald: "bg-emerald-600", rose: "bg-rose-600", amber: "bg-amber-500" };
+  // بدون items-end هنا عمدًا: لازم أعمدة الأشرطة (h-40 فيهم) تتمدد (align-items: stretch
+  // الافتراضي) لارتفاع الكونتينر بالكامل، عشان الـ flex-1 اللي جوه كل عمود يبقى له ارتفاع
+  // محدد (definite) يقدر يحسب عليه العمود الملون النسبة المئوية للـ height بتاعته - غير كده
+  // (لو items-end هنا) كل عمود بيتقاس بمحتواه بس، فالـ flex-1 جواه بينهار لصفر، والعمود
+  // الملون بيحسب نسبته من أب ارتفاعه صفر فيفضل مختفي تمامًا. ده كان سبب اختفاء كل الأعمدة في
+  // شارتي "معدل الحضور الشهري" و"تكلفة المرتبات الشهرية" رغم إن الأرقام والتسميات بتظهر عادي.
   return (
-    <div className="flex h-40 items-end gap-2">
+    <div className="flex h-40 gap-2">
       {bars.map((b, i) => (
         <div key={i} className="flex flex-1 flex-col items-center gap-1">
           <span className="text-[10px] font-semibold tabular-nums text-slate-500">{formatValue ? formatValue(b.value) : b.value}</span>
@@ -6980,7 +6986,10 @@ function ReportsTab({ employees, activeEmployees, attendance, penalties, advance
         </Card>
         <Card className="p-5">
           <h3 className="mb-4 font-bold text-slate-800">{t("التعيينات والاستقالات الشهرية")}</h3>
-          <div className="flex h-40 items-end gap-2">
+          {/* نفس تصحيح MiniBarChart بالظبط - من غير items-end هنا عشان الأعمدة تتمدد لارتفاع
+              الكونتينر الكامل، وإلا الـ flex-1 جوه كل عمود بيفضل بلا ارتفاع محدد فالأشرطة
+              الملونة (height بالنسبة المئوية) تختفي خالص. */}
+          <div className="flex h-40 gap-2">
             {rows.map((r) => (
               <div key={r.ym} className="flex flex-1 flex-col items-center gap-1">
                 <div className="flex w-full flex-1 items-end gap-0.5">
@@ -7196,15 +7205,25 @@ function CandidateForm({ initial, positions = [], onSave, onCancel }) {
   );
 }
 
-function PositionForm({ initial, onSave, onCancel }) {
+function PositionForm({ initial, settings, onSave, onCancel }) {
   const { t } = useLang();
   const [form, setForm] = useState({
     title: initial?.title || "", department: initial?.department || "",
     status: initial?.status || "مفتوح", openedDate: initial?.openedDate || todayISO(),
+    // grade/level (الدرجة والمستوى الوظيفي) - نفس فكرة EmployeesTab.EmployeeForm بالظبط: اختيار
+    // الدرجة من settings.salaryGradeBands بيملأ المستوى تلقائي (بس لو لسه فاضي، عشان مايمحيش
+    // قيمة كتبها الأدمن يدويًا). الهدف إن الشاغر يحمل نطاق المرتب المتوقع له من وقت فتحه - قبل
+    // ما يتحول لموظف فعلي - عشان الميزانية والتفاوض مع المرشح يبقوا واضحين من البداية.
+    grade: initial?.grade || "", level: initial?.level || "",
     jobDescription: initial?.jobDescription || "", jobSpecifications: initial?.jobSpecifications || "",
   });
   function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
+  function setGrade(g) {
+    const band = (settings.salaryGradeBands || []).find((b) => b.grade === g);
+    setForm((f) => ({ ...f, grade: g, level: !f.level && band ? band.level : f.level }));
+  }
   function submit(e) { e.preventDefault(); if (!form.title.trim()) return; onSave(form); }
+  const selectedBand = (settings.salaryGradeBands || []).find((b) => b.grade === form.grade);
   return (
     <form onSubmit={submit} className="space-y-4">
       <div className="grid grid-cols-2 gap-4">
@@ -7216,6 +7235,16 @@ function PositionForm({ initial, onSave, onCancel }) {
           </select>
         </Field>
         <Field label="تاريخ فتح الشاغر"><input type="date" className={inputCls} value={form.openedDate} onChange={(e) => set("openedDate", e.target.value)} /></Field>
+        <Field label="الدرجة (Grade)">
+          <select className={inputCls} value={form.grade} onChange={(e) => setGrade(e.target.value)}>
+            <option value="">{t("— بدون —")}</option>
+            {(settings.salaryGradeBands || []).map((b) => <option key={b.grade} value={b.grade}>{b.grade}</option>)}
+          </select>
+          {selectedBand && (
+            <p className="mt-1 text-xs text-slate-400">{t("نطاق المرتب: {min} – {max} ج.م", { min: fmtMoney(selectedBand.min), max: fmtMoney(selectedBand.max) })}</p>
+          )}
+        </Field>
+        <Field label="المستوى الوظيفي (Level)"><input className={inputCls} value={form.level} onChange={(e) => set("level", e.target.value)} /></Field>
       </div>
       <Field label="الوصف الوظيفي (Job Description)"><textarea rows={4} className={inputCls} value={form.jobDescription} onChange={(e) => set("jobDescription", e.target.value)} placeholder={t("المهام والمسؤوليات الأساسية للوظيفة...")} /></Field>
       <Field label="شروط شغل الوظيفة (Job Specifications)"><textarea rows={4} className={inputCls} value={form.jobSpecifications} onChange={(e) => set("jobSpecifications", e.target.value)} placeholder={t("المؤهلات، سنوات الخبرة، المهارات المطلوبة...")} /></Field>
@@ -7264,7 +7293,7 @@ function CandidateCard({ candidate, onEdit, onDelete, onStageChange, onConvert }
   );
 }
 
-function RecruitmentTab({ candidates, setCandidates, positions, setPositions, onConvert }) {
+function RecruitmentTab({ candidates, setCandidates, positions, setPositions, onConvert, settings }) {
   const { t } = useLang();
   const [view, setView] = useState("candidates"); // candidates | positions
   const [modalOpen, setModalOpen] = useState(false);
@@ -7369,8 +7398,9 @@ function RecruitmentTab({ candidates, setCandidates, positions, setPositions, on
                       <div className="flex items-center gap-2">
                         <span className="font-semibold text-slate-800">{p.title}</span>
                         <StampBadge tone={p.status === "مفتوح" ? "emerald" : "slate"}>{p.status}</StampBadge>
+                        {p.grade && <StampBadge tone="slate">{p.grade}</StampBadge>}
                       </div>
-                      <div className="text-xs text-slate-400">{p.department}{p.openedDate ? ` · ${t("فُتح في {date}", { date: p.openedDate })}` : ""}</div>
+                      <div className="text-xs text-slate-400">{p.department}{p.level ? ` · ${p.level}` : ""}{p.openedDate ? ` · ${t("فُتح في {date}", { date: p.openedDate })}` : ""}</div>
                     </div>
                     <div className="flex shrink-0 items-center gap-0.5">
                       <button onClick={() => setExpandedPosId(expandedPosId === p.id ? null : p.id)} className="rounded-md p-1.5 text-slate-400 hover:bg-stone-100 hover:text-teal-700">{expandedPosId === p.id ? <ChevronUp size={15} /> : <ChevronDown size={15} />}</button>
@@ -7396,7 +7426,7 @@ function RecruitmentTab({ candidates, setCandidates, positions, setPositions, on
           )}
 
           <Modal open={posModalOpen} onClose={() => { setPosModalOpen(false); setEditingPos(null); }} title={editingPos ? "تعديل بيانات شاغر" : "إضافة شاغر جديد"} wide>
-            <PositionForm initial={editingPos} onSave={savePosition} onCancel={() => { setPosModalOpen(false); setEditingPos(null); }} />
+            <PositionForm initial={editingPos} settings={settings} onSave={savePosition} onCancel={() => { setPosModalOpen(false); setEditingPos(null); }} />
           </Modal>
         </>
       )}
@@ -8847,6 +8877,7 @@ const TRANSLATIONS = {
   "درجات ومستويات المرتبات (Grade Bands)": "Salary Grade Bands",
   "كل درجة ليها حد أدنى وأوسط وأقصى للمرتب - دول أساس حساب اقتراح الزيادة السنوية في تاب «زيادات الرواتب».": "Each grade has a minimum, midpoint, and maximum salary - these are the basis for the annual increase suggestion in the Salary Increases tab.",
   "الدرجة (Grade)": "Grade",
+  "نطاق المرتب: {min} – {max} ج.م": "Salary range: EGP {min} – {max}",
   "المستوى الوظيفي (Level)": "Level",
   "الحد الأدنى": "Minimum",
   "المتوسط": "Midpoint",
