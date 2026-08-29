@@ -1824,7 +1824,11 @@ function HRSystem({ adminUser }) {
           <LangToggle className={`mb-4 w-full justify-center ${sidebarCollapsed ? "lg:hidden" : ""}`} />
           <nav className="flex flex-col gap-1">
             <NavItem icon={<LayoutDashboard size={17} />} label="لوحة المتابعة" active={tab === "dashboard"} onClick={() => setTab("dashboard")} collapsed={sidebarCollapsed} />
-            <NavItem icon={<Users size={17} />} label="الموظفون والعقود" active={tab === "employees"} onClick={() => setTab("employees")} collapsed={sidebarCollapsed} />
+            {/* label هنا "الموظفون" بس (مش "الموظفون والعقود" زي عنوان التاب نفسه) - عشان
+                الترجمة الإنجليزية "Employees & Contracts" كانت بتتلف على سطرين جوه عرض
+                السايدبار الضيق (240px)، بعكس "Employees" اللي بتتظبط في سطر واحد زي باقي
+                عناصر القائمة. عنوان الصفحة والتصدير لسه بيستخدموا النص الكامل. */}
+            <NavItem icon={<Users size={17} />} label="الموظفون" active={tab === "employees"} onClick={() => setTab("employees")} collapsed={sidebarCollapsed} />
             <NavItem icon={<Network size={17} />} label="الهيكل التنظيمي" active={tab === "orgchart"} onClick={() => setTab("orgchart")} collapsed={sidebarCollapsed} />
             <NavItem icon={<Star size={17} />} label="التقييمات" active={tab === "evaluations"} onClick={() => setTab("evaluations")} collapsed={sidebarCollapsed} />
             <NavItem icon={<CalendarCheck size={17} />} label="الحضور والانصراف" active={tab === "attendance"} onClick={() => setTab("attendance")} collapsed={sidebarCollapsed} />
