@@ -830,9 +830,18 @@ const DEFAULT_SETTINGS = {
 // The org chart is derived from each employee's existing "department" field, plus two
 // small choices the user makes: who is the CEO, and who heads each department. No new
 // per-employee field is required, so the chart is ready as soon as departments are filled in.
+// بلاغ هاني: "الهيكل التنظيمي مش جايب الفروع المختلفه في الشركه (HQ - Pharma - Food -
+// Technology)" - employee.branch كان موجود أصلًا (نص حر، مستخدم في فورم الموظف وتصدير الإكسل)
+// بس الهيكل كان بيتجاهله خالص. branchHeads جديدة زي departmentHeads بالظبط بس على مستوى الفرع
+// (رئيس الفرع بيرفع تقريره للرئيس التنفيذي مباشرة). departmentHeads نفسها بقى ليها مفتاحين
+// ممكنين دلوقتي: اسم القسم لوحده (زي الأول بالظبط - لموظف من غير فرع محدد)، أو `${branch}::
+// ${dept}` (لموظف تابع لفرع - عشان لو فرعين مختلفين فيهم قسم بنفس الاسم زي "HR"، كل واحد يحتفظ
+// برئيسه الخاص منفصل عن التاني) - راجع buildOrgTree وresolveDirectManager/resolveDirectReports
+// تحت، وOrgChartTab.setDeptHead (بدون فرع) مقابل setBranchDeptHead (بفرع).
 const DEFAULT_ORG_CHART = {
   ceoEmployeeId: null,
-  departmentHeads: {}, // { [departmentName]: employeeId }
+  departmentHeads: {}, // { [departmentName]: employeeId } أو { [`${branch}::${departmentName}`]: employeeId }
+  branchHeads: {}, // { [branchName]: employeeId }
 };
 
 // EmailJS config for the Dashboard's "إرسال التنبيهات بالإيميل" button - a client-only send (no
@@ -1731,9 +1740,16 @@ function HRSystem({ adminUser }) {
     Object.keys(nextHeads).forEach((dept) => {
       if (idSet.has(nextHeads[dept])) { delete nextHeads[dept]; orgChartChanged = true; }
     });
+    // زي نفس تنظيف departmentHeads بالظبط، بس لرؤساء الفروع (branchHeads) - وإلا موظف اتمسح
+    // وكان محدد رئيس فرع بيفضل معلّق كـ id تايه في orgChart، ومديره المباشر (resolveDirectManager)
+    // بيرجّع null بصمت من غير أي تفسير للأدمن.
+    const nextBranchHeads = { ...(orgChart.branchHeads || {}) };
+    Object.keys(nextBranchHeads).forEach((branch) => {
+      if (idSet.has(nextBranchHeads[branch])) { delete nextBranchHeads[branch]; orgChartChanged = true; }
+    });
     let nextCeo = orgChart.ceoEmployeeId;
     if (idSet.has(nextCeo)) { nextCeo = null; orgChartChanged = true; }
-    if (orgChartChanged) upd.orgChart({ ...orgChart, departmentHeads: nextHeads, ceoEmployeeId: nextCeo });
+    if (orgChartChanged) upd.orgChart({ ...orgChart, departmentHeads: nextHeads, branchHeads: nextBranchHeads, ceoEmployeeId: nextCeo });
 
     track(deleteOrphanedRequests(ids));
   }
@@ -7841,65 +7857,118 @@ function SettingsTab({ settings, setSettings, notifySettings, setNotifySettings,
 
 /* ================= ORG CHART ================= */
 
-// Builds a 3-level tree (CEO -> department head -> rest of the department) purely from
-// each employee's existing "department" field plus the two choices made in OrgChartTab
-// (ceoEmployeeId, departmentHeads). No per-employee "manager" field needed.
+// Builds the org tree purely from each employee's existing "branch" و"department" fields
+// plus the choices made in OrgChartTab (ceoEmployeeId, branchHeads, departmentHeads). No new
+// per-employee "manager" field needed. موظف مالوش فرع (زي كل الموظفين الحاليين قبل ما حد
+// يحدد فروع) بيفضل يظهر بنفس الشكل القديم بالظبط (تحت الرئيس التنفيذي على مستوى القسم مباشرة)
+// جوه departments - وده متعمّد عشان الهيكل الحالي ميتأثرش خالص لحد ما الأدمن يبدأ يحدد فروع.
+// موظف تابع لفرع بيتجمع تحت branches بدل كده (مستوى إضافي: فرع -> قسم -> أفراد).
 function buildOrgTree(employees, orgChart) {
   const ceo = employees.find((e) => e.id === orgChart.ceoEmployeeId) || null;
   const rest = employees.filter((e) => !ceo || e.id !== ceo.id);
-
-  const byDept = {};
-  rest.forEach((e) => {
-    const dept = (e.department || "").trim() || "بدون قسم";
-    (byDept[dept] = byDept[dept] || []).push(e);
-  });
-
   const departmentHeads = orgChart.departmentHeads || {};
-  const departments = Object.keys(byDept)
+  const branchHeads = orgChart.branchHeads || {};
+
+  function buildDepartments(members, keyForDept) {
+    const byDept = {};
+    members.forEach((e) => {
+      const dept = (e.department || "").trim() || "بدون قسم";
+      (byDept[dept] = byDept[dept] || []).push(e);
+    });
+    return Object.keys(byDept)
+      .sort((a, b) => a.localeCompare(b, "ar"))
+      .map((dept) => {
+        const deptMembers = byDept[dept];
+        const headId = departmentHeads[keyForDept(dept)];
+        const head = deptMembers.find((e) => e.id === headId) || null;
+        const others = deptMembers.filter((e) => !head || e.id !== head.id);
+        return { dept, head, others, total: deptMembers.length };
+      });
+  }
+
+  const withoutBranch = rest.filter((e) => !(e.branch || "").trim());
+  const withBranch = rest.filter((e) => (e.branch || "").trim());
+
+  const byBranch = {};
+  withBranch.forEach((e) => {
+    const b = e.branch.trim();
+    (byBranch[b] = byBranch[b] || []).push(e);
+  });
+  const branches = Object.keys(byBranch)
     .sort((a, b) => a.localeCompare(b, "ar"))
-    .map((dept) => {
-      const members = byDept[dept];
-      const headId = departmentHeads[dept];
+    .map((branch) => {
+      const members = byBranch[branch];
+      const headId = branchHeads[branch];
       const head = members.find((e) => e.id === headId) || null;
       const others = members.filter((e) => !head || e.id !== head.id);
-      return { dept, head, others, total: members.length };
+      return { branch, head, total: members.length, departments: buildDepartments(others, (dept) => `${branch}::${dept}`) };
     });
 
-  return { ceo, departments };
+  const departments = buildDepartments(withoutBranch, (dept) => dept);
+
+  return { ceo, branches, departments };
 }
 
-// نفس منطق resolveApprover في بوابة الموظف (رئيس القسم، أو الرئيس التنفيذي لو الموظف نفسه
-// رئيس قسم، أو محدش لو هو الرئيس التنفيذي نفسه) - بس هنا لأي استخدام عام محتاج يعرف "مين
-// المدير المباشر" (زي بروفايل الموظف وتنبيه التقييمات الدورية)، مش بس توجيه الطلبات. بتدوّر في
-// كل الموظفين المُمرَّرة من غير فلترة حالة، عشان مايتكررش نفس باگ "المسؤول مش نشط فاختفى".
+// نفس منطق resolveApprover في بوابة الموظف (رئيس القسم، أو رئيس الفرع لو الموظف نفسه رئيس
+// قسم تابع لفرع، أو الرئيس التنفيذي لو رئيس فرع أو رئيس قسم من غير فرع، أو محدش لو هو الرئيس
+// التنفيذي نفسه) - بس هنا لأي استخدام عام محتاج يعرف "مين المدير المباشر" (زي بروفايل الموظف
+// وتنبيه التقييمات الدورية)، مش بس توجيه الطلبات. بتدوّر في كل الموظفين المُمرَّرة من غير
+// فلترة حالة، عشان مايتكررش نفس باگ "المسؤول مش نشط فاختفى".
 function resolveDirectManager(employee, orgChart, employees) {
   if (!employee) return null;
   if (employee.id === orgChart.ceoEmployeeId) return null; // الرئيس التنفيذي مالوش حد فوقه
-  // لازم .trim() هنا زي بالظبط buildOrgTree وOrgChartTab (usedDepartments/setDeptHead) - وإلا
-  // أي مسافة زيادة/ناقصة في حقل القسم بتاع الموظف (حتى لو مش ظاهرة للعين) تخلي المطابقة مع
-  // مفتاح departmentHeads تفشل بصمت، والموظف يظهر "غير محدد في الهيكل التنظيمي" رغم إنه فعلاً
-  // متحدد كرئيس قسم صح في تاب الهيكل التنظيمي.
+  const branch = (employee.branch || "").trim();
+  const branchHeads = orgChart.branchHeads || {};
+  const departmentHeads = orgChart.departmentHeads || {};
+  if (branch && branchHeads[branch] === employee.id) {
+    // الموظف نفسه رئيس الفرع - مديره المباشر هو الرئيس التنفيذي مباشرة
+    return employees.find((e) => e.id === orgChart.ceoEmployeeId) || null;
+  }
+  // مفتاح departmentHeads بتاع الموظف ده: اسم القسم لوحده لو مالوش فرع (زي الأول بالظبط)، أو
+  // `${branch}::${dept}` لو تابع لفرع - عشان لو فرعين مختلفين فيهم قسم بنفس الاسم (زي "HR" في
+  // Pharma وFood)، كل واحد يحتفظ برئيسه الخاص منفصل عن التاني. لازم .trim() على القسم زي بالظبط
+  // buildOrgTree وOrgChartTab - وإلا أي مسافة زيادة/ناقصة تخلي المطابقة تفشل بصمت.
   const dept = (employee.department || "").trim();
-  const headId = (orgChart.departmentHeads || {})[dept];
+  const headId = departmentHeads[branch ? `${branch}::${dept}` : dept];
   if (headId === employee.id) {
-    // الموظف نفسه رئيس القسم - مديره المباشر هو الرئيس التنفيذي
+    // الموظف نفسه رئيس القسم - مديره المباشر رئيس الفرع (لو تابع لفرع وله رئيس محدد)، وإلا
+    // الرئيس التنفيذي مباشرة (زي الأول بالظبط لموظف من غير فرع).
+    if (branch && branchHeads[branch]) return employees.find((e) => e.id === branchHeads[branch]) || null;
     return employees.find((e) => e.id === orgChart.ceoEmployeeId) || null;
   }
   return employees.find((e) => e.id === headId) || null;
 }
 // عكس resolveDirectManager: مين تحت إدارة الموظف ده مباشرة. الرئيس التنفيذي تحته كل رؤساء
-// الأقسام، رئيس القسم تحته باقي أفراد قسمه، وأي موظف عادي تاني مفيش حد تحته (هيكل من 3 مستويات
-// بس، زي buildOrgTree بالظبط).
+// الفروع + رؤساء الأقسام اللي من غير فرع (زي الأول بالظبط) + رؤساء أقسام أي فرع مالوش رئيس
+// فرع محدد لسه (نفس فولباك resolveDirectManager بالظبط - يرفعوا للرئيس التنفيذي مباشرة لحد
+// ما حد يتحدد رئيس للفرع)، رئيس الفرع تحته رؤساء أقسام فرعه بس، رئيس القسم تحته باقي أفراد
+// قسمه (بنفس الفرع)، وأي موظف عادي تاني مفيش حد تحته.
 function resolveDirectReports(employee, orgChart, employees) {
   if (!employee) return [];
+  const branchHeads = orgChart.branchHeads || {};
+  const departmentHeads = orgChart.departmentHeads || {};
   if (employee.id === orgChart.ceoEmployeeId) {
-    const headIds = new Set(Object.values(orgChart.departmentHeads || {}));
-    return employees.filter((e) => headIds.has(e.id) && e.id !== employee.id);
+    const branchHeadIds = new Set(Object.values(branchHeads));
+    const rollUpIds = new Set(branchHeadIds);
+    Object.entries(departmentHeads).forEach(([key, id]) => {
+      if (!key.includes("::")) { rollUpIds.add(id); return; } // موظف من غير فرع - زي الأول بالظبط
+      const branch = key.slice(0, key.indexOf("::"));
+      if (!branchHeads[branch]) rollUpIds.add(id); // فرعه مالوش رئيس محدد - يرفع للرئيس التنفيذي مباشرة
+    });
+    return employees.filter((e) => rollUpIds.has(e.id) && e.id !== employee.id);
   }
+  const headedBranch = Object.keys(branchHeads).find((b) => branchHeads[b] === employee.id);
+  if (headedBranch) {
+    const scopedDeptHeadIds = new Set(
+      Object.entries(departmentHeads).filter(([key]) => key.startsWith(`${headedBranch}::`)).map(([, id]) => id)
+    );
+    return employees.filter((e) => scopedDeptHeadIds.has(e.id) && e.id !== employee.id);
+  }
+  const branch = (employee.branch || "").trim();
   const dept = (employee.department || "").trim();
-  const headId = (orgChart.departmentHeads || {})[dept];
+  const headId = departmentHeads[branch ? `${branch}::${dept}` : dept];
   if (headId === employee.id) {
-    return employees.filter((e) => (e.department || "").trim() === dept && e.id !== employee.id);
+    return employees.filter((e) => (e.department || "").trim() === dept && (e.branch || "").trim() === branch && e.id !== employee.id);
   }
   return [];
 }
@@ -7909,8 +7978,9 @@ function PersonBox({ person, role, tone = "teal", placeholder, subtitle, crown }
   const toneCls = {
     teal: "border-teal-700 bg-teal-50",
     amber: "border-amber-500 bg-amber-50",
+    sky: "border-sky-700 bg-sky-50", // مستوى الفروع (بين الرئيس التنفيذي ورؤساء الأقسام)
   }[tone];
-  const placeholderBorder = tone === "teal" ? "border-teal-300" : "border-amber-300";
+  const placeholderBorder = tone === "teal" ? "border-teal-300" : tone === "sky" ? "border-sky-300" : "border-amber-300";
 
   if (!person) {
     return (
@@ -7934,62 +8004,98 @@ function PersonBox({ person, role, tone = "teal", placeholder, subtitle, crown }
 
 // Shared between the interactive tab and the print view — `forceExpanded` skips the
 // show/hide toggle and just renders every department's members (used for printing).
+// صف الأقسام (تحت الرئيس التنفيذي مباشرة لموظف من غير فرع، أو تحت رئيس فرع لموظف تابع لفرع) -
+// مكوّن مشترك عشان نفس الشكل بالظبط يتكرر في الحالتين من غير تكرار الكود. keyPrefix بيمنع
+// تصادم مفاتيح expanded/toggle لو نفس اسم القسم موجود في أكتر من فرع (زي "HR" في Pharma وFood).
+function DepartmentRow({ departments, expanded, onToggle, forceExpanded, keyPrefix = "" }) {
+  const { t } = useLang();
+  if (departments.length === 0) return null;
+  return (
+    <>
+      <div className="h-6 w-px bg-stone-300" />
+      <div className="flex items-start justify-center border-t border-stone-300 pt-6">
+        {departments.map((d) => {
+          const toggleKey = `${keyPrefix}${d.dept}`;
+          const isOpen = forceExpanded || !!expanded[toggleKey];
+          return (
+            <div key={d.dept} className="relative flex flex-col items-center px-4">
+              <div className="absolute -top-6 h-6 w-px bg-stone-300" />
+              <PersonBox
+                person={d.head}
+                role={d.dept}
+                tone="amber"
+                placeholder="لم يتم تحديد رئيس الإدارة"
+                subtitle={t("{n} " + (d.total === 1 ? "موظف" : "موظفين"), { n: d.total })}
+              />
+              {d.others.length > 0 && (
+                <>
+                  {!forceExpanded && (
+                    <button
+                      onClick={() => onToggle(toggleKey)}
+                      className="mt-2 flex items-center gap-1 text-xs font-medium text-teal-700 hover:underline"
+                    >
+                      <ChevronDown size={13} className={`transition-transform ${isOpen ? "rotate-180" : ""}`} />
+                      {isOpen ? t("إخفاء الموظفين") : t("عرض الموظفين ({n})", { n: d.others.length })}
+                    </button>
+                  )}
+                  {isOpen && (
+                    <div className="mt-2 flex flex-col items-center">
+                      <div className="h-4 w-px bg-stone-300" />
+                      <div className="flex w-56 flex-col gap-1.5 rounded-xl border border-dashed border-stone-300 bg-stone-50/70 p-2.5">
+                        {d.others.map((e) => (
+                          <div key={e.id} className="rounded-lg border border-stone-200 bg-white px-2.5 py-1.5 text-right">
+                            <div className="text-xs font-semibold text-slate-700">{e.name}</div>
+                            <div className="text-[11px] text-slate-400">{e.position || "—"}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+// بلاغ هاني: "الهيكل التنظيمي مش جايب الفروع المختلفه في الشركه" - مستوى الفروع بيتعرض بين
+// الرئيس التنفيذي والأقسام (تون sky مميز عن تون الأقسام amber)، وكل فرع تحته صف أقسامه هو بس
+// (DepartmentRow بنفس الشكل بالظبط، بس بمفاتيح toggle مقصورة على الفرع عشان مايحصلش تصادم بين
+// فرعين فيهم نفس اسم القسم). departments (الموظفين من غير فرع) بتتعرض تحت زي الأول بالظبط -
+// مفيش تغيير بصري خالص للحالة الحالية (كل الموظفين من غير فرع لسه).
 function OrgChartTree({ tree, expanded, onToggle, forceExpanded }) {
   const { t } = useLang();
-  const { ceo, departments } = tree;
+  const { ceo, branches, departments } = tree;
 
   return (
     <div className="flex min-w-max flex-col items-center px-4">
       <PersonBox person={ceo} role="الرئيس التنفيذي" tone="teal" placeholder="لم يتم تحديد الرئيس التنفيذي" crown />
 
-      {departments.length > 0 && (
+      {branches.length > 0 && (
         <>
           <div className="h-6 w-px bg-stone-300" />
-          <div className="flex items-start justify-center border-t border-stone-300 pt-6">
-            {departments.map((d) => {
-              const isOpen = forceExpanded || !!expanded[d.dept];
-              return (
-                <div key={d.dept} className="relative flex flex-col items-center px-4">
-                  <div className="absolute -top-6 h-6 w-px bg-stone-300" />
-                  <PersonBox
-                    person={d.head}
-                    role={d.dept}
-                    tone="amber"
-                    placeholder="لم يتم تحديد رئيس الإدارة"
-                    subtitle={t("{n} " + (d.total === 1 ? "موظف" : "موظفين"), { n: d.total })}
-                  />
-                  {d.others.length > 0 && (
-                    <>
-                      {!forceExpanded && (
-                        <button
-                          onClick={() => onToggle(d.dept)}
-                          className="mt-2 flex items-center gap-1 text-xs font-medium text-teal-700 hover:underline"
-                        >
-                          <ChevronDown size={13} className={`transition-transform ${isOpen ? "rotate-180" : ""}`} />
-                          {isOpen ? t("إخفاء الموظفين") : t("عرض الموظفين ({n})", { n: d.others.length })}
-                        </button>
-                      )}
-                      {isOpen && (
-                        <div className="mt-2 flex flex-col items-center">
-                          <div className="h-4 w-px bg-stone-300" />
-                          <div className="flex w-56 flex-col gap-1.5 rounded-xl border border-dashed border-stone-300 bg-stone-50/70 p-2.5">
-                            {d.others.map((e) => (
-                              <div key={e.id} className="rounded-lg border border-stone-200 bg-white px-2.5 py-1.5 text-right">
-                                <div className="text-xs font-semibold text-slate-700">{e.name}</div>
-                                <div className="text-[11px] text-slate-400">{e.position || "—"}</div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              );
-            })}
+          <div className="flex items-start justify-center gap-8 border-t border-stone-300 pt-6">
+            {branches.map((b) => (
+              <div key={b.branch} className="relative flex flex-col items-center px-2">
+                <div className="absolute -top-6 h-6 w-px bg-stone-300" />
+                <PersonBox
+                  person={b.head}
+                  role={b.branch}
+                  tone="sky"
+                  placeholder="لم يتم تحديد رئيس الفرع"
+                  subtitle={t("{n} " + (b.total === 1 ? "موظف" : "موظفين"), { n: b.total })}
+                />
+                <DepartmentRow departments={b.departments} expanded={expanded} onToggle={onToggle} forceExpanded={forceExpanded} keyPrefix={`${b.branch}::`} />
+              </div>
+            ))}
           </div>
         </>
       )}
+
+      <DepartmentRow departments={departments} expanded={expanded} onToggle={onToggle} forceExpanded={forceExpanded} />
     </div>
   );
 }
@@ -7997,11 +8103,23 @@ function OrgChartTree({ tree, expanded, onToggle, forceExpanded }) {
 function OrgChartTab({ employees, orgChart, setOrgChart, onPrint }) {
   const { t } = useLang();
   const [expanded, setExpanded] = useState({});
-  function toggle(dept) { setExpanded((s) => ({ ...s, [dept]: !s[dept] })); }
+  function toggle(key) { setExpanded((s) => ({ ...s, [key]: !s[key] })); }
 
+  // بلاغ هاني: "الهيكل التنظيمي مش جايب الفروع المختلفه في الشركه (HQ - Pharma - Food -
+  // Technology)" - employee.branch كان موجود أصلًا (فورم الموظف + تصدير الإكسل) بس شاشة تحديد
+  // المناصب هنا كانت بتتجاهله وبتبني "رئيس/مديرة كل إدارة" من كل الموظفين مع بعض بغض النظر عن
+  // فرعهم. usedBranches بتجمع الفروع الفعلية (نفس منطق knownBranches في EmployeeForm)، وقسمنا
+  // القسم الحالي (usedDepartments/setDeptHead) عشان يفضل بالظبط زي ما كان لموظف من غير فرع -
+  // مفيش تغيير سلوك خالص للـ 45 موظف الحاليين لحد ما حد يتحدد له فرع.
+  const unbranchedEmployees = useMemo(() => employees.filter((e) => !(e.branch || "").trim()), [employees]);
   const usedDepartments = useMemo(() => {
     const set = new Set();
-    employees.forEach((e) => { const d = (e.department || "").trim(); if (d) set.add(d); });
+    unbranchedEmployees.forEach((e) => { const d = (e.department || "").trim(); if (d) set.add(d); });
+    return Array.from(set).sort((a, b) => a.localeCompare(b, "ar"));
+  }, [unbranchedEmployees]);
+  const usedBranches = useMemo(() => {
+    const set = new Set();
+    employees.forEach((e) => { const b = (e.branch || "").trim(); if (b) set.add(b); });
     return Array.from(set).sort((a, b) => a.localeCompare(b, "ar"));
   }, [employees]);
 
@@ -8013,6 +8131,19 @@ function OrgChartTab({ employees, orgChart, setOrgChart, onPrint }) {
     const heads = { ...(orgChart.departmentHeads || {}) };
     if (id) heads[dept] = id; else delete heads[dept];
     setOrgChart({ ...orgChart, departmentHeads: heads });
+  }
+  // نفس setDeptHead بالظبط، بس بمفتاح مقصور على الفرع (`${branch}::${dept}`) - عشان لو فرعين
+  // مختلفين فيهم قسم بنفس الاسم (زي "HR" في Pharma وFood)، كل واحد يحتفظ برئيسه الخاص منفصل.
+  function setBranchDeptHead(branch, dept, id) {
+    const heads = { ...(orgChart.departmentHeads || {}) };
+    const key = `${branch}::${dept}`;
+    if (id) heads[key] = id; else delete heads[key];
+    setOrgChart({ ...orgChart, departmentHeads: heads });
+  }
+  function setBranchHead(branch, id) {
+    const heads = { ...(orgChart.branchHeads || {}) };
+    if (id) heads[branch] = id; else delete heads[branch];
+    setOrgChart({ ...orgChart, branchHeads: heads });
   }
 
   return (
@@ -8039,12 +8170,60 @@ function OrgChartTab({ employees, orgChart, setOrgChart, onPrint }) {
           </Field>
         </div>
 
+        {usedBranches.length > 0 && (
+          <div className="mt-5 border-t border-stone-100 pt-4">
+            <div className="mb-3 text-sm font-medium text-slate-600">{t("الفروع")}</div>
+            <div className="space-y-5">
+              {usedBranches.map((branch) => {
+                const branchEmployees = employees.filter((e) => (e.branch || "").trim() === branch && e.id !== orgChart.ceoEmployeeId);
+                const branchHeadId = (orgChart.branchHeads || {})[branch] || "";
+                const branchDepartments = Array.from(
+                  new Set(branchEmployees.map((e) => (e.department || "").trim()).filter(Boolean))
+                ).sort((a, b) => a.localeCompare(b, "ar"));
+                return (
+                  <div key={branch} className="rounded-xl border border-stone-200 p-4">
+                    <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+                      <div className="max-w-xs flex-1">
+                        <Field label={t("رئيس الفرع: {branch}", { branch })}>
+                          <select className={inputCls} value={branchHeadId} onChange={(e) => setBranchHead(branch, e.target.value)}>
+                            <option value="">{t("— بدون تحديد —")}</option>
+                            {branchEmployees.map((e) => <option key={e.id} value={e.id}>{e.name}{e.position ? ` — ${e.position}` : ""}</option>)}
+                          </select>
+                        </Field>
+                      </div>
+                      <span className="text-xs text-slate-400">{t("{n} موظف", { n: branchEmployees.length })}</span>
+                    </div>
+                    {branchDepartments.length > 0 ? (
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+                        {branchDepartments.map((dept) => {
+                          const candidates = branchEmployees.filter((e) => (e.department || "").trim() === dept && e.id !== branchHeadId);
+                          return (
+                            <label key={dept} className="block">
+                              <span className="mb-1 block text-xs font-medium text-slate-500">{dept}</span>
+                              <select className={`${inputCls} text-xs`} value={(orgChart.departmentHeads || {})[`${branch}::${dept}`] || ""} onChange={(e) => setBranchDeptHead(branch, dept, e.target.value)}>
+                                <option value="">{t("— بدون تحديد —")}</option>
+                                {candidates.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+                              </select>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-400">{t("مفيش أقسام متسجلة لموظفي الفرع ده لسه.")}</p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {usedDepartments.length > 0 ? (
           <div className="mt-5 border-t border-stone-100 pt-4">
             <div className="mb-2.5 text-sm font-medium text-slate-600">{t("رئيس/مديرة كل إدارة")}</div>
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
               {usedDepartments.map((dept) => {
-                const candidates = employees.filter((e) => (e.department || "").trim() === dept && e.id !== orgChart.ceoEmployeeId);
+                const candidates = unbranchedEmployees.filter((e) => (e.department || "").trim() === dept && e.id !== orgChart.ceoEmployeeId);
                 return (
                   <label key={dept} className="block">
                     <span className="mb-1 block text-xs font-medium text-slate-500">{dept}</span>
@@ -8058,7 +8237,9 @@ function OrgChartTab({ employees, orgChart, setOrgChart, onPrint }) {
             </div>
           </div>
         ) : (
-          <p className="mt-4 text-xs text-slate-400">{t("مفيش أقسام متسجلة لسه — اكتب قسم كل موظف من تاب \"الموظفون والعقود\" الأول عشان الهيكل يتبني.")}</p>
+          usedBranches.length === 0 && (
+            <p className="mt-4 text-xs text-slate-400">{t("مفيش أقسام متسجلة لسه — اكتب قسم كل موظف من تاب \"الموظفون والعقود\" الأول عشان الهيكل يتبني.")}</p>
+          )
         )}
         {unassignedCount > 0 && (
           <p className="mt-3 text-xs text-amber-600">{t("{n} موظف من غير قسم محدد — هيظهروا تحت مجموعة \"بدون قسم\" في الهيكل.", { n: unassignedCount })}</p>
@@ -8553,6 +8734,7 @@ const TRANSLATIONS = {
   "{n} موظف سابق": "{n} former employee(s)",
   "{n} موظف من غير قسم محدد — هيظهروا تحت مجموعة \"بدون قسم\" في الهيكل.": "{n} employee(s) have no department set — they'll appear under \"No Department\" in the chart.",
   "{n} موظف نشط": "{n} active employee(s)",
+  "{n} موظف": "{n} employee(s)",
   "{n} يوم": "{n} day(s)",
   "آخر يوم عمل": "Last working day",
   "أخرى": "Other",
@@ -8758,6 +8940,10 @@ const TRANSLATIONS = {
   "دقايق التأخير": "Late Minutes",
   "دقايق التأخير (لو الملف فيه عمود بيها — بتلغي أي حالة \"حاضر\" متضاربة معاها)": "Late Minutes (if the file has a column for it — overrides any conflicting \"Present\" status)",
   "رئيس/مديرة كل إدارة": "Head of Each Department",
+  "الفروع": "Branches",
+  "رئيس الفرع: {branch}": "Branch head: {branch}",
+  "لم يتم تحديد رئيس الفرع": "Branch head not set",
+  "مفيش أقسام متسجلة لموظفي الفرع ده لسه.": "No departments recorded for this branch's employees yet.",
   "رجوع": "Back",
   "رصيد إجازات {name} باقيله {n} يوم بس": "{name}'s leave balance has only {n} day(s) left",
   "رصيد الإجازات السنوي (يوم)": "Annual Leave Balance (days)",
