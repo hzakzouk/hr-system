@@ -789,6 +789,25 @@ const CANDIDATE_SOURCES = ["إعلان وظيفة", "توصية موظف", "لي
 // still gets its own Kanban column like the other five.
 const CANDIDATE_STAGES = ["جديد", "قيد المراجعة", "مقابلة", "عرض عمل", "تم التعيين", "مرفوض"];
 
+// بلاغ هاني: "عايز امكانيه ارسال واتساب لكل مرشح في مرحلة 'المقابلة'... و رسالة لكل مرشح في
+// مرحلة 'عرض العمل'... الرسايل دي تتبعت Bulk مش واحده واحده و كل رساله فيها معاد مختلف لكل
+// مرشح". القوالب دي بتتعبى بـ fillMessageTemplate (نفس فكرة translate() بالظبط: استبدال
+// {token} بقيمته) - كل مرشح بياخد نص مخصص له (معاد/مكان/مستندات خاصة بيه)، والأدمن يقدر يعدّل
+// نص القالب نفسه من BulkCandidateWhatsAppModal قبل الإرسال. مفيش قناة واتساب رسمية متكاملة مع
+// النظام (زي buildAlertWhatsAppLink فوق بالظبط) فالإرسال لسه wa.me links بيفتحها الأدمن - "Bulk"
+// هنا معناها إعداد كل الرسايل المخصصة مرة واحدة وفتحها كلها بضغطة واحدة، مش كتابة كل رسالة لوحدها.
+const DEFAULT_INTERVIEW_WHATSAPP_TEMPLATE =
+  "مرحبًا {name}،\nتم تحديد موعد مقابلة التوظيف الخاصة بك لوظيفة {position} يوم {date} الساعة {time}.\nمكان المقابلة: {location}\nبرجاء الحضور في الموعد، ونتشرف بلقائك.";
+const DEFAULT_OFFER_WHATSAPP_TEMPLATE =
+  "مرحبًا {name}،\nيسعدنا إبلاغك بقبولك لوظيفة {position} معنا.\nالمستندات المطلوبة للتعيين:\n{documents}\nبرجاء إحضارها وتقديمها يوم {date} في: {location}\nنتطلع لانضمامك لفريق العمل.";
+// استبدال {token} في نص القالب بقيمته - نفس منطق translate() بالظبط (line ~107) بس كدالة عامة
+// مستقلة تشتغل على أي نص وأي مجموعة متغيرات، مش بس ترجمة الواجهة.
+function fillMessageTemplate(template, vars) {
+  let s = template || "";
+  Object.keys(vars || {}).forEach((k) => { s = s.split(`{${k}}`).join(vars[k] ?? ""); });
+  return s;
+}
+
 const DEFAULT_SETTINGS = {
   insuranceRate: 11,
   overtimeMultiplier: 1.5,
@@ -7391,6 +7410,193 @@ function CandidateCard({ candidate, onEdit, onDelete, onStageChange, onConvert }
   );
 }
 
+// بلاغ هاني: "عايز امكانيه ارسال واتساب لكل مرشح في مرحلة 'المقابلة'... و رسالة لكل مرشح في
+// مرحلة 'عرض العمل'... الرسايل دي تتبعت Bulk مش واحده واحده و كل رساله فيها معاد مختلف لكل
+// مرشح" - مودال واحد بيتفتح لمرحلة "مقابلة" أو "عرض عمل" (isInterview بيفرّق بينهم)، وبيعرض كل
+// مرشح في المرحلة دي في صف منفصل بحقوله الخاصة (معاد/مكان المقابلة، أو مستندات/معاد/مكان تقديم
+// الأوراق) - كل صف بيتخزن في candidate نفسه (interviewDate/interviewTime/interviewLocation أو
+// offerDocuments/offerDate/offerLocation) عشان القيم تفضل موجودة لو الأدمن رجع تاني. "تطبيق على
+// الكل" بس تعبئة سريعة لقيمة مشتركة (زي معاد مقابلة جماعي أو نفس مستندات التعيين) - لسه كل صف
+// قابل للتعديل لوحده بعدها، مطابقة تمامًا لطلب "معاد مختلف لكل مرشح".
+// ملحوظة مهمة: مفيش قناة واتساب رسمية (WhatsApp Business API) متكاملة مع النظام - زي باقي
+// أزرار الواتساب في السيستم (RemindButton) الإرسال الفعلي لسه wa.me link بيفتح واتساب بالنص
+// جاهز والأدمن هو اللي يدوس "إرسال" فيه (واتساب نفسه مش بيسمح بإرسال تلقائي من غير تفاعل بشري
+// حقيقي، حتى مع رابط جاهز). "Bulk" هنا معناها إن كل الرسايل المخصصة بتتجهز مرة واحدة وتتفتح كلها
+// بضغطة واحدة ("فتح الكل") بدل ما الأدمن يكتب كل رسالة لوحدها.
+function BulkCandidateWhatsAppModal({ stage, candidates, setCandidates, onClose }) {
+  const { t } = useLang();
+  const isInterview = stage === "مقابلة";
+  const stageCandidates = useMemo(() => candidates.filter((c) => c.stage === stage), [candidates, stage]);
+
+  const [template, setTemplate] = useState(isInterview ? DEFAULT_INTERVIEW_WHATSAPP_TEMPLATE : DEFAULT_OFFER_WHATSAPP_TEMPLATE);
+  const [rows, setRows] = useState(() => {
+    const init = {};
+    stageCandidates.forEach((c) => {
+      init[c.id] = isInterview
+        ? { date: c.interviewDate || todayISO(), time: c.interviewTime || "", location: c.interviewLocation || "" }
+        : { documents: c.offerDocuments || "", date: c.offerDate || todayISO(), location: c.offerLocation || "" };
+    });
+    return init;
+  });
+  const [shared, setShared] = useState(isInterview ? { date: "", time: "", location: "" } : { documents: "", date: "", location: "" });
+  const [sentIds, setSentIds] = useState(() => new Set());
+
+  function updateRow(id, key, value) { setRows((r) => ({ ...r, [id]: { ...r[id], [key]: value } })); }
+  function applySharedToAll() {
+    setRows((r) => {
+      const next = { ...r };
+      stageCandidates.forEach((c) => { next[c.id] = { ...next[c.id], ...shared }; });
+      return next;
+    });
+  }
+  function messageFor(c) {
+    const row = rows[c.id] || {};
+    return fillMessageTemplate(template, { name: c.name || "", position: c.position || "", ...row });
+  }
+  // بيحفظ قيم الصف (معاد/مكان أو مستندات/معاد/مكان) جوه سجل المرشح نفسه - بيتنفذ عند فتح رسالة
+  // أي مرشح (مش لازم زرار "حفظ" منفصل)، عشان القيم تتسجل أول ما تتستخدم فعليًا.
+  function persistRow(c) {
+    const row = rows[c.id] || {};
+    const patch = isInterview
+      ? { interviewDate: row.date || "", interviewTime: row.time || "", interviewLocation: row.location || "" }
+      : { offerDocuments: row.documents || "", offerDate: row.date || "", offerLocation: row.location || "" };
+    setCandidates(candidates.map((x) => (x.id === c.id ? { ...x, ...patch } : x)));
+  }
+  function sendOne(c) {
+    const link = buildAlertWhatsAppLink(c, messageFor(c));
+    if (!link) return;
+    persistRow(c);
+    setSentIds((s) => new Set(s).add(c.id));
+    window.open(link, "_blank", "noopener,noreferrer");
+  }
+  function sendAll() {
+    stageCandidates.forEach((c) => {
+      if (sentIds.has(c.id)) return;
+      const link = buildAlertWhatsAppLink(c, messageFor(c));
+      if (!link) return;
+      window.open(link, "_blank", "noopener,noreferrer");
+    });
+    stageCandidates.forEach((c) => persistRow(c));
+    setSentIds((s) => {
+      const next = new Set(s);
+      stageCandidates.forEach((c) => { if (buildAlertWhatsAppLink(c, messageFor(c))) next.add(c.id); });
+      return next;
+    });
+  }
+  const sendableCount = stageCandidates.filter((c) => !!phoneForWhatsApp(c.phone) && !sentIds.has(c.id)).length;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+      <div className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-xl">
+        <div className="flex items-center justify-between border-b border-stone-200 px-6 py-4">
+          <h3 className="text-lg font-bold text-slate-800">
+            {isInterview ? t("رسائل واتساب لمرشحي مرحلة \"مقابلة\"") : t("رسائل واتساب لمرشحي مرحلة \"عرض عمل\"")}
+          </h3>
+          <button onClick={onClose} className="rounded-full p-1.5 text-slate-400 hover:bg-stone-100 hover:text-slate-600"><X size={18} /></button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6">
+          {stageCandidates.length === 0 ? (
+            <EmptyState text="مفيش مرشحين في المرحلة دي حاليًا." />
+          ) : (
+            <div className="space-y-5">
+              <Field label="نص الرسالة (القالب)">
+                <textarea rows={4} className={inputCls} value={template} onChange={(e) => setTemplate(e.target.value)} />
+                <p className="mt-1 text-xs text-slate-400">
+                  {isInterview
+                    ? t("المتغيرات المتاحة: {name} {position} {date} {time} {location}")
+                    : t("المتغيرات المتاحة: {name} {position} {documents} {date} {location}")}
+                </p>
+              </Field>
+
+              <div className="rounded-xl border border-dashed border-teal-300 bg-teal-50/50 p-3">
+                <div className="mb-2 text-xs font-semibold text-teal-800">{t("تطبيق قيمة مشتركة على كل المرشحين (اختياري)")}</div>
+                <div className={`grid gap-2 ${isInterview ? "grid-cols-3" : "grid-cols-2"}`}>
+                  {isInterview ? (
+                    <>
+                      <input type="date" className={`${inputCls} text-xs`} value={shared.date} onChange={(e) => setShared((s) => ({ ...s, date: e.target.value }))} />
+                      <input type="time" className={`${inputCls} text-xs`} value={shared.time} onChange={(e) => setShared((s) => ({ ...s, time: e.target.value }))} />
+                      <input className={`${inputCls} text-xs`} placeholder={t("مكان المقابلة")} value={shared.location} onChange={(e) => setShared((s) => ({ ...s, location: e.target.value }))} />
+                    </>
+                  ) : (
+                    <>
+                      <input type="date" className={`${inputCls} text-xs`} value={shared.date} onChange={(e) => setShared((s) => ({ ...s, date: e.target.value }))} />
+                      <input className={`${inputCls} text-xs`} placeholder={t("مكان تقديم الأوراق")} value={shared.location} onChange={(e) => setShared((s) => ({ ...s, location: e.target.value }))} />
+                    </>
+                  )}
+                </div>
+                {!isInterview && (
+                  <textarea rows={2} className={`${inputCls} mt-2 text-xs`} placeholder={t("المستندات المطلوبة (سطر لكل مستند)")} value={shared.documents} onChange={(e) => setShared((s) => ({ ...s, documents: e.target.value }))} />
+                )}
+                <button onClick={applySharedToAll} className="mt-2 rounded-md border border-teal-700 px-2.5 py-1 text-xs font-semibold text-teal-800 hover:bg-teal-100">
+                  {t("تطبيق على كل المرشحين")}
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                {stageCandidates.map((c) => {
+                  const row = rows[c.id] || {};
+                  const hasPhone = !!phoneForWhatsApp(c.phone);
+                  const sent = sentIds.has(c.id);
+                  return (
+                    <Card key={c.id} className="p-3">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-semibold text-slate-800">{c.name}</div>
+                          <div className="truncate text-xs text-slate-400">{c.position || "—"}{c.phone ? ` · ${c.phone}` : ""}</div>
+                        </div>
+                        {sent && <span className="flex shrink-0 items-center gap-1 text-[11px] font-semibold text-emerald-700"><Check size={12} /> {t("تم الفتح")}</span>}
+                      </div>
+                      <div className={`grid gap-2 ${isInterview ? "grid-cols-3" : "grid-cols-2"}`}>
+                        {isInterview ? (
+                          <>
+                            <input type="date" className={`${inputCls} text-xs`} value={row.date || ""} onChange={(e) => updateRow(c.id, "date", e.target.value)} />
+                            <input type="time" className={`${inputCls} text-xs`} value={row.time || ""} onChange={(e) => updateRow(c.id, "time", e.target.value)} />
+                            <input className={`${inputCls} text-xs`} placeholder={t("مكان المقابلة")} value={row.location || ""} onChange={(e) => updateRow(c.id, "location", e.target.value)} />
+                          </>
+                        ) : (
+                          <>
+                            <input type="date" className={`${inputCls} text-xs`} value={row.date || ""} onChange={(e) => updateRow(c.id, "date", e.target.value)} />
+                            <input className={`${inputCls} text-xs`} placeholder={t("مكان تقديم الأوراق")} value={row.location || ""} onChange={(e) => updateRow(c.id, "location", e.target.value)} />
+                          </>
+                        )}
+                      </div>
+                      {!isInterview && (
+                        <textarea rows={2} className={`${inputCls} mt-2 text-xs`} placeholder={t("المستندات المطلوبة (سطر لكل مستند)")} value={row.documents || ""} onChange={(e) => updateRow(c.id, "documents", e.target.value)} />
+                      )}
+                      <div className="mt-2 whitespace-pre-line rounded-lg bg-stone-50 p-2 text-[11px] text-slate-500">{messageFor(c)}</div>
+                      {hasPhone ? (
+                        <button onClick={() => sendOne(c)} className="mt-2 flex items-center gap-1.5 rounded-md bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700">
+                          <MessageCircle size={13} /> {sent ? t("إعادة الفتح") : t("فتح واتساب")}
+                        </button>
+                      ) : (
+                        <p className="mt-2 text-xs text-amber-600">{t("مفيش رقم موبايل مسجل للمرشح ده.")}</p>
+                      )}
+                    </Card>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {stageCandidates.length > 0 && (
+          <div className="flex items-center justify-between gap-2 border-t border-stone-200 px-6 py-4">
+            <p className="text-xs text-slate-400">{t("هيتفتح تاب واتساب منفصل لكل مرشح برسالته المخصصة - المتصفح ممكن يطلب إذن السماح بفتح أكتر من تاب.")}</p>
+            <button
+              onClick={sendAll}
+              disabled={sendableCount === 0}
+              className="flex shrink-0 items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <MessageCircle size={15} /> {t("فتح واتساب لكل المرشحين ({n})", { n: sendableCount })}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function RecruitmentTab({ candidates, setCandidates, positions, setPositions, onConvert, settings }) {
   const { t } = useLang();
   const [view, setView] = useState("candidates"); // candidates | positions
@@ -7400,6 +7606,10 @@ function RecruitmentTab({ candidates, setCandidates, positions, setPositions, on
   const [editingPos, setEditingPos] = useState(null);
   const [expandedPosId, setExpandedPosId] = useState(null);
   const [query, setQuery] = useState("");
+  // بلاغ هاني: "عايز امكانيه ارسال واتساب لكل مرشح في مرحلة 'المقابلة'... و 'عرض العمل'" - بيحمل
+  // اسم المرحلة اللي فاتح لها المودال دلوقتي (null = مقفول)، BulkCandidateWhatsAppModal بيستخدمه
+  // مباشرة عشان يعرف يفلتر candidates ويختار القالب الافتراضي المناسب (مقابلة/عرض عمل).
+  const [bulkWaStage, setBulkWaStage] = useState(null);
 
   const filtered = useMemo(() => candidates.filter((c) => candidateMatchesQuery(c, query)), [candidates, query]);
   const pipelineCounts = useMemo(() => computeCandidatePipelineCounts(filtered), [filtered]);
@@ -7462,6 +7672,14 @@ function RecruitmentTab({ candidates, setCandidates, positions, setPositions, on
                     <StampBadge tone={CANDIDATE_STAGE_TONE[stage]}>{stage}</StampBadge>
                     <span className="text-xs font-semibold tabular-nums text-slate-400">{count}</span>
                   </div>
+                  {(stage === "مقابلة" || stage === "عرض عمل") && count > 0 && (
+                    <button
+                      onClick={() => setBulkWaStage(stage)}
+                      className="mb-2 flex w-full items-center justify-center gap-1 rounded-md border border-emerald-600 px-2 py-1 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-50"
+                    >
+                      <MessageCircle size={12} /> {t("رسائل واتساب Bulk")}
+                    </button>
+                  )}
                   <div className="space-y-2.5">
                     {filtered.filter((c) => c.stage === stage).map((c) => (
                       <CandidateCard
@@ -7481,6 +7699,15 @@ function RecruitmentTab({ candidates, setCandidates, positions, setPositions, on
           <Modal open={modalOpen} onClose={() => { setModalOpen(false); setEditing(null); }} title={editing ? "تعديل بيانات مرشح" : "إضافة مرشح جديد"} wide>
             <CandidateForm initial={editing} positions={positions} onSave={save} onCancel={() => { setModalOpen(false); setEditing(null); }} />
           </Modal>
+
+          {bulkWaStage && (
+            <BulkCandidateWhatsAppModal
+              stage={bulkWaStage}
+              candidates={candidates}
+              setCandidates={setCandidates}
+              onClose={() => setBulkWaStage(null)}
+            />
+          )}
         </>
       ) : (
         <>
@@ -8926,6 +9153,24 @@ const TRANSLATIONS = {
   "رقم عشوائي": "Random PIN",
   "إرسال كود الدخول والرقم السري عبر واتساب": "Send sign-in code and PIN via WhatsApp",
   "مفيش رقم موبايل مسجل للموظف ده - سجله من تعديل البيانات عشان تقدر تبعتله عبر واتساب المرة الجاية، ولحد ما تعمل كده لازم تبلغه يدويًا.": "This employee has no phone number on file - add one via Edit so you can send via WhatsApp next time; until then you'll need to tell them manually.",
+  "رسائل واتساب Bulk": "Bulk WhatsApp",
+  "رسائل واتساب لمرشحي مرحلة \"مقابلة\"": "WhatsApp messages for \"Interview\" stage candidates",
+  "رسائل واتساب لمرشحي مرحلة \"عرض عمل\"": "WhatsApp messages for \"Job Offer\" stage candidates",
+  "نص الرسالة (القالب)": "Message text (template)",
+  "المتغيرات المتاحة: {name} {position} {date} {time} {location}": "Available variables: {name} {position} {date} {time} {location}",
+  "المتغيرات المتاحة: {name} {position} {documents} {date} {location}": "Available variables: {name} {position} {documents} {date} {location}",
+  "تطبيق قيمة مشتركة على كل المرشحين (اختياري)": "Apply a shared value to all candidates (optional)",
+  "مكان المقابلة": "Interview location",
+  "مكان تقديم الأوراق": "Paperwork submission location",
+  "المستندات المطلوبة (سطر لكل مستند)": "Required documents (one per line)",
+  "تطبيق على كل المرشحين": "Apply to all candidates",
+  "تم الفتح": "Opened",
+  "فتح واتساب": "Open WhatsApp",
+  "إعادة الفتح": "Reopen",
+  "مفيش رقم موبايل مسجل للمرشح ده.": "This candidate has no phone number on file.",
+  "هيتفتح تاب واتساب منفصل لكل مرشح برسالته المخصصة - المتصفح ممكن يطلب إذن السماح بفتح أكتر من تاب.": "A separate WhatsApp tab will open for each candidate with their own message - your browser may ask permission to allow multiple tabs.",
+  "فتح واتساب لكل المرشحين ({n})": "Open WhatsApp for all candidates ({n})",
+  "مفيش مرشحين في المرحلة دي حاليًا.": "No candidates in this stage right now.",
   "تأكيد ({u} تحديث + {c} جديد)": "Confirm ({u} updated + {c} new)",
   "تأكيد الاستيراد": "Confirm Import",
   "تأكيد الدمج": "Confirm Merge",
