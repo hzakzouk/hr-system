@@ -700,21 +700,16 @@ function latestCompletedPeriodicReview(reviews, employeeId) {
 // Curve" في تاب التقارير. موظف من غير أي تقييم دوري مكتمل بيتستبعد بالكامل من القسم بتاعه هنا
 // (مش هناك "تقدير" نحسب نسبته منه أصلًا)، فـ totalRated ممكن يبقى أقل من إجمالي عدد موظفي
 // القسم - ده متعمّد ومختلف عن headcount العادي.
-// بلاغ هاني: "ده كمان محتاج فلتر للفترة او تاريخ التقييم" (على شارت Bell Curve) - opts.dateFrom
-// وopts.dateTo (تاريخ اكتمال التقييم completedAt، وdate كبديل لو completedAt مش موجود - نفس
-// أولوية latestCompletedPeriodicReview بالظبط) بيفلتروا قايمة reviews قبل ما ندوّر على "أحدث
-// تقييم دوري مكتمل" لكل موظف - يعني بالفترة دي بنسأل "إيه أحدث تقييم مكتمل للموظف ده *جوه
-// الفترة المختارة*" مش أحدث تقييم على الإطلاق.
+// بلاغ هاني: "ده كمان محتاج فلتر للفترة او تاريخ التقييم" (على شارت Bell Curve)، وبعدها: "تاريخ
+// التقييم يبقي بإسم 'نصف سنوي 2026' أو 'سنوي 2026' وهكذا" - يعني الفلتر مش فترة تاريخ حرة، ده
+// جولة تقييم محددة (reviewType + year) زي ما التقييمات بتتسمى فعلًا في باقي النظام. opts.reviewType
+// وopts.year (لو الاتنين موجودين سوا) بيقصروا قايمة reviews على الجولة دي بالظبط قبل ما ندوّر على
+// "أحدث تقييم دوري مكتمل" لكل موظف - يعني بيبقى فعليًا "التقدير اللي الموظف أخده في الجولة دي".
 function computeDepartmentRatingDistribution(employees, reviews, opts) {
-  const dateFrom = (opts && opts.dateFrom) || "";
-  const dateTo = (opts && opts.dateTo) || "";
-  const scopedReviews = (dateFrom || dateTo)
-    ? reviews.filter((r) => {
-        const d = (r.completedAt || r.date || "").slice(0, 10);
-        if (dateFrom && d < dateFrom) return false;
-        if (dateTo && d > dateTo) return false;
-        return true;
-      })
+  const reviewType = (opts && opts.reviewType) || "";
+  const year = (opts && opts.year) || "";
+  const scopedReviews = (reviewType && year)
+    ? reviews.filter((r) => r.reviewType === reviewType && r.year === year)
     : reviews;
   const byDept = {};
   employees.forEach((e) => {
@@ -6954,14 +6949,32 @@ function ReportsTab({ employees, activeEmployees, attendance, penalties, advance
   function clearBalanceDateFilter() { setBalanceDateFrom(""); setBalanceDateTo(""); }
 
   /* ---------- توزيع تقييمات الأداء حسب القسم (Bell Curve) ---------- */
-  const [ratingDateFrom, setRatingDateFrom] = useState("");
-  const [ratingDateTo, setRatingDateTo] = useState("");
-  const ratingDateFilterActive = !!(ratingDateFrom || ratingDateTo);
-  const deptRatingDistribution = useMemo(
-    () => computeDepartmentRatingDistribution(activeEmployees, reviews || [], { dateFrom: ratingDateFrom, dateTo: ratingDateTo }),
-    [activeEmployees, reviews, ratingDateFrom, ratingDateTo]
-  );
-  function clearRatingDateFilter() { setRatingDateFrom(""); setRatingDateTo(""); }
+  // بلاغ هاني: "ده كمان محتاج فلتر للفترة او تاريخ التقييم"، وبعدها: "تاريخ التقييم يبقي بإسم
+  // 'نصف سنوي 2026' أو 'سنوي 2026' وهكذا" - يعني فلتر تاريخ حر (من-لغاية) مش مناسب هنا: التقييمات
+  // الدورية بتتحسب بجولات مسمّاة (نصف سنوي/سنوي × سنة)، مش بتواريخ عشوائية، فالفلتر المناسب قايمة
+  // منسدلة بالجولات الفعلية الموجودة - بنفس تنسيق العرض المستخدم أصلًا في مكان تاني في النظام
+  // (StampBadge بتاع تفاصيل التقييم: {r.reviewType} {r.year} - راجع نداء PeriodicReviewCard).
+  const ratingPeriods = useMemo(() => {
+    const seen = new Set();
+    const list = [];
+    (reviews || []).forEach((r) => {
+      if (!PERIODIC_REVIEW_TYPES.includes(r.reviewType) || r.status !== "completed" || !r.year) return;
+      const key = `${r.reviewType}__${r.year}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      list.push({ key, reviewType: r.reviewType, year: r.year });
+    });
+    // الأحدث أولًا: السنة الأكبر الأول، وجوه نفس السنة "سنوي" (نهاية السنة) قبل "نصف سنوي" (نصها).
+    return list.sort((a, b) => {
+      if (a.year !== b.year) return a.year < b.year ? 1 : -1;
+      return a.reviewType === "سنوي" ? -1 : b.reviewType === "سنوي" ? 1 : 0;
+    });
+  }, [reviews]);
+  const [ratingPeriod, setRatingPeriod] = useState("الكل");
+  const deptRatingDistribution = useMemo(() => {
+    const selected = ratingPeriods.find((p) => p.key === ratingPeriod);
+    return computeDepartmentRatingDistribution(activeEmployees, reviews || [], selected ? { reviewType: selected.reviewType, year: selected.year } : {});
+  }, [activeEmployees, reviews, ratingPeriod, ratingPeriods]);
   function ratingToneFor(label) {
     return label.includes("ممتاز") ? "emerald" : label.includes("جيد جداً") ? "teal" : label.includes("مرضي") ? "amber" : "rose";
   }
@@ -7173,20 +7186,20 @@ function ReportsTab({ employees, activeEmployees, attendance, penalties, advance
           <h2 className="text-xl font-bold text-slate-800">{t("توزيع تقييمات الأداء (Bell Curve)")}</h2>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <input type="date" title={t("من تاريخ")} className={`${inputCls} w-auto`} value={ratingDateFrom} onChange={(e) => setRatingDateFrom(e.target.value)} />
-          <span className="text-xs text-slate-400">{t("إلى")}</span>
-          <input type="date" title={t("لغاية تاريخ")} className={`${inputCls} w-auto`} value={ratingDateTo} onChange={(e) => setRatingDateTo(e.target.value)} />
-          {ratingDateFilterActive && (
-            <button onClick={clearRatingDateFilter} className="rounded-lg border border-stone-300 px-3 py-2 text-xs font-semibold text-slate-500 hover:bg-stone-50">{t("مسح الفلاتر")}</button>
-          )}
+          <select className={`${inputCls} w-auto`} value={ratingPeriod} onChange={(e) => setRatingPeriod(e.target.value)}>
+            <option value="الكل">{t("أحدث تقييم لكل موظف")}</option>
+            {ratingPeriods.map((p) => (
+              <option key={p.key} value={p.key}>{t(p.reviewType)} {p.year}</option>
+            ))}
+          </select>
         </div>
       </div>
-      {ratingDateFilterActive && (
-        <p className="mb-3 -mt-2 text-xs text-slate-400">{t("التوزيع ده بيعرض أحدث تقييم مكتمل لكل موظف *جوه الفترة المفلترة* بس - مسح الفلاتر بيرجّعه لأحدث تقييم على الإطلاق.")}</p>
+      {ratingPeriod !== "الكل" && (
+        <p className="mb-3 -mt-2 text-xs text-slate-400">{t("التوزيع ده بيعرض تقدير جولة {period} بس لكل موظف - رجّعه لـ 'أحدث تقييم لكل موظف' عشان تشوف التوزيع الكامل.", { period: `${t(ratingPeriods.find((p) => p.key === ratingPeriod)?.reviewType || "")} ${ratingPeriods.find((p) => p.key === ratingPeriod)?.year || ""}` })}</p>
       )}
 
       {deptRatingDistribution.length === 0 ? (
-        <Card className="p-0"><EmptyState text={ratingDateFilterActive ? "مفيش تقييمات دورية مكتملة في الفترة المفلترة دي." : "مفيش تقييمات دورية مكتملة لسه - التوزيع هيظهر أول ما تكتمل تقييمات الموظفين."} /></Card>
+        <Card className="p-0"><EmptyState text={ratingPeriod !== "الكل" ? "مفيش تقديرات مسجّلة في جولة التقييم دي." : "مفيش تقييمات دورية مكتملة لسه - التوزيع هيظهر أول ما تكتمل تقييمات الموظفين."} /></Card>
       ) : (
         <div className="space-y-4">
           {deptRatingDistribution.map((d) => (
@@ -8316,8 +8329,9 @@ const TRANSLATIONS = {
   "{n} موظف مقيّم": "{n} rated employees",
   "{count} ({pct}%)": "{count} ({pct}%)",
   "مفيش تقييمات دورية مكتملة لسه - التوزيع هيظهر أول ما تكتمل تقييمات الموظفين.": "No completed periodic reviews yet — the distribution will appear once employee reviews are completed.",
-  "مفيش تقييمات دورية مكتملة في الفترة المفلترة دي.": "No completed periodic reviews in this filtered date range.",
-  "التوزيع ده بيعرض أحدث تقييم مكتمل لكل موظف *جوه الفترة المفلترة* بس - مسح الفلاتر بيرجّعه لأحدث تقييم على الإطلاق.": "This distribution shows each employee's latest completed review *within the filtered range* only — clear the filters to go back to their latest review overall.",
+  "مفيش تقديرات مسجّلة في جولة التقييم دي.": "No ratings recorded for this review round.",
+  "أحدث تقييم لكل موظف": "Each employee's latest review",
+  "التوزيع ده بيعرض تقدير جولة {period} بس لكل موظف - رجّعه لـ 'أحدث تقييم لكل موظف' عشان تشوف التوزيع الكامل.": "This distribution shows each employee's rating for the {period} round only — switch back to \"Each employee's latest review\" to see the full distribution.",
   "مفيش رقم موبايل": "No phone number",
   "تعذّر تحديد المسؤول - راجع الهيكل التنظيمي": "Couldn't identify who's responsible - check the Org Chart",
   "الموقع في الهيكل التنظيمي": "Position in the Org Chart",
