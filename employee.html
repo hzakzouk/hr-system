@@ -342,7 +342,7 @@ function NavItem({ icon, label, active, onClick, badge }) {
   const { t } = useLang();
   return (
     <button onClick={onClick} className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${active ? "bg-teal-800 text-white" : "text-slate-600 hover:bg-stone-100"}`}>
-      {icon}<span className="flex-1 text-right">{t(label)}</span>{badge}
+      {icon}<span className="flex-1">{t(label)}</span>{badge}
     </button>
   );
 }
@@ -1553,13 +1553,13 @@ function EmployeePortal({ authUid, onSignOut }) {
             print-area جواها مباشرة، فلازم main تفضل قابلة للطباعة وإلا الصفحة تطلع بيضا. */}
         <main className="min-w-0 flex-1 p-1">
         {hasOpenDisciplinaryCase && tab !== "penalties" && (
-          <button onClick={() => setTab("penalties")} className="no-print mb-4 flex w-full items-center gap-2.5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-right text-sm text-rose-700 hover:bg-rose-100">
+          <button onClick={() => setTab("penalties")} className="no-print mb-4 flex w-full items-center gap-2.5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-start text-sm text-rose-700 hover:bg-rose-100">
             <AlertTriangle size={18} className="shrink-0" />
             <span className="flex-1 font-semibold">{t("في إجراء تأديبي جاري بخصوصك حاليًا - دوس هنا لمتابعته")}</span>
           </button>
         )}
         {pendingSurveys.length > 0 && tab !== "surveys" && (
-          <button onClick={() => setTab("surveys")} className="no-print mb-4 flex w-full items-center gap-2.5 rounded-xl border border-teal-200 bg-teal-50 px-4 py-3 text-right text-sm text-teal-700 hover:bg-teal-100">
+          <button onClick={() => setTab("surveys")} className="no-print mb-4 flex w-full items-center gap-2.5 rounded-xl border border-teal-200 bg-teal-50 px-4 py-3 text-start text-sm text-teal-700 hover:bg-teal-100">
             <MessageSquareText size={18} className="shrink-0" />
             <span className="flex-1 font-semibold">{pendingSurveys.length === 1 ? t("عندك استطلاع رأي جديد - دوس هنا عشان تشارك برأيك") : t("عندك {n} استطلاعات رأي جديدة - دوس هنا عشان تشارك برأيك", { n: pendingSurveys.length })}</span>
           </button>
@@ -1590,7 +1590,7 @@ function EmployeePortal({ authUid, onSignOut }) {
                       عواميد البيانات تحته (مشكلة معروفة في بعض المتصفحات مع sticky+RTL+جدول -
                       الـ th بمفرده بيحسب مكانه الصحيح كويس أكتر من الـ thead ككل). */}
                   <thead className="bg-stone-50">
-                    <tr className="border-b border-stone-200 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    <tr className="border-b border-stone-200 text-start text-xs font-semibold uppercase tracking-wide text-slate-500">
                       <th className="sticky top-0 bg-stone-50 px-4 py-2.5">{t("التاريخ")}</th><th className="sticky top-0 bg-stone-50 px-4 py-2.5">{t("الحالة")}</th><th className="sticky top-0 bg-stone-50 px-4 py-2.5">{t("دقايق التأخير")}</th><th className="sticky top-0 bg-stone-50 px-4 py-2.5">{t("وقت إضافي")}</th>
                     </tr>
                   </thead>
