@@ -700,10 +700,25 @@ function latestCompletedPeriodicReview(reviews, employeeId) {
 // Curve" في تاب التقارير. موظف من غير أي تقييم دوري مكتمل بيتستبعد بالكامل من القسم بتاعه هنا
 // (مش هناك "تقدير" نحسب نسبته منه أصلًا)، فـ totalRated ممكن يبقى أقل من إجمالي عدد موظفي
 // القسم - ده متعمّد ومختلف عن headcount العادي.
-function computeDepartmentRatingDistribution(employees, reviews) {
+// بلاغ هاني: "ده كمان محتاج فلتر للفترة او تاريخ التقييم" (على شارت Bell Curve) - opts.dateFrom
+// وopts.dateTo (تاريخ اكتمال التقييم completedAt، وdate كبديل لو completedAt مش موجود - نفس
+// أولوية latestCompletedPeriodicReview بالظبط) بيفلتروا قايمة reviews قبل ما ندوّر على "أحدث
+// تقييم دوري مكتمل" لكل موظف - يعني بالفترة دي بنسأل "إيه أحدث تقييم مكتمل للموظف ده *جوه
+// الفترة المختارة*" مش أحدث تقييم على الإطلاق.
+function computeDepartmentRatingDistribution(employees, reviews, opts) {
+  const dateFrom = (opts && opts.dateFrom) || "";
+  const dateTo = (opts && opts.dateTo) || "";
+  const scopedReviews = (dateFrom || dateTo)
+    ? reviews.filter((r) => {
+        const d = (r.completedAt || r.date || "").slice(0, 10);
+        if (dateFrom && d < dateFrom) return false;
+        if (dateTo && d > dateTo) return false;
+        return true;
+      })
+    : reviews;
   const byDept = {};
   employees.forEach((e) => {
-    const review = latestCompletedPeriodicReview(reviews, e.id);
+    const review = latestCompletedPeriodicReview(scopedReviews, e.id);
     if (!review || !review.finalRating) return;
     const dept = (e.department || "").trim() || "بدون قسم";
     if (!byDept[dept]) byDept[dept] = {};
@@ -6939,7 +6954,14 @@ function ReportsTab({ employees, activeEmployees, attendance, penalties, advance
   function clearBalanceDateFilter() { setBalanceDateFrom(""); setBalanceDateTo(""); }
 
   /* ---------- توزيع تقييمات الأداء حسب القسم (Bell Curve) ---------- */
-  const deptRatingDistribution = useMemo(() => computeDepartmentRatingDistribution(activeEmployees, reviews || []), [activeEmployees, reviews]);
+  const [ratingDateFrom, setRatingDateFrom] = useState("");
+  const [ratingDateTo, setRatingDateTo] = useState("");
+  const ratingDateFilterActive = !!(ratingDateFrom || ratingDateTo);
+  const deptRatingDistribution = useMemo(
+    () => computeDepartmentRatingDistribution(activeEmployees, reviews || [], { dateFrom: ratingDateFrom, dateTo: ratingDateTo }),
+    [activeEmployees, reviews, ratingDateFrom, ratingDateTo]
+  );
+  function clearRatingDateFilter() { setRatingDateFrom(""); setRatingDateTo(""); }
   function ratingToneFor(label) {
     return label.includes("ممتاز") ? "emerald" : label.includes("جيد جداً") ? "teal" : label.includes("مرضي") ? "amber" : "rose";
   }
@@ -7145,15 +7167,26 @@ function ReportsTab({ employees, activeEmployees, attendance, penalties, advance
         )}
       </Card>
 
-      <div className="mb-5 mt-8 flex items-end justify-between gap-4 border-b-2 border-amber-500/70 pb-3">
+      <div className="mb-5 mt-8 flex flex-wrap items-end justify-between gap-4 border-b-2 border-amber-500/70 pb-3">
         <div>
           <div className="mb-1 text-xs font-semibold uppercase tracking-widest text-teal-700">{t("توزيع أحدث تقييم دوري مكتمل لكل موظف، حسب القسم")}</div>
           <h2 className="text-xl font-bold text-slate-800">{t("توزيع تقييمات الأداء (Bell Curve)")}</h2>
         </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <input type="date" title={t("من تاريخ")} className={`${inputCls} w-auto`} value={ratingDateFrom} onChange={(e) => setRatingDateFrom(e.target.value)} />
+          <span className="text-xs text-slate-400">{t("إلى")}</span>
+          <input type="date" title={t("لغاية تاريخ")} className={`${inputCls} w-auto`} value={ratingDateTo} onChange={(e) => setRatingDateTo(e.target.value)} />
+          {ratingDateFilterActive && (
+            <button onClick={clearRatingDateFilter} className="rounded-lg border border-stone-300 px-3 py-2 text-xs font-semibold text-slate-500 hover:bg-stone-50">{t("مسح الفلاتر")}</button>
+          )}
+        </div>
       </div>
+      {ratingDateFilterActive && (
+        <p className="mb-3 -mt-2 text-xs text-slate-400">{t("التوزيع ده بيعرض أحدث تقييم مكتمل لكل موظف *جوه الفترة المفلترة* بس - مسح الفلاتر بيرجّعه لأحدث تقييم على الإطلاق.")}</p>
+      )}
 
       {deptRatingDistribution.length === 0 ? (
-        <Card className="p-0"><EmptyState text="مفيش تقييمات دورية مكتملة لسه - التوزيع هيظهر أول ما تكتمل تقييمات الموظفين." /></Card>
+        <Card className="p-0"><EmptyState text={ratingDateFilterActive ? "مفيش تقييمات دورية مكتملة في الفترة المفلترة دي." : "مفيش تقييمات دورية مكتملة لسه - التوزيع هيظهر أول ما تكتمل تقييمات الموظفين."} /></Card>
       ) : (
         <div className="space-y-4">
           {deptRatingDistribution.map((d) => (
@@ -8283,6 +8316,8 @@ const TRANSLATIONS = {
   "{n} موظف مقيّم": "{n} rated employees",
   "{count} ({pct}%)": "{count} ({pct}%)",
   "مفيش تقييمات دورية مكتملة لسه - التوزيع هيظهر أول ما تكتمل تقييمات الموظفين.": "No completed periodic reviews yet — the distribution will appear once employee reviews are completed.",
+  "مفيش تقييمات دورية مكتملة في الفترة المفلترة دي.": "No completed periodic reviews in this filtered date range.",
+  "التوزيع ده بيعرض أحدث تقييم مكتمل لكل موظف *جوه الفترة المفلترة* بس - مسح الفلاتر بيرجّعه لأحدث تقييم على الإطلاق.": "This distribution shows each employee's latest completed review *within the filtered range* only — clear the filters to go back to their latest review overall.",
   "مفيش رقم موبايل": "No phone number",
   "تعذّر تحديد المسؤول - راجع الهيكل التنظيمي": "Couldn't identify who's responsible - check the Org Chart",
   "الموقع في الهيكل التنظيمي": "Position in the Org Chart",
