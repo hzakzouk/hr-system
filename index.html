@@ -6923,7 +6923,20 @@ function ReportsTab({ employees, activeEmployees, attendance, penalties, advance
   }
 
   /* ---------- رصيد كل الحالات + تقرير شؤون الأفراد المخصّص (بفترة زمنية/موظف/نوع طلب) ---------- */
-  const requestsBalance = useMemo(() => computeRequestsBalance(requests || []), [requests]);
+  // بلاغ هاني: "تقارير شؤون الأفراد عن أي فترة, لازم يبقي فيه فلتر للتاريخ" - جدول رصيد الحالات
+  // (الإجمالي/معلّق/موافق عليه/مرفوض لكل نوع طلب) كان بيحسب على كل الطلبات من أول ما النظام
+  // اشتغل من غير أي فلتر تاريخ خالص - عكس "تقرير مخصّص" تحته اللي فيه فلتر فترة أصلًا. بنفلتر
+  // بفترة (balanceDateFrom/balanceDateTo) قبل ما نحسب الرصيد - بنفس دالة filterRequestsReport
+  // المستخدمة في التقرير المخصص (تاريخ تقديم الطلب createdAt)، من غير فلتر موظف أو نوع (سايبنهم
+  // فاضيين هنا) عشان الجدول ده يفضل ملخّص لكل الأنواع/الموظفين زي ما هو.
+  const [balanceDateFrom, setBalanceDateFrom] = useState("");
+  const [balanceDateTo, setBalanceDateTo] = useState("");
+  const balanceDateFilterActive = !!(balanceDateFrom || balanceDateTo);
+  const requestsBalance = useMemo(
+    () => computeRequestsBalance(filterRequestsReport(requests || [], { dateFrom: balanceDateFrom, dateTo: balanceDateTo })),
+    [requests, balanceDateFrom, balanceDateTo]
+  );
+  function clearBalanceDateFilter() { setBalanceDateFrom(""); setBalanceDateTo(""); }
 
   /* ---------- توزيع تقييمات الأداء حسب القسم (Bell Curve) ---------- */
   const deptRatingDistribution = useMemo(() => computeDepartmentRatingDistribution(activeEmployees, reviews || []), [activeEmployees, reviews]);
@@ -7047,9 +7060,20 @@ function ReportsTab({ employees, activeEmployees, attendance, penalties, advance
         </table>
       </Card>
 
-      <div className="mb-5 mt-8 flex items-end justify-between gap-4 border-b-2 border-amber-500/70 pb-3">
+      <div className="mb-5 mt-8 flex flex-wrap items-end justify-between gap-4 border-b-2 border-amber-500/70 pb-3">
         <h2 className="text-xl font-bold text-slate-800">{t("تقارير شؤون الأفراد")}</h2>
+        <div className="flex flex-wrap items-center gap-2">
+          <input type="date" title={t("من تاريخ")} className={`${inputCls} w-auto`} value={balanceDateFrom} onChange={(e) => setBalanceDateFrom(e.target.value)} />
+          <span className="text-xs text-slate-400">{t("إلى")}</span>
+          <input type="date" title={t("لغاية تاريخ")} className={`${inputCls} w-auto`} value={balanceDateTo} onChange={(e) => setBalanceDateTo(e.target.value)} />
+          {balanceDateFilterActive && (
+            <button onClick={clearBalanceDateFilter} className="rounded-lg border border-stone-300 px-3 py-2 text-xs font-semibold text-slate-500 hover:bg-stone-50">{t("مسح الفلاتر")}</button>
+          )}
+        </div>
       </div>
+      {balanceDateFilterActive && (
+        <p className="mb-3 -mt-2 text-xs text-slate-400">{t("الجدول ده بيعرض الفترة المفلترة بس - مسح الفلاتر بيرجّعه لكل الأوقات.")}</p>
+      )}
 
       <Card className="overflow-x-auto p-0">
         <table className="w-full text-sm">
@@ -8237,6 +8261,7 @@ const TRANSLATIONS = {
   "كل الموظفين": "All Employees",
   "اختار فترة أو موظف أو نوع طلب عشان تشوف التقرير.": "Pick a date range, employee, or request type to see the report.",
   "تقرير شؤون الأفراد": "Personnel Affairs Report",
+  "الجدول ده بيعرض الفترة المفلترة بس - مسح الفلاتر بيرجّعه لكل الأوقات.": "This table is showing the filtered date range only - clear the filters to go back to all time.",
   // --- إيميل الموظف + زرار إرسال إيميل (طلبات الموظفين المعلّقة - لوحة المتابعة) ---
   "الإيميل (اختياري)": "Email (optional)",
   "إرسال إيميل": "Send Email",
