@@ -1876,7 +1876,7 @@ function HRSystem({ adminUser }) {
           {tab === "evaluations" && <EvaluationsTab employees={employees} reviews={reviews} onOpenEmployee={setOpenEmployeeId} />}
           {tab === "attendance" && <AttendanceTab employees={activeEmployees} attendance={attendance} patchAttendance={upd.attendancePatch} settings={settings} />}
           {tab === "requests" && <EmployeeRequestsTab requests={requests} />}
-          {tab === "payroll" && <PayrollTab employees={activeEmployees} allEmployees={employees} setEmployees={upd.employees} attendance={attendance} penalties={penalties} payrollMeta={payrollMeta} setPayrollMeta={upd.payrollMeta} advances={advances} settings={settings} payslipDocs={payslipDocs} onSyncPayslips={upd.payslips} />}
+          {tab === "payroll" && <PayrollTab allEmployees={employees} setEmployees={upd.employees} attendance={attendance} penalties={penalties} payrollMeta={payrollMeta} setPayrollMeta={upd.payrollMeta} advances={advances} settings={settings} payslipDocs={payslipDocs} onSyncPayslips={upd.payslips} />}
           {tab === "salaryIncrease" && <SalaryIncreaseTab employees={activeEmployees} allEmployees={employees} reviews={reviews} salaryIncreases={salaryIncreases} setSalaryIncreases={upd.salaryIncreases} setEmployees={upd.employees} settings={settings} adminUser={adminUser} onOpenEmployee={setOpenEmployeeId} />}
           {tab === "penalties" && <PenaltiesTab employees={activeEmployees} penalties={penalties} setPenalties={upd.penalties} penaltyCaseNotes={penaltyCaseNotes} setPenaltyCaseNotes={upd.penaltyCaseNotes} onPrintCase={setPrintPenaltyCase} />}
           {tab === "surveys" && <SurveysTab employees={activeEmployees} surveys={surveys} setSurveys={upd.surveys} surveyResponses={surveyResponses} setSurveyResponses={upd.surveyResponses} />}
@@ -5564,7 +5564,7 @@ const PAYROLL_LINE_ITEMS = [
   { key: "taxDeduction", overrideKey: "taxDeductionOverride", reasonKey: "taxDeductionReason", label: "ضريبة", sign: -1 },
   { key: "overtimePay", overrideKey: "overtimePayOverride", reasonKey: "overtimePayReason", label: "إضافي", sign: 1 },
 ];
-function PayrollTab({ employees, allEmployees, setEmployees, attendance, penalties, payrollMeta, setPayrollMeta, advances, settings, payslipDocs, onSyncPayslips }) {
+function PayrollTab({ allEmployees, setEmployees, attendance, penalties, payrollMeta, setPayrollMeta, advances, settings, payslipDocs, onSyncPayslips }) {
   const { t, lang } = useLang();
   // عمود اسم الموظف بيفضل ثابت (sticky) وانت بتعمل سكرول أفقي في الجدول العريض ده - عشان
   // تعرف صاحب الصف وانت شايف أي بند. start-0 (بدل left-0/right-0) بتتبع اتجاه اللغة تلقائيًا
@@ -5577,6 +5577,17 @@ function PayrollTab({ employees, allEmployees, setEmployees, attendance, penalti
   const [query, setQuery] = useState("");
   const [paidFilter, setPaidFilter] = useState("الكل");
   const meta = payrollMeta[ym] || {};
+  // بلاغ هاني: "رقم تكلفة مرتبات الشهر الحالي غير الرقم تاب المرتبات" - تاب التقارير بيحسب
+  // تكلفة مرتبات الشهر بمنطق wasActiveInMonth (أي موظف كان شغال ولو جزء من الشهر ده، حتى لو
+  // استقال بعدها أو ضم لاحقًا)، بينما تاب المرتبات هنا كان بياخد activeEmployees (النشطين
+  // *دلوقتي* بس - حالتهم الحية وقت ما بتفتح الشاشة)، بغض النظر عن الشهر (ym) المعروض فعليًا.
+  // ده باگ حقيقي مش مجرد اختلاف عرض: (1) موظف استقال في نفس الشهر ده كان بيختفي من تاب
+  // المرتبات خالص - يعني راتبه المستحق عن الأيام اللي اشتغلها قبل الاستقالة مكنش بيتحسب أو
+  // يتصرف له، (2) لو الأدمن رجع لشهر قديم في تاب المرتبات، أي موظف اتضم بعد الشهر ده كان
+  // بيظهر ومرتبه الكامل بيتحسب رغم إنه لسه مكنش اتعين. الحل: نفس منطق wasActiveInMonth
+  // بالظبط (اللي بيستخدمه تاب التقارير) مبني على allEmployees (كل الموظفين نشطين وسابقين)
+  // ومربوط بالشهر المعروض (ym) نفسه - مش على activeEmployees الجاهزة من الأعلى.
+  const monthEmployees = useMemo(() => allEmployees.filter((e) => wasActiveInMonth(e, ym)), [allEmployees, ym]);
 
   // تعديل مباشر للراتب الأساسي من نفس تاب المرتبات - المكان اللي الأدمن أصلًا بيراجع فيه
   // الأرقام شهريًا، بدل ما يضطر يفتح فورم تعديل الموظف الكامل. زي أي تعديل تاني في المرتب،
@@ -5655,10 +5666,10 @@ function PayrollTab({ employees, allEmployees, setEmployees, attendance, penalti
   }
   // بنحسب تفاصيل الخصم بس للموظف المفتوح حاليًا (مش لكل صف في الجدول) - نفس فلسفة payslipEmp
   // جنبه، توفير حساب مش لازم يتكرر لكل موظف كل render.
-  const breakdownEmp = employees.find((e) => e.id === breakdownEmpId);
+  const breakdownEmp = monthEmployees.find((e) => e.id === breakdownEmpId);
   const breakdown = breakdownEmp ? computePayrollBreakdown(breakdownEmp, ym, attendance, penalties, advances, settings, meta) : null;
 
-  const rows = employees.map((e) => computePayrollRow(e, ym, attendance, penalties, advances, settings, meta));
+  const rows = monthEmployees.map((e) => computePayrollRow(e, ym, attendance, penalties, advances, settings, meta));
   const syncedCount = payslipDocs.filter((d) => d.id.startsWith(`${ym}_`)).length;
   const totals = rows.reduce((acc, r) => {
     acc.base += Number(r.emp.salary) || 0;
