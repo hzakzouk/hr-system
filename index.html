@@ -7462,31 +7462,23 @@ function BulkCandidateWhatsAppModal({ stage, candidates, setCandidates, onClose 
       : { offerDocuments: row.documents || "", offerDate: row.date || "", offerLocation: row.location || "" };
     setCandidates(candidates.map((x) => (x.id === c.id ? { ...x, ...patch } : x)));
   }
-  // بلاغ هاني: "ارسال الواتساب ظهر لمرشح واحد بس" - المتصفح بيمنع أكتر من نافذة/تاب واحد بيتفتح
-  // برمجيًا (window.open) من ضغطة واحدة أحيانًا (سلوك أمان قياسي ضد الـ popups مش خاص بالسيستم
-  // ده)، وكان الكود القديم بيعلّم كل المرشحين "تم الفتح" حتى اللي المتصفح منعهم فعليًا - يعني
-  // كانوا بيختفوا من غير ما رسالتهم تتفتح خالص. الحل جزئين:
-  //   1) الزرار الفردي بقى <a href target="_blank"> حقيقي (نفس RemindButton بالظبط) - ضغطة
-  //      مباشرة على لينك حقيقي مش بيتمنع من المتصفح أبدًا، عكس window.open() البرمجي.
-  //   2) "فتح الكل" لسه محتاج window.open() (مفيش طريقة تانية تفتح أكتر من تاب من ضغطة واحدة)،
-  //      بس من غير noopener/noreferrer هنا تحديدًا عشان نقدر نتأكد التاب اتفتح فعليًا ولا لأ
-  //      (wa.me نطاق واتساب الرسمي الموثوق، فالتنازل عن noopener هنا مقبول). أي مرشح المتصفح
-  //      يمنعه بيفضل من غير علامة "تم الفتح" - زرار "فتح واتساب" الفردي بتاعه (لينك حقيقي) بيفضل
-  //      شغال طبيعي لو ضغطه بنفسه.
   function markSent(c) { persistRow(c); setSentIds((s) => new Set(s).add(c.id)); }
-  const [bulkOpenResult, setBulkOpenResult] = useState(null); // { opened, blocked } آخر مرة دوس "فتح الكل"
-  function sendAll() {
-    const targets = stageCandidates.filter((c) => !sentIds.has(c.id) && !!buildAlertWhatsAppLink(c, messageFor(c)));
-    const opened = [];
-    const blocked = [];
-    targets.forEach((c) => {
-      const win = window.open(buildAlertWhatsAppLink(c, messageFor(c)), "_blank");
-      if (win) opened.push(c); else blocked.push(c);
-    });
-    opened.forEach((c) => persistRow(c));
-    if (opened.length > 0) setSentIds((s) => { const next = new Set(s); opened.forEach((c) => next.add(c.id)); return next; });
-    setBulkOpenResult({ opened: opened.length, blocked: blocked.length });
+  // بلاغ هاني (مرتين): "ارسال الواتساب ظهر لمرشح واحد بس و التاني لا" - المحاولة الأولى كانت
+  // بتفتح كل التابات دفعة واحدة بحلقة window.open() واحدة، والمتصفح بيمنع تاب التاني (والتالت
+  // وهكذا) لو اتفتحوا برمجيًا من غير ما كل واحد يبقى نتيجة ضغطة مستخدم حقيقية منفصلة - ده سلوك
+  // أمان ثابت في كل المتصفحات (Chrome/Safari/Firefox) مش قابل للالتفاف عليه من الكود، وحتى
+  // اكتشاف "المنع" وإعادة المحاولة كان بيرجع لنفس المشكلة تاني. الحل النهائي: بدل "فتح الكل"
+  // دفعة واحدة، الزرار بقى بيفتح مرشح واحد بس في كل ضغطة (openNextInQueue) - وبما إن كل ضغطة
+  // دي حدث ضغط مستخدم حقيقي ومنفصل بنفسه، المتصفح بيسمح بيها مضمون 100% في كل مرة، من غير ما
+  // يحتاج الأدمن يفتح إعدادات المتصفح أو يسمح بأي حاجة. "Bulk" هنا معناها إن الأدمن مش محتاج
+  // يكتب أو يراجع أي رسالة تانية - بس يدوس "التالي" على طول لحد ما يخلّص كل المرشحين.
+  function openNextInQueue() {
+    const next = stageCandidates.find((c) => !sentIds.has(c.id) && !!buildAlertWhatsAppLink(c, messageFor(c)));
+    if (!next) return;
+    window.open(buildAlertWhatsAppLink(next, messageFor(next)), "_blank");
+    markSent(next);
   }
+  const totalWithPhone = stageCandidates.filter((c) => !!phoneForWhatsApp(c.phone)).length;
   const sendableCount = stageCandidates.filter((c) => !!phoneForWhatsApp(c.phone) && !sentIds.has(c.id)).length;
 
   return (
@@ -7592,24 +7584,26 @@ function BulkCandidateWhatsAppModal({ stage, candidates, setCandidates, onClose 
 
         {stageCandidates.length > 0 && (
           <div className="border-t border-stone-200 px-6 py-4">
-            {bulkOpenResult && (
-              <p className={`mb-2 text-xs font-medium ${bulkOpenResult.blocked > 0 ? "text-amber-600" : "text-emerald-700"}`}>
-                {bulkOpenResult.blocked > 0
-                  ? t("اتفتح {opened} من {total} - المتصفح منع الباقي ({blocked})، دوس 'فتح واتساب' جنب كل مرشح فيهم لوحده (أو اسمح للمتصفح بفتح أكتر من تاب وجرب تاني).", {
-                      opened: bulkOpenResult.opened, total: bulkOpenResult.opened + bulkOpenResult.blocked, blocked: bulkOpenResult.blocked,
-                    })
-                  : t("اتفتح {n} تاب واتساب بنجاح.", { n: bulkOpenResult.opened })}
-              </p>
-            )}
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <span className="text-xs font-medium text-slate-500">{t("اتفتح {done} من {total}", { done: totalWithPhone - sendableCount, total: totalWithPhone })}</span>
+              {sendableCount > 0 && <span className="text-xs text-slate-400">{t("باقي {n}", { n: sendableCount })}</span>}
+            </div>
             <div className="flex items-center justify-between gap-2">
-              <p className="text-xs text-slate-400">{t("هيتفتح تاب واتساب منفصل لكل مرشح برسالته المخصصة - المتصفح ممكن يطلب إذن السماح بفتح أكتر من تاب.")}</p>
-              <button
-                onClick={sendAll}
-                disabled={sendableCount === 0}
-                className="flex shrink-0 items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <MessageCircle size={15} /> {t("فتح واتساب لكل المرشحين ({n})", { n: sendableCount })}
-              </button>
+              <p className="text-xs text-slate-400">
+                {sendableCount > 0
+                  ? t("كل دوسة بتفتح تاب واتساب لمرشح واحد برسالته المخصصة جاهزة - دوس على طول لحد ما تخلّص الكل.")
+                  : t("اتفتحت رسايل كل المرشحين اللي ليهم رقم موبايل مسجل.")}
+              </p>
+              {sendableCount > 0 ? (
+                <button
+                  onClick={openNextInQueue}
+                  className="flex shrink-0 items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-semibold text-white hover:bg-teal-900"
+                >
+                  <MessageCircle size={15} /> {t("فتح واتساب للمرشح التالي ({n} باقي)", { n: sendableCount })}
+                </button>
+              ) : (
+                <span className="flex shrink-0 items-center gap-1.5 rounded-lg bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700"><Check size={15} /> {t("تم")}</span>
+              )}
             </div>
           </div>
         )}
@@ -9189,10 +9183,11 @@ const TRANSLATIONS = {
   "فتح واتساب": "Open WhatsApp",
   "إعادة الفتح": "Reopen",
   "مفيش رقم موبايل مسجل للمرشح ده.": "This candidate has no phone number on file.",
-  "هيتفتح تاب واتساب منفصل لكل مرشح برسالته المخصصة - المتصفح ممكن يطلب إذن السماح بفتح أكتر من تاب.": "A separate WhatsApp tab will open for each candidate with their own message - your browser may ask permission to allow multiple tabs.",
-  "اتفتح {opened} من {total} - المتصفح منع الباقي ({blocked})، دوس 'فتح واتساب' جنب كل مرشح فيهم لوحده (أو اسمح للمتصفح بفتح أكتر من تاب وجرب تاني).": "Opened {opened} of {total} - your browser blocked the rest ({blocked}); click 'Open WhatsApp' next to each of them individually (or allow multiple tabs in your browser and try again).",
-  "اتفتح {n} تاب واتساب بنجاح.": "Successfully opened {n} WhatsApp tab(s).",
-  "فتح واتساب لكل المرشحين ({n})": "Open WhatsApp for all candidates ({n})",
+  "اتفتح {done} من {total}": "Opened {done} of {total}",
+  "باقي {n}": "{n} left",
+  "كل دوسة بتفتح تاب واتساب لمرشح واحد برسالته المخصصة جاهزة - دوس على طول لحد ما تخلّص الكل.": "Each click opens one WhatsApp tab for one candidate with their message ready - keep clicking until you're through everyone.",
+  "اتفتحت رسايل كل المرشحين اللي ليهم رقم موبايل مسجل.": "Messages have been opened for every candidate with a phone number on file.",
+  "فتح واتساب للمرشح التالي ({n} باقي)": "Open WhatsApp for next candidate ({n} left)",
   "مفيش مرشحين في المرحلة دي حاليًا.": "No candidates in this stage right now.",
   "تأكيد ({u} تحديث + {c} جديد)": "Confirm ({u} updated + {c} new)",
   "تأكيد الاستيراد": "Confirm Import",
