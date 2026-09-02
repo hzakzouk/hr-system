@@ -37,7 +37,8 @@ import {
   Loader2, Landmark, HandCoins, LogOut, ClipboardList, Star, Settings as SettingsIcon,
   Printer, Cake, ShieldAlert, Bell, Info, Upload, ArrowRight, ArrowLeft, FileSpreadsheet,
   Network, Crown, ChevronDown, ChevronUp, Lock, LogIn, ShieldCheck, Languages, History, BarChart3,
-  UserPlus, Download, Mail, RefreshCw, MessageCircle, Gavel, ShieldOff, MessageSquareText, CalendarOff
+  UserPlus, Download, Mail, RefreshCw, MessageCircle, Gavel, ShieldOff, MessageSquareText, CalendarOff,
+  ZoomIn, ZoomOut
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import emailjs from "@emailjs/browser";
@@ -8105,6 +8106,16 @@ function OrgChartTab({ employees, orgChart, setOrgChart, onPrint }) {
   const [expanded, setExpanded] = useState({});
   function toggle(key) { setExpanded((s) => ({ ...s, [key]: !s[key] })); }
 
+  // بلاغ هاني: "عايز زووم in و out عشان اشوف الهيكل كامل" - بعد إضافة مستوى الفروع بقى الهيكل
+  // عريض جدًا (فروع جنب بعض، كل واحد بأقسامه) ومحتاج سكرول أفقي طويل لحد ما تشوفه كامل، حتى
+  // الرئيس التنفيذي فوق ممكن يبان إنه "مش ظاهر" لو الشاشة مقصوصة. zoom (خاصية CSS بتأثر فعليًا
+  // على حجم التخطيط نفسه، مش transform:scale اللي بيسيب المساحة اللي بتتحسب للسكرول زي ما هي) -
+  // بتخلي المستخدم يصغّر الهيكل كله عشان يبان في شاشة واحدة من غير سكرول، أو يكبّره تاني.
+  const [zoom, setZoom] = useState(1);
+  function zoomIn() { setZoom((z) => Math.min(1.4, +(z + 0.1).toFixed(2))); }
+  function zoomOut() { setZoom((z) => Math.max(0.4, +(z - 0.1).toFixed(2))); }
+  function resetZoom() { setZoom(1); }
+
   // بلاغ هاني: "الهيكل التنظيمي مش جايب الفروع المختلفه في الشركه (HQ - Pharma - Food -
   // Technology)" - employee.branch كان موجود أصلًا (فورم الموظف + تصدير الإكسل) بس شاشة تحديد
   // المناصب هنا كانت بتتجاهله وبتبني "رئيس/مديرة كل إدارة" من كل الموظفين مع بعض بغض النظر عن
@@ -8152,9 +8163,12 @@ function OrgChartTab({ employees, orgChart, setOrgChart, onPrint }) {
         eyebrow={t("{n} موظف نشط", { n: employees.length })}
         title={t("الهيكل التنظيمي")}
         action={
-          <button onClick={onPrint} className="flex items-center gap-1.5 rounded-lg border border-teal-700 px-3.5 py-2 text-sm font-semibold text-teal-800 hover:bg-teal-50">
-            <Printer size={16} /> {t("طباعة الهيكل")}
-          </button>
+          <div className="flex items-center gap-2">
+            <ZoomControls zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onReset={resetZoom} />
+            <button onClick={onPrint} className="flex items-center gap-1.5 rounded-lg border border-teal-700 px-3.5 py-2 text-sm font-semibold text-teal-800 hover:bg-teal-50">
+              <Printer size={16} /> {t("طباعة الهيكل")}
+            </button>
+          </div>
         }
       />
 
@@ -8248,9 +8262,41 @@ function OrgChartTab({ employees, orgChart, setOrgChart, onPrint }) {
 
       {employees.length === 0 ? <EmptyState text="لسه معملتش أي موظف." /> : (
         <Card className="overflow-x-auto p-8">
-          <OrgChartTree tree={tree} expanded={expanded} onToggle={toggle} />
+          <div style={{ zoom }}>
+            <OrgChartTree tree={tree} expanded={expanded} onToggle={toggle} />
+          </div>
         </Card>
       )}
+    </div>
+  );
+}
+
+// مجموعة أزرار الزووم (تصغير / النسبة الحالية - بيرجّعها 100% لو ضغطتها / تكبير) - نفس الشكل
+// بالظبط مستخدم في شاشة الهيكل التنظيمي العادية ومعاينة الطباعة (OrgChartPrintView) عشان
+// السلوك يبقى متسق في المكانين.
+function ZoomControls({ zoom, onZoomIn, onZoomOut, onReset }) {
+  const { t } = useLang();
+  return (
+    <div className="flex items-center gap-1 rounded-lg border border-stone-300 px-1.5 py-1">
+      <button
+        onClick={onZoomOut}
+        disabled={zoom <= 0.4}
+        title={t("تصغير")}
+        className="rounded-md p-1 text-slate-500 hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-30"
+      >
+        <ZoomOut size={15} />
+      </button>
+      <button onClick={onReset} title={t("إعادة ضبط التكبير")} className="min-w-[3rem] rounded-md px-1 py-0.5 text-xs font-medium text-slate-500 hover:bg-stone-100">
+        {Math.round(zoom * 100)}%
+      </button>
+      <button
+        onClick={onZoomIn}
+        disabled={zoom >= 1.4}
+        title={t("تكبير")}
+        className="rounded-md p-1 text-slate-500 hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-30"
+      >
+        <ZoomIn size={15} />
+      </button>
     </div>
   );
 }
@@ -8258,11 +8304,20 @@ function OrgChartTab({ employees, orgChart, setOrgChart, onPrint }) {
 function OrgChartPrintView({ employees, orgChart, onClose }) {
   const { t, lang } = useLang();
   const tree = useMemo(() => buildOrgTree(employees, orgChart), [employees, orgChart]);
+  // نفس فكرة زووم OrgChartTab بالظبط (نفس الملاحظة: بلاغ هاني "عايز زووم in و out عشان اشوف
+  // الهيكل كامل") - هنا كمان مهم إن zoom (مش transform) بتنعكس فعليًا على الطباعة الحقيقية
+  // (window.print) برضه، مش بس المعاينة على الشاشة - يعني لو صغّر الهيكل عشان يبان كامل في
+  // المعاينة، هيتطبع كامل في صفحة واحدة بنفس النسبة دي بالظبط.
+  const [zoom, setZoom] = useState(1);
+  function zoomIn() { setZoom((z) => Math.min(1.4, +(z + 0.1).toFixed(2))); }
+  function zoomOut() { setZoom((z) => Math.max(0.4, +(z - 0.1).toFixed(2))); }
+  function resetZoom() { setZoom(1); }
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-white">
       <div className="no-print sticky top-0 z-10 flex items-center justify-between border-b border-stone-200 bg-white px-6 py-4 shadow-sm">
         <h3 className="text-lg font-bold text-slate-800">{t("معاينة طباعة الهيكل التنظيمي")}</h3>
         <div className="flex items-center gap-2">
+          <ZoomControls zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onReset={resetZoom} />
           <button onClick={() => window.print()} className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-900"><Printer size={15} /> {t("طباعة")}</button>
           <button onClick={onClose} className="rounded-full p-1.5 text-slate-400 hover:bg-stone-100"><X size={18} /></button>
         </div>
@@ -8273,7 +8328,9 @@ function OrgChartPrintView({ employees, orgChart, onClose }) {
           <div className="text-xs text-slate-400">{new Date().toLocaleDateString(lang === "en" ? "en-GB" : "ar-EG", { year: "numeric", month: "long", day: "numeric" })}</div>
         </div>
         {employees.length === 0 ? <EmptyState text="لسه معملتش أي موظف." /> : (
-          <OrgChartTree tree={tree} expanded={{}} onToggle={() => {}} forceExpanded />
+          <div style={{ zoom }}>
+            <OrgChartTree tree={tree} expanded={{}} onToggle={() => {}} forceExpanded />
+          </div>
         )}
       </div>
     </div>
@@ -8968,6 +9025,9 @@ const TRANSLATIONS = {
   "ضريبة كسب العمل": "Income Tax",
   "طباعة": "Print",
   "طباعة الهيكل": "Print Chart",
+  "تصغير": "Zoom Out",
+  "تكبير": "Zoom In",
+  "إعادة ضبط التكبير": "Reset Zoom",
   "طي القائمة الجانبية": "Collapse sidebar",
   "توسيع القائمة الجانبية": "Expand sidebar",
   "طي القائمة": "Collapse",
